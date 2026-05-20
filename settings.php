@@ -146,10 +146,18 @@ $ctcss = $Database->get_ctcss();
 									?>
 								  </select>
 								  <span class="help-inline">The CTCSS tone you need to hear the repeater.</span>
-								</div>
-							  </div>
+									</div>
+								  </div>
 
-						  </fieldset>
+								  <div class="control-group" id="ctcss_level_section">
+									<label class="control-label" for="txCtcssLevel">TX CTCSS Level</label>
+									<div class="controls">
+									  <input type="number" id="txCtcssLevel" name="txCtcssLevel" min="1" max="20" value="<?php echo $settings['txCtcssLevel'] ? $settings['txCtcssLevel'] : '9'; ?>">
+									  <span class="help-inline">Level of the TX CTCSS tone relative to audio (1&ndash;20). Lower = quieter tone. Default: 9.</span>
+									</div>
+								  </div>
+
+							  </fieldset>
 
 					</div>
 				</div><!--/span-->			

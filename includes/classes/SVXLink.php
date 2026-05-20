@@ -130,7 +130,7 @@ class SVXLink {
 				'VOX_THRESH' => '300',
 				'SQL_HANGTIME' => '1000',
 			];
-	
+
 		} else {
 			// COS Squelch Mode
 			$rx_array['RX_Port'.$curPort] += [
@@ -139,7 +139,16 @@ class SVXLink {
 				'SQL_HANGTIME' => '10',
 			];
 		}
-	
+
+		if ($this->settingsArray['rxTone']) {
+			$rx_array['RX_Port'.$curPort] += [
+				'CTCSS_FQ' => $this->settingsArray['rxTone'],
+				'CTCSS_MODE' => '2',
+				'CTCSS_OPEN_THRESH' => '10',
+				'CTCSS_CLOSE_THRESH' => '5',
+			];
+		}
+
 		$rx_array['RX_Port'.$curPort] += [
 			'SQL_START_DELAY' => '1',
 			'SQL_DELAY' => '10',
@@ -182,7 +191,7 @@ class SVXLink {
 		if ($this->settingsArray['txTone']) {
 			$tx_array['TX_Port'.$curPort] += [
 				'CTCSS_FQ' => $this->settingsArray['txTone'],
-				'CTCSS_LEVEL' => '9',
+				'CTCSS_LEVEL' => $this->settingsArray['txCtcssLevel'] ?: '9',
 			];
 		}
 	
@@ -244,8 +253,6 @@ class SVXLink {
 			'EVENT_HANDLER' => '/usr/share/svxlink/events.tcl',
 			'DEFAULT_LANG' => 'en_US',
 			'RGR_SOUND_DELAY' => '1',
-			'REPORT_CTCSS' => $this->settingsArray['rxTone'],
-			'TX_CTCSS' => 'ALWAYS',
 			'MACROS' => 'Macros',
 			'FX_GAIN_NORMAL' => '0',
 			'FX_GAIN_LOW' => '-12',
@@ -254,7 +261,19 @@ class SVXLink {
 			'OPEN_SQL_FLANK' => 'OPEN',
 			'IDLE_SOUND_INTERVAL' => '0',
 		];
-		
+
+		if ($this->settingsArray['rxTone']) {
+			$logic_array[$logicName] += [
+				'REPORT_CTCSS' => $this->settingsArray['rxTone'],
+			];
+		}
+
+		if ($this->settingsArray['txTone']) {
+			$logic_array[$logicName] += [
+				'TX_CTCSS' => 'ALWAYS',
+			];
+		}
+
 		if ($this->settingsArray['repeaterDTMF_disable'] == 'True') {
 			$logic_array[$logicName] += [
 				'ONLINE_CMD' => $this->settingsArray['repeaterDTMF_disable_pin'],
@@ -314,8 +333,6 @@ class SVXLink {
 			'EVENT_HANDLER' => '/usr/share/svxlink/events.tcl',
 			'DEFAULT_LANG' => 'en_US',
 			'RGR_SOUND_DELAY' => '1',
-			'REPORT_CTCSS' => $this->settingsArray['rxTone'],
-			'TX_CTCSS' => 'ALWAYS',
 			'MACROS' => 'Macros',
 			'FX_GAIN_NORMAL' => '0',
 			'FX_GAIN_LOW' => '-12',
@@ -324,7 +341,19 @@ class SVXLink {
 			'OPEN_SQL_FLANK' => 'OPEN',
 			'IDLE_SOUND_INTERVAL' => '0',
 		];
-		
+
+		if ($this->settingsArray['rxTone']) {
+			$logic_array[$logicName] += [
+				'REPORT_CTCSS' => $this->settingsArray['rxTone'],
+			];
+		}
+
+		if ($this->settingsArray['txTone']) {
+			$logic_array[$logicName] += [
+				'TX_CTCSS' => 'ALWAYS',
+			];
+		}
+
 		/*
 		if ($this->settingsArray['repeaterDTMF_disable'] == 'True') {
 			$logic_array[$logicName] += [

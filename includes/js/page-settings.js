@@ -1,15 +1,27 @@
 $(function() {
 
     if($('#repeaterDTMF_disable').val() == 'True') {
-        $('#dtmf_disable').show(); 
-    } 
+        $('#dtmf_disable').show();
+    }
 
     $('#repeaterDTMF_disable').change(function(){
         if($('#repeaterDTMF_disable').val() == 'True') {
-            $('#dtmf_disable').show(); 
+            $('#dtmf_disable').show();
         } else {
-            $('#dtmf_disable').hide(); 
-        } 
+            $('#dtmf_disable').hide();
+        }
+    });
+
+    if($('#txTone').val() == '') {
+        $('#ctcss_level_section').hide();
+    }
+
+    $('#txTone').change(function(){
+        if($(this).val() != '') {
+            $('#ctcss_level_section').show();
+        } else {
+            $('#ctcss_level_section').hide();
+        }
     });
 
 
