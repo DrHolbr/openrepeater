@@ -68,14 +68,11 @@ $(function() {
             url: 'functions/tts_preview.php',
             type: 'POST',
             data: {
-                engine:           $('#tts_engine').val(),
-                voice:            $('#tts_piper_voice').val(),
-                length_scale:     $('#tts_piper_length_scale').val(),
-                noise_scale:      $('#tts_piper_noise_scale').val(),
-                noise_w:          $('#tts_piper_noise_w').val(),
-                sentence_silence: $('#tts_piper_sentence_silence').val(),
-                gain_db:          $('#tts_gain_db').val(),
-                espeak_voice:     $('#tts_espeak_voice').val()
+                engine:          $('#tts_engine').val(),
+                flite_voice:     $('#tts_flite_voice').val(),
+                pic02wave_voice: $('#tts_pic02wave_voice').val(),
+                gain_db:         $('#tts_gain_db').val(),
+                espeak_voice:    $('#tts_espeak_voice').val()
             },
             xhrFields: { responseType: 'blob' },
             success: function(blob, status, xhr) {

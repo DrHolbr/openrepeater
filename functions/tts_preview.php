@@ -9,8 +9,11 @@
 //  On error, returns JSON {status:error, message:…} with an appropriate code.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Capture any PHP notices/warnings so they don't corrupt the HTTP response.
+ob_start();
 session_start();
 if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))) {
+	ob_end_clean();
 	http_response_code(403);
 	header('Content-Type: application/json');
 	echo json_encode(['status' => 'error', 'message' => 'Not authorized.']);
@@ -19,7 +22,8 @@ if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))) {
 
 require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/classes/TTS.php');
 
-function tts_preview_fail($msg, $code = 400) {
+function tts_preview_fail(string $msg, int $code = 400): never {
+	ob_end_clean();
 	http_response_code($code);
 	header('Content-Type: application/json');
 	echo json_encode(['status' => 'error', 'message' => $msg]);
@@ -60,7 +64,8 @@ if (!$ok || !file_exists($wav) || filesize($wav) <= 0) {
 	tts_preview_fail('Synthesis failed. ' . TTS::status_summary(), 500);
 }
 
-// Stream the WAV back.
+// Discard any buffered notices/warnings, then stream the WAV.
+ob_end_clean();
 header('Content-Type: audio/wav');
 header('Content-Length: ' . filesize($wav));
 header('Cache-Control: no-store');
