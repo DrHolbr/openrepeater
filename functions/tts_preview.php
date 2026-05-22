@@ -30,14 +30,11 @@ function tts_preview_fail($msg, $code = 400) {
 // were actually supplied, so blanks fall back to the stored/default values.
 $overrides = [];
 $map = [
-	'engine'           => 'tts_engine',
-	'voice'            => 'tts_piper_voice',
-	'length_scale'     => 'tts_piper_length_scale',
-	'noise_scale'      => 'tts_piper_noise_scale',
-	'noise_w'          => 'tts_piper_noise_w',
-	'sentence_silence' => 'tts_piper_sentence_silence',
-	'gain_db'          => 'tts_gain_db',
-	'espeak_voice'     => 'tts_espeak_voice',
+	'engine'       => 'tts_engine',
+	'flite_voice'  => 'tts_flite_voice',
+	'pic02wave_voice' => 'tts_pic02wave_voice',
+	'gain_db'      => 'tts_gain_db',
+	'espeak_voice' => 'tts_espeak_voice',
 ];
 foreach ($map as $post_key => $setting_key) {
 	if (isset($_POST[$post_key]) && $_POST[$post_key] !== '') {

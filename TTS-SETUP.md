@@ -1,113 +1,95 @@
-# OpenRepeater — Piper TTS
+# OpenRepeater — Text-to-Speech (Flite, Pic02wave, eSpeak)
 
-Both **AlertMode** and **NetMode** now generate their voice prompts through a
-shared TTS helper that uses **Piper** (a fast, local neural TTS) instead of
-eSpeak. A new **Text-to-Speech** section in **General Settings** lets you pick
-the voice and tune speed / expressiveness / volume, with a **Test Voice**
-button for instant previews. eSpeak remains as an automatic fallback.
+**AlertMode** and **NetMode** now generate their voice prompts through a shared
+TTS helper that supports **Flite** (default, recommended), **Pic02wave** (optional),
+and **eSpeak** (automatic fallback). A new **Text-to-Speech** section in **General
+Settings** lets you pick the engine and voice, adjust volume, and instantly preview
+with a **Test Voice** button.
 
 ## What changed
 
 | File | Change |
 |------|--------|
-| `includes/classes/TTS.php` | **New.** Shared synthesis helper (Piper + espeak fallback + sox normalization). Autoloaded in the web UI and reachable from the modules' `cli_rebuild.php`. |
-| `functions/tts_preview.php` | **New.** Streams a sample WAV for the Test Voice button. |
-| `settings.php` | Added the Text-to-Speech settings section. |
-| `includes/js/page-settings.js` | Added the Test Voice handler. |
-| `modules/AlertMode/build_config.php` | Prompts now generated via `TTS::synth()`. |
-| `modules/NetMode/build_config.php` | Prompts now generated via `TTS::synth()`. |
-| `modules/NetMode/custom_submit.php` | (From the prior fix) preserves the `nets` array on form save. |
+| `includes/classes/TTS.php` | **Rewritten.** Shared synthesis helper (Flite + Pic02wave + espeak fallback + sox normalization). Autoloaded in the web UI and reachable from the modules' `cli_rebuild.php`. |
+| `functions/tts_preview.php` | Updated parameter mapping for new engines. |
+| `settings.php` | Updated the Text-to-Speech settings section. |
+| `includes/js/page-settings.js` | (No changes needed; Test Voice handler still works). |
+| `modules/AlertMode/build_config.php` | (No changes needed; uses `TTS::synth()` as before). |
+| `modules/NetMode/build_config.php` | (No changes needed; uses `TTS::synth()` as before). |
 
 No database migration is needed — the `tts_*` settings rows are created
 automatically the first time you open General Settings or rebuild.
 
 ## One-time host setup
 
-Piper and its voices are **not** bundled (the voice models are tens of MB
-each). Install them on the repeater host:
+Flite is **included by default** on most Debian/Raspberry Pi systems. Pic02wave
+and eSpeak are optional but recommended as fallbacks. Install on the repeater host:
 
-### 1. Install Piper
+### 1. Install Flite (likely already present)
 
-On a Raspberry Pi / Debian:
+On Raspberry Pi / Debian:
 
 ```bash
-sudo apt update && sudo apt install -y sox        # if not already present
-pip install piper-tts                              # provides the `piper` command
+sudo apt update && sudo apt install -y flite sox
 ```
-
-If `pip install piper-tts` isn't an option on your platform, download a
-prebuilt binary from https://github.com/rhasspy/piper/releases and put `piper`
-somewhere on `PATH` (e.g. `/usr/local/bin/piper`). The newer `piper1-gpl`
-(`pip install piper1-gpl`, invoked as `python3 -m piper`) is also detected
-automatically.
 
 Verify:
 
 ```bash
-echo "hello from the repeater" | piper --model /tmp/none 2>&1 | head    # should complain about model, not "command not found"
+flite -v slt -t "hello repeater"    # should generate a WAV file
 ```
 
-### 2. Install at least one voice
-
-Voices are `<name>.onnx` + `<name>.onnx.json` pairs. Put **both** files in:
-
-```
-/var/lib/openrepeater/piper/voices/
-```
-
-(That directory is created automatically the first time the TTS code runs; you
-can also `sudo mkdir -p` it.) Example — the popular US English "lessac" medium
-voice:
+### 2. (Optional) Install Pic02wave for additional options
 
 ```bash
-cd /var/lib/openrepeater/piper/voices
-sudo wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
-sudo wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+sudo apt install -y pic2wave
 ```
 
-Browse and listen to all voices at https://rhasspy.github.io/piper-samples/ ,
-then grab the matching files from
-https://huggingface.co/rhasspy/piper-voices .
+Verify:
 
-You can drop multiple voices in that folder; they'll all appear in the
-**Piper Voice** dropdown.
+```bash
+echo "hello repeater" | pic02wave > /tmp/test.wav && file /tmp/test.wav
+```
 
-### 3. Permissions
+### 3. (Recommended) Install eSpeak as a fallback
 
-The voice files just need to be world-readable (the default after `wget`).
-Synthesis runs as the web user during a normal rebuild and as root during a
-DTMF-triggered rebuild (via the existing `cli_rebuild.php` sudo rule), so make
-sure `/var/lib/openrepeater/piper/voices/` is readable by both (it is by
-default).
+```bash
+sudo apt install -y espeak
+```
+
+Verify:
+
+```bash
+espeak -v en-us -w /tmp/test.wav "hello repeater" && file /tmp/test.wav
+```
+
+All three tools should already be available on most Debian Buster+ systems.
 
 ## Using it
 
 1. Open **General Settings → Text-to-Speech**.
-2. The **Status** line shows what was detected (Piper available?, voices on
-   disk, sox, espeak).
-3. Pick a **Piper Voice**, adjust **Speed** (`length_scale`),
-   **Expressiveness** (`noise_scale`), **Sentence Pause**, and **Volume Gain**.
-4. Click **Test Voice** to hear a sample immediately (nothing is saved yet —
-   it previews the values currently in the form).
-5. Settings auto-save on change (same as the rest of General Settings).
-6. Click **Rebuild & Restart** so AlertMode/NetMode regenerate their prompts
-   with the new voice.
+2. The **Status** line shows which engines were detected (Flite, Pic02wave, eSpeak, sox).
+3. Pick an **Engine**: Flite (recommended), Pic02wave, or eSpeak.
+4. For **Flite**, choose a voice:
+   - **SLT** (female, recommended for announcements)
+   - **AWB** (male)
+   - **Kal** (male)
+   - **RMS** (male)
+5. Adjust **Volume Gain** (dB) if needed (e.g., `+3` to `+6` dB if speech is too quiet).
+6. Click **Test Voice** to hear a sample immediately (nothing is saved yet).
+7. Settings auto-save on change (same as the rest of General Settings).
+8. Click **Rebuild & Restart** so AlertMode/NetMode regenerate their prompts.
 
 ## Tuning tips for repeater audio
 
-- **Speed (`length_scale`)**: 1.0 is natural; `0.9` is a touch quicker and
-  crisper for short IDs. Values below ~0.8 start to sound rushed over RF.
-- **Expressiveness (`noise_scale`)**: the 0.667 default is fine. Drop toward
-  `0.4` for a flatter, more "announcer" feel.
-- **Volume Gain**: if Piper speech sits quieter than your courtesy tones,
-  add `+3` to `+6` dB.
-- **Voice quality level**: `medium` voices are the sweet spot for a Pi. `high`
-  voices sound better but use noticeably more CPU per prompt; `low`/`x_low`
-  are faster but rougher.
+- **Flite voices**: SLT produces the clearest speech for repeater announcements.
+- **Volume Gain**: if synthesis output sits quieter than your courtesy tones, add `+3` to `+6` dB.
+- **Pic02wave**: primarily for experimentation; eSpeak fallback is more reliable.
+- **eSpeak**: used automatically as a fallback if the primary engine isn't available or fails.
 
 ## Fallback behaviour
 
-If Piper isn't installed, no voice is selected, or synthesis fails for any
-prompt, the helper automatically falls back to eSpeak so announcements still
-work. Set **Engine** to **eSpeak** explicitly if you'd rather not use Piper at
-all. Synthesis activity is logged to `/tmp/orp_tts.log`.
+If the configured engine isn't installed, fails to synthesize a prompt, or produces
+invalid output, the system automatically falls back to **eSpeak** so announcements
+still work. If eSpeak also fails, synthesis returns an error and the module rebuild fails
+gracefully. Synthesis activity is logged to `/tmp/orp_tts.log`.

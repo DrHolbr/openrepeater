@@ -20,10 +20,9 @@ $customJS = "page-settings.js"; // "file1.js, file2.js, ... "
 include('includes/header.php');
 $ctcss = $Database->get_ctcss();
 
-// TTS settings (bootstraps tts_* rows if missing) + available Piper voices.
+// TTS settings (bootstraps tts_* rows if missing)
 require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/classes/TTS.php');
 $tts        = TTS::get_settings();
-$tts_voices = TTS::list_voices();
 $tts_status = TTS::status_summary();
 
 ?>
@@ -193,58 +192,35 @@ $tts_status = TTS::status_summary();
 								<label class="control-label" for="tts_engine">Engine</label>
 								<div class="controls">
 								  <select id="tts_engine" name="tts_engine">
-									<option value="piper"  <?php echo ($tts['tts_engine']==='piper')  ? 'selected' : ''; ?>>Piper (neural, recommended)</option>
-									<option value="espeak" <?php echo ($tts['tts_engine']==='espeak') ? 'selected' : ''; ?>>eSpeak (robotic, lightweight)</option>
+									<option value="flite"  <?php echo ($tts['tts_engine']==='flite')  ? 'selected' : ''; ?>>Flite (recommended)</option>
+									<option value="pic02wave" <?php echo ($tts['tts_engine']==='pic02wave') ? 'selected' : ''; ?>>Pic02wave</option>
+									<option value="espeak" <?php echo ($tts['tts_engine']==='espeak') ? 'selected' : ''; ?>>eSpeak (fallback)</option>
 								  </select>
-								  <span class="help-inline">Piper produces far more natural speech. eSpeak is used automatically as a fallback if Piper or the selected voice isn't available.</span>
+								  <span class="help-inline">Flite is lightweight and produces natural speech. eSpeak is used automatically as a fallback if the primary engine isn't available.</span>
 								</div>
 							  </div>
 
 							  <div class="control-group">
-								<label class="control-label" for="tts_piper_voice">Piper Voice</label>
+								<label class="control-label" for="tts_flite_voice">Flite Voice</label>
 								<div class="controls">
-								  <?php if (count($tts_voices) > 0): ?>
-								  <select id="tts_piper_voice" name="tts_piper_voice">
-									<?php foreach ($tts_voices as $v):
-										$sel = ($tts['tts_piper_voice'] === $v['rel'] || $tts['tts_piper_voice'] === $v['name']) ? 'selected' : ''; ?>
-									  <option value="<?php echo htmlspecialchars($v['rel']); ?>" <?php echo $sel; ?>><?php echo htmlspecialchars($v['name']); ?></option>
-									<?php endforeach; ?>
+								  <select id="tts_flite_voice" name="tts_flite_voice">
+									<option value="slt"  <?php echo ($tts['tts_flite_voice']==='slt')  ? 'selected' : ''; ?>>SLT (female, recommended)</option>
+									<option value="awb" <?php echo ($tts['tts_flite_voice']==='awb') ? 'selected' : ''; ?>>AWB (male)</option>
+									<option value="kal" <?php echo ($tts['tts_flite_voice']==='kal') ? 'selected' : ''; ?>>Kal (male)</option>
+									<option value="rms" <?php echo ($tts['tts_flite_voice']==='rms') ? 'selected' : ''; ?>>RMS (male)</option>
 								  </select>
-								  <span class="help-inline">Voices found in <code>/var/lib/openrepeater/piper/voices/</code>.</span>
-								  <?php else: ?>
-								  <input type="text" id="tts_piper_voice" name="tts_piper_voice" class="input-xlarge" value="<?php echo htmlspecialchars($tts['tts_piper_voice']); ?>" placeholder="(no voices installed)">
-								  <span class="help-inline" style="color:#b94a48">No Piper voices found in <code>/var/lib/openrepeater/piper/voices/</code>. Download a <code>.onnx</code> + <code>.onnx.json</code> pair from <a href="https://huggingface.co/rhasspy/piper-voices" target="_blank">huggingface.co/rhasspy/piper-voices</a> and place both files there, then reload this page.</span>
-								  <?php endif; ?>
+								  <span class="help-inline">Built-in flite voices. SLT is recommended for announcements.</span>
 								</div>
 							  </div>
 
 							  <div class="control-group">
-								<label class="control-label" for="tts_piper_length_scale">Speed</label>
+								<label class="control-label" for="tts_pic02wave_voice">Pic02wave Voice</label>
 								<div class="controls">
-								  <input id="tts_piper_length_scale" name="tts_piper_length_scale" type="number" step="0.05" min="0.3" max="3.0" value="<?php echo htmlspecialchars($tts['tts_piper_length_scale']); ?>">
-								  <span class="help-inline">Piper <code>length_scale</code>. 1.0 = normal. Lower = faster, higher = slower (0.9 is a clear choice for IDs).</span>
+								  <input id="tts_pic02wave_voice" name="tts_pic02wave_voice" type="text" class="input-xlarge" value="<?php echo htmlspecialchars($tts['tts_pic02wave_voice']); ?>">
+								  <span class="help-inline">Voice parameter for pic02wave synthesis (if installed).</span>
 								</div>
 							  </div>
 
-							  <div class="control-group">
-								<label class="control-label" for="tts_piper_noise_scale">Expressiveness</label>
-								<div class="controls">
-								  <input id="tts_piper_noise_scale" name="tts_piper_noise_scale" type="number" step="0.05" min="0" max="1.5" value="<?php echo htmlspecialchars($tts['tts_piper_noise_scale']); ?>">
-								  <span class="help-inline">Piper <code>noise_scale</code>. Default 0.667. Lower = flatter, higher = more variation.</span>
-								</div>
-							  </div>
-
-							  <div class="control-group">
-								<label class="control-label" for="tts_piper_sentence_silence">Sentence Pause</label>
-								<div class="controls">
-								  <div class="input-append">
-									<input id="tts_piper_sentence_silence" name="tts_piper_sentence_silence" type="number" step="0.05" min="0" max="2" value="<?php echo htmlspecialchars($tts['tts_piper_sentence_silence']); ?>"><span class="add-on">sec</span>
-								  </div>
-								  <span class="help-inline">Piper <code>sentence_silence</code>. Pause between sentences. Default 0.2.</span>
-								</div>
-							  </div>
-
-							  <input type="hidden" id="tts_piper_noise_w" name="tts_piper_noise_w" value="<?php echo htmlspecialchars($tts['tts_piper_noise_w']); ?>">
 							  <input type="hidden" id="tts_espeak_voice" name="tts_espeak_voice" value="<?php echo htmlspecialchars($tts['tts_espeak_voice']); ?>">
 
 							  <div class="control-group">
