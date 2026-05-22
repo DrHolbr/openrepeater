@@ -120,6 +120,19 @@ class Database {
 			return $results['value'];
 		}
 	}
+
+
+	// ENSURE SETTING EXISTS - Insert a default value only if the key is missing.
+	// Used so settings added in newer ORP versions are seeded into databases
+	// from older installs without overwriting any value the user has set.
+	public function ensure_setting($keyID, $defaultValue) {
+		$db = new SQLite3($this->db_loc) or die('Unable to open database');
+		$stmt = $db->prepare('INSERT OR IGNORE INTO settings (keyID, value) VALUES (:keyID, :value)');
+		$stmt->bindValue(':keyID', $keyID, SQLITE3_TEXT);
+		$stmt->bindValue(':value', $defaultValue, SQLITE3_TEXT);
+		$stmt->execute();
+		$db->close();
+	}
 	
 	
 

@@ -35,6 +35,7 @@ if (!isset($_POST["page"])) {
 		"ID_Long_AppendMorse"	=>		"True",
 		"ID_Long_CustomFile"	=>		"Sample_Long_ID_Clip.wav",
 		"ID_Short_IntervalMin"	=>		"10",
+		"ID_Short_IdentOnlyAfterTX"	=>	"False",
 		"ID_Short_AppendMorse"	=>		"False",
 		"ID_Short_CustomFile"	=>		"Sample_Short_ID_Clip.wav",
 		"ID_Morse_Amplitude"	=>		"200",

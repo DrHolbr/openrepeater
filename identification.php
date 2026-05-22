@@ -15,6 +15,13 @@ require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/autoloadClasses.
 ################################################################################
 $classAudioFiles = new AudioFiles();
 
+// Seed newer identification settings for databases from older ORP installs.
+// ensure_setting() only inserts when the key is missing, so existing user
+// values are never overwritten. This also lets the AJAX saver (which only
+// runs UPDATE) persist the value once the row exists.
+$classDB = new Database();
+$classDB->ensure_setting('ID_Short_IdentOnlyAfterTX', 'False');
+
 if (isset($_POST['action'])){
 	if ($_POST['action'] == "upload_file") {
 		$results = $classAudioFiles->audio_upload_files('identification', $_FILES['file']);
@@ -80,6 +87,16 @@ include('includes/header.php');
 												<input id="ID_Short_IntervalMin" name="ID_Short_IntervalMin" size="16" type="text" value="<?php echo $settings['ID_Short_IntervalMin']; ?>" required><span class="add-on">mins</span>
 											  </div>
 											  <span class="help-inline">The purpose of the short identification is to just announce that the station is on the air. Typically just the callsign is transmitted. This value is the number of minutes between short identifications. For a repeater, a good value is ten minutes. Please make sure that you identify as frequently as required.</span>
+											</div>
+										</div>
+										<div class="control-group">
+											<label class="control-label" for="ID_Short_IdentOnlyAfterTX">Identify Only After Transmission</label>
+											<div class="controls">
+												<select id="ID_Short_IdentOnlyAfterTX" name="ID_Short_IdentOnlyAfterTX">
+													<option value="False" <?php if (($settings['ID_Short_IdentOnlyAfterTX'] ?? 'False') == 'False') { echo "selected"; } ?>>No</option>
+													<option value="True" <?php if (($settings['ID_Short_IdentOnlyAfterTX'] ?? 'False') == 'True') { echo "selected"; } ?>>Yes</option>
+												</select>
+												<span class="help-inline">When enabled, identification is only sent if there has been a recent transmission, rather than every time the short ID interval expires. This is useful for an RF link into a repeater where you don't want the link to identify unless legally necessary. The Short Identification Time Interval above must still be set for this to work. The Long ID is not affected by this setting.</span>
 											</div>
 										</div>
 

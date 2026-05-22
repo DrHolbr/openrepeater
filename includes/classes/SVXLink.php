@@ -125,7 +125,7 @@ class SVXLink {
 		if (strtolower($this->portsArray[$curPort]['rxMode']) == 'vox') {
 			// VOX Squelch Mode
 			$rx_array['RX_Port'.$curPort] += [
-				'SQL_DET' => 'VOX',
+				'SQL_DET' => $this->settingsArray['rxTone'] ? 'CTCSS' : 'VOX',
 				'VOX_FILTER_DEPTH' => '150',
 				'VOX_THRESH' => '300',
 				'SQL_HANGTIME' => '1000',
@@ -134,7 +134,7 @@ class SVXLink {
 		} else {
 			// COS Squelch Mode
 			$rx_array['RX_Port'.$curPort] += [
-				'SQL_DET' => 'GPIO',
+				'SQL_DET' => $this->settingsArray['rxTone'] ? 'CTCSS' : 'GPIO',
 				'GPIO_SQL_PIN' => 'gpio' . $this->portsArray[$curPort]['rxGPIO'],
 				'SQL_HANGTIME' => '10',
 			];
@@ -143,9 +143,8 @@ class SVXLink {
 		if ($this->settingsArray['rxTone']) {
 			$rx_array['RX_Port'.$curPort] += [
 				'CTCSS_FQ' => $this->settingsArray['rxTone'],
-				'CTCSS_MODE' => '2',
-				'CTCSS_OPEN_THRESH' => '10',
-				'CTCSS_CLOSE_THRESH' => '5',
+				'CTCSS_OPEN_THRESH' => $this->settingsArray['rxCtcssOpenThresh'] ?: '10',
+				'CTCSS_CLOSE_THRESH' => $this->settingsArray['rxCtcssCloseThresh'] ?: '5',
 			];
 		}
 
@@ -237,6 +236,20 @@ class SVXLink {
 			];			
 		}
 
+		# Identify Only After TX
+		# When enabled (and short ID is active), the node only identifies if there has
+		# been a recent transmission, rather than every time SHORT_IDENT_INTERVAL
+		# expires. 0 = off, 1 = on. Does not affect LONG_IDENT_INTERVAL.
+		if (($this->settingsArray['ID_Short_IdentOnlyAfterTX'] ?? 'False') == 'True' && $this->settingsArray['ID_Short_Mode'] != 'disabled') {
+			$logic_array[$logicName] += [
+				'IDENT_ONLY_AFTER_TX' => '1'
+			];
+		} else {
+			$logic_array[$logicName] += [
+				'IDENT_ONLY_AFTER_TX' => '0'
+			];
+		}
+
 		#Long ID
 		if ($this->settingsArray['ID_Long_Mode'] == 'disabled') {
 			$logic_array[$logicName] += [
@@ -316,6 +329,20 @@ class SVXLink {
 			$logic_array[$logicName] += [
 				'SHORT_IDENT_INTERVAL' => $this->settingsArray['ID_Short_IntervalMin']
 			];			
+		}
+
+		# Identify Only After TX
+		# When enabled (and short ID is active), the node only identifies if there has
+		# been a recent transmission, rather than every time SHORT_IDENT_INTERVAL
+		# expires. 0 = off, 1 = on. Does not affect LONG_IDENT_INTERVAL.
+		if (($this->settingsArray['ID_Short_IdentOnlyAfterTX'] ?? 'False') == 'True' && $this->settingsArray['ID_Short_Mode'] != 'disabled') {
+			$logic_array[$logicName] += [
+				'IDENT_ONLY_AFTER_TX' => '1'
+			];
+		} else {
+			$logic_array[$logicName] += [
+				'IDENT_ONLY_AFTER_TX' => '0'
+			];
 		}
 
 		#Long ID
