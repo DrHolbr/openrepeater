@@ -44,7 +44,7 @@ $chipInfo = GpioMap::readOnlyChipInfo($gpioinfoBin);
 						<h2><i class="icon-info-sign"></i> GPIO map (read-only)</h2>
 					</div>
 					<div class="box-content">
-						<p>This page does not export pins, drive outputs, or key a transmitter. Stored numbers are names from the presets and the ICS manual baseline. A BCM header candidate is not a measurement on this Pi, and it is not a configured libgpiod line. Numbers 496 through 507 are not line offsets on gpiochip0 and are not indexes on the 8-line raspberrypi-exp-gpio chip, so those preset outputs stay unsupported. The five board options remain selectable; selecting one is not a claim the output can be driven.</p>
+						<p>This page does not export pins, drive outputs, or key a transmitter. A number from 0 to 27 is only a BCM header candidate on gpiochip0. A number from 496 to 511 is a conditional MCP23017 offset if the old kernel base was 496, and it is never a BCM number. orp-test has no MCP23017, so that line is absent and activation is not applied. A number with no source name stays an evidence gap, not a guessed output.</p>
 						<table class="table table-striped table-bordered">
 							<thead>
 								<tr>
@@ -60,8 +60,9 @@ $chipInfo = GpioMap::readOnlyChipInfo($gpioinfoBin);
 									<th>Physical pin</th>
 									<th>Chip candidate</th>
 									<th>Line offset candidate</th>
-									<th>Output supported</th>
-									<th>Drivable</th>
+									<th>Expander pin if base 496</th>
+									<th>Support</th>
+									<th>Activation</th>
 								</tr>
 							</thead>
 							<tbody>
@@ -77,10 +78,11 @@ $chipInfo = GpioMap::readOnlyChipInfo($gpioinfoBin);
 									<td><?php echo htmlspecialchars($row['class']); ?></td>
 									<td><?php echo htmlspecialchars($row['bcm'] === null ? '' : (string) $row['bcm']); ?></td>
 									<td><?php echo htmlspecialchars($row['physical_pin'] === null ? '' : (string) $row['physical_pin']); ?></td>
-									<td><?php echo htmlspecialchars($row['chip_candidate'] === null ? 'unsupported' : $row['chip_candidate']); ?></td>
+									<td><?php echo htmlspecialchars($row['chip_candidate'] === null ? '' : $row['chip_candidate']); ?></td>
 									<td><?php echo htmlspecialchars($row['line_offset_candidate'] === null ? '' : (string) $row['line_offset_candidate']); ?></td>
-									<td>no</td>
-									<td>no</td>
+									<td><?php echo htmlspecialchars($row['expander_pin'] === null ? '' : $row['expander_pin']); ?></td>
+									<td><?php echo htmlspecialchars($row['support_state']); ?></td>
+									<td><?php echo htmlspecialchars($row['activation']); ?></td>
 								</tr>
 							<?php } ?>
 							</tbody>

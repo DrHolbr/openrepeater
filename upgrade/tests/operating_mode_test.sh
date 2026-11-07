@@ -56,8 +56,8 @@ foreach (GpioMap::fromDefinitions($defs) as $row) {
 	if ($row["drivable"] !== false || $row["output_supported"] !== false) fail("a preset row was marked drivable");
 	if ($row["stored_number"] === "498" && $row["logical_name"] === "txGPIO") {
 		$saw498 = true;
-		if ($row["class"] !== "unresolved_sysfs_number" || $row["chip_candidate"] !== null) {
-			fail("TX 498 was given a chip");
+		if ($row["class"] !== "conditional_mcp23017_offset" || $row["bcm"] !== null || $row["line_offset_candidate"] !== 2 || $row["chip_candidate"] !== "mcp23017-if-base-496") {
+			fail("TX 498 was not kept as a conditional base-496 offset");
 		}
 	}
 	if ($row["stored_number"] === "26" && $row["logical_name"] === "rxGPIO") {

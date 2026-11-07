@@ -317,6 +317,7 @@ if [ -f "$db" ]; then
 else
 	bad "database missing"
 fi
+sqlite3 "$db" "UPDATE ports SET portLabel='USERPRESET' WHERE portNum=1;"
 printf 'preserve\n' >> "$db"
 mode="$good/etc/openrepeater/operating-mode"
 if [ "$(tr -d '[:space:]' < "$mode")" = "bench" ]; then
@@ -334,6 +335,11 @@ if [ "$before" = "$after" ]; then
 	ok "second install does not replace the database"
 else
 	bad "database was replaced on the second install"
+fi
+if [ "$(sqlite3 "$db" "SELECT portLabel FROM ports WHERE portNum=1;")" = "USERPRESET" ]; then
+	ok "second install keeps the stored port label"
+else
+	bad "second install replaced the stored port label"
 fi
 if [ "$(tr -d '[:space:]' < "$mode")" = "functional-test" ]; then
 	ok "second install does not replace functional-test mode"

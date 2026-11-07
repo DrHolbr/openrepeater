@@ -139,7 +139,11 @@ foreach ($rows as $row) {
 		$sawHigh = true;
 		check($row['stored_number'] === '498', '2X 3.1+ TX stored number is 498');
 		check($row['preset_active'] === 'high', '2X 3.1+ TX preset active level is high');
-		check($row['class'] === 'unresolved_sysfs_number', '498 is not a BCM header pin');
+		check($row['class'] === 'conditional_mcp23017_offset', '498 is a conditional expander offset');
+		check($row['bcm'] === null, '498 is not a BCM number');
+		check($row['line_offset_candidate'] === 2 && $row['expander_pin'] === 'GPA2', '498 is GPA2 only if the base is 496');
+		$typed = GpioMap::typedConfigLine($row);
+		check(strpos($typed, 'PTT_PIN') === false && strpos($typed, 'gpio498') === false && strpos($typed, 'not a BCM number') !== false, '498 is not emitted as a sysfs or BCM pin');
 		check($row['physical_pin'] === null && $row['bcm'] === null, '498 has no BCM offset or physical pin');
 	}
 	if ($row['source'] === 'orp_preset' && $row['version'] === '2.1 - PROTOTYPE' && $row['port'] === 1 && $row['logical_name'] === 'txGPIO') {
@@ -172,14 +176,14 @@ foreach ($rows as $row) {
 		$manual506 = $row;
 	}
 }
-check($manual498 && $manual498['stored_number'] === '498' && $manual498['class'] === 'unresolved_sysfs_number', 'ICS baseline lists 498 as GPA2 and unresolved');
+check($manual498 && $manual498['stored_number'] === '498' && $manual498['class'] === 'conditional_mcp23017_offset' && $manual498['expander_pin'] === 'GPA2' && $manual498['bcm'] === null, 'ICS baseline lists 498 as GPA2 and not BCM');
 check($manual506 && $manual506['stored_number'] === '506' && $manual506['physical_pin'] === null, 'ICS baseline lists port 1 PTT as 506, not a header pin');
 
 foreach (array(13 => 33, 24 => 18, 25 => 22, 27 => 13, 12 => 32) as $bcm => $phys) {
 	$class = GpioMap::classifyNumber((string) $bcm);
 	check($class['bcm'] === $bcm && $class['physical_pin'] === $phys, "BCM {$bcm} maps to physical pin {$phys}");
 }
-check(GpioMap::classifyNumber('499')['class'] === 'unresolved_sysfs_number', '499 is an unresolved sysfs number');
+check(GpioMap::classifyNumber('499')['class'] === 'conditional_mcp23017_offset' && GpioMap::classifyNumber('499')['line_offset_candidate'] === 3 && GpioMap::classifyNumber('499')['bcm'] === null, '499 is GPA3 only if the base is 496');
 check(GpioMap::classifyNumber('507')['physical_pin'] === null, '507 is not a physical header pin');
 check(GpioMap::allowsRequestMethod('GET') === true, 'GET diagnostics are allowed');
 check(GpioMap::allowsRequestMethod('POST') === false, 'POST diagnostics are refused');
@@ -224,7 +228,7 @@ foreach ($dbPorts as $row) {
 		$sawDbTx = true;
 		check($row['stored_number'] === '506', 'stock database TX number is 506');
 		check($row['preset_active'] === 'high', 'stock database TX active level is high');
-		check($row['class'] === 'unresolved_sysfs_number', 'stock database TX 506 is unresolved');
+		check($row['class'] === 'conditional_mcp23017_offset' && $row['bcm'] === null && $row['expander_pin'] === null && $row['line_offset_candidate'] === 10, 'stock database TX 506 is offset 10 only if the base is 496 and has no named expander pin');
 	}
 	if ($row['logical_name'] === 'rxGPIO') {
 		check($row['stored_number'] === '26' && $row['physical_pin'] === 37, 'stock database RX 26 is physical pin 37');

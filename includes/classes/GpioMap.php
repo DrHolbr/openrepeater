@@ -21,14 +21,19 @@ class GpioMap {
 
 	public static function classifyNumber($number) {
 		$digits = (string) $number;
+		$empty = array(
+			'class' => 'unresolved',
+			'bcm' => null,
+			'physical_pin' => null,
+			'chip_candidate' => null,
+			'line_offset_candidate' => null,
+			'expander_pin' => null,
+			'support_state' => 'unresolved-evidence-gap',
+			'activation' => 'not-applied',
+			'evidence' => 'The stored value is not a decimal GPIO number. No line is requested.',
+		);
 		if ($digits === '' || !ctype_digit($digits)) {
-			return array(
-				'class' => 'unresolved',
-				'bcm' => null,
-				'physical_pin' => null,
-				'chip_candidate' => null,
-				'line_offset_candidate' => null,
-			);
+			return $empty;
 		}
 		$n = (int) $digits;
 		$map = self::headerMap();
@@ -37,21 +42,52 @@ class GpioMap {
 				'class' => 'bcm_header_candidate',
 				'bcm' => $n,
 				'physical_pin' => $map[$n],
-				// On the Pi 3B+ SoC, gpiochip0 is pinctrl-bcm2835 and its line
+				// gpiochip0 on the Pi 3B+ SoC is pinctrl-bcm2835. The line
 				// offset equals the BCM number. This is not a reading from
 				// the running Pi and it is not a command to drive the line.
 				'chip_candidate' => 'gpiochip0',
 				'line_offset_candidate' => $n,
+				'expander_pin' => null,
+				'support_state' => 'header-candidate-not-driven',
+				'activation' => 'not-applied',
+				'evidence' => 'BCM ' . $n . ' is header pin ' . $map[$n] . ' and gpiochip0 line ' . $n . '. Not driven.',
+			);
+		}
+		if ($n >= 496 && $n <= 511) {
+			$offset = $n - 496;
+			$pin = null;
+			if ($offset <= 7) {
+				$pin = 'GPA' . $offset;
+			}
+			$evidence = 'If the old kernel gpio base was 496, this is MCP23017 line offset ' . $offset . '.';
+			if ($pin !== null) {
+				$evidence .= ' The ICS manual names ' . $n . ' as ' . $pin . '.';
+			} else {
+				$evidence .= ' The ICS manual does not name the MCP23017 pin for ' . $n . '.';
+			}
+			$evidence .= ' It is not a BCM number. orp-test has no MCP23017, so the line is not present. Activation is not applied.';
+			return array(
+				'class' => 'conditional_mcp23017_offset',
+				'bcm' => null,
+				'physical_pin' => null,
+				'chip_candidate' => 'mcp23017-if-base-496',
+				'line_offset_candidate' => $offset,
+				'expander_pin' => $pin,
+				'support_state' => 'conditional-expander-chip-absent',
+				'activation' => 'not-applied',
+				'evidence' => $evidence,
 			);
 		}
 		return array(
-			'class' => 'unresolved_sysfs_number',
+			'class' => 'unresolved_evidence_gap',
 			'bcm' => null,
 			'physical_pin' => null,
-			// 496-507 are not line indexes on the 8-line raspberrypi-exp-gpio
-			// chip, and they are not gpiochip0 offsets. They stay unsupported.
 			'chip_candidate' => null,
 			'line_offset_candidate' => null,
+			'expander_pin' => null,
+			'support_state' => 'unresolved-evidence-gap',
+			'activation' => 'not-applied',
+			'evidence' => 'No board document in this tree assigns ' . $n . ' to a BCM line or a conditional expander offset. Activation is not applied.',
 		);
 	}
 
@@ -80,24 +116,28 @@ class GpioMap {
 			'libgpiod_offset' => null,
 			'chip_candidate' => $class['chip_candidate'],
 			'line_offset_candidate' => $class['line_offset_candidate'],
+			'expander_pin' => $class['expander_pin'],
+			'support_state' => $class['support_state'],
+			'activation' => 'not-applied',
 			'output_supported' => false,
 			'drivable' => false,
-			'note' => self::expanderNote($number, $note),
+			'note' => $note . ' ' . $class['evidence'],
 		);
 	}
 
-	private static function expanderNote($number, $note) {
-		$digits = (string)$number;
-		if ($digits === '' || !ctype_digit($digits)) {
-			return $note;
+	public static function typedConfigLine($row) {
+		$number = (string) $row['stored_number'];
+		if ($row['class'] === 'bcm_header_candidate') {
+			return '# not-applied gpiochip0 line ' . $row['line_offset_candidate']
+				. ' direction ' . $row['direction']
+				. ' active ' . $row['preset_active'];
 		}
-		$n = (int)$digits;
-		if ($n < 496 || $n > 511) {
-			return $note;
+		if ($row['class'] === 'conditional_mcp23017_offset') {
+			return '# not-applied stored ' . $number
+				. ' conditional MCP23017 offset ' . $row['line_offset_candidate']
+				. ' if base 496; chip absent; not a BCM number';
 		}
-		$offset = $n - 496;
-		return $note . ' If the old kernel gpio base was 496, this is expander line offset ' . $offset
-			. '. The ICS manual names 498 as GPA2 and 506 as PTT, which matches offsets 2 and 10 under that base. That is not a BCM number. orp-test gpiodetect showed gpiochip0 and raspberrypi-exp-gpio and no MCP23017, so this offset is not an active line. Not driven.';
+		return '# not-applied stored ' . $number . ' unresolved; activation not applied';
 	}
 
 	public static function fromDefinitions($definitions) {

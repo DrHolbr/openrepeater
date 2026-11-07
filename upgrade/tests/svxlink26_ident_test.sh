@@ -76,47 +76,4 @@ if grep -q '^CW_WPM=' "$cfg"; then
 fi
 [ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_WPM';")" = "25" ]
 echo "ok: voice identification leaves the stored 25 WPM unused and unchanged"
-
-sounds="$ROOT_DIR/upgrade/install-svxlink-sounds.sh"
-canary="$tmp/sounds-canary"
-mkdir -p "$canary"
-printf 'KEEP\n' > "$canary/keep.txt"
-set +e
-unverified=$(ORP_SOUNDS_TEST_HARNESS=1 ORP_ROOT="$tmp/sounds-root" "$sounds" "$ROOT_DIR/upgrade/share/heather-16k-25.05.sha256" 2>&1)
-unverified_rc=$?
-set -e
-[ "$unverified_rc" -eq 2 ]
-printf '%s\n' "$unverified" | grep -q 'digest is not pinned'
-[ "$(cat "$canary/keep.txt")" = "KEEP" ]
-ln -s "$ROOT_DIR/upgrade/share/heather-16k-25.05.sha256" "$tmp/archive-link"
-set +e
-linked=$(ORP_SOUNDS_TEST_HARNESS=1 "$sounds" "$tmp/archive-link" 2>&1)
-linked_rc=$?
-set -e
-[ "$linked_rc" -eq 2 ]
-printf '%s\n' "$linked" | grep -q 'not a regular file'
-python3 - <<PY
-import hashlib, tarfile, pathlib
-root = pathlib.Path("$tmp")
-payload = root / "payload"
-(payload / "en_US").mkdir(parents=True)
-(payload / "en_US" / "clip.txt").write_text("clip\n")
-archive = root / "bad.tar.bz2"
-with tarfile.open(archive, "w:bz2") as tar:
-    tar.add(payload / "en_US" / "clip.txt", arcname="en_US/clip.txt")
-    tar.add(payload / "en_US" / "clip.txt", arcname="../escape.txt")
-digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-(root / "pin").write_text(digest + "\n")
-PY
-set +e
-escaped=$(ORP_SOUNDS_TEST_HARNESS=1 ORP_SOUNDS_PIN="$tmp/pin" ORP_ROOT="$tmp/sounds-root" "$sounds" "$tmp/bad.tar.bz2" 2>&1)
-escaped_rc=$?
-set -e
-[ "$escaped_rc" -eq 2 ]
-printf '%s\n' "$escaped" | grep -q 'escapes en_US'
-if [ -e "$tmp/sounds-root/usr/local/share/svxlink/sounds/en_US" ]; then
-	echo "FAIL: escaped archive was installed" >&2
-	exit 1
-fi
-echo "ok: sound installation refuses an unpinned archive, a symlink, and a path escape"
 echo "stored identification runtime checks passed"

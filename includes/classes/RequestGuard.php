@@ -67,7 +67,7 @@ class RequestGuard {
 		return null;
 	}
 
-	public static function deny($code) {
+	public static function deny($code, $allow = 'POST') {
 		$messages = array(
 			401 => 'unauthorized',
 			403 => 'forbidden',
@@ -79,11 +79,28 @@ class RequestGuard {
 		http_response_code($code);
 		header('Content-Type: text/plain; charset=UTF-8');
 		header('Cache-Control: no-store');
-		if ($code === 405) {
-			header('Allow: POST');
+		if ($code === 405 && is_string($allow) && $allow !== '') {
+			header('Allow: ' . $allow);
 		}
 		echo $messages[$code];
 		exit;
+	}
+
+	public static function requireRead() {
+		self::start();
+		$method = isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : 'GET';
+		if ($method !== 'GET' && $method !== 'HEAD') {
+			self::deny(405, 'GET, HEAD');
+		}
+		if (!self::authenticated()) {
+			self::deny(401);
+		}
+		if (!self::originAllowed()) {
+			self::deny(403);
+		}
+		if (!self::tokenMatches()) {
+			self::deny(403);
+		}
 	}
 
 	public static function requireMutation() {
