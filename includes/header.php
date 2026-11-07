@@ -6,6 +6,7 @@ require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/autoloadClasses.
 
 $Database = new Database();
 $settings = $Database->get_settings();
+$benchGuard = BenchGuard::detect();
 ?>
 
 
@@ -81,18 +82,27 @@ $settings = $Database->get_settings();
 	<!-- Server Notifications -->
 
 <?php
-	$current_page_url = "https://$_SERVER[HTTP_HOST]$_SERVER[REQUEST_URI]";
+	$scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+	$current_page_url = $scheme . '://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'];
 
 	/* CHECK FOR UPDATE FLAG AND NOTIFY USER IF SERVER NEEDS RESTARTED */
 	$updateFlage = $Database->get_update_flag();
 ?>
 
+<?php if (isset($_GET['bench_blocked'])) { ?>
+	<div class="alert alert-error">Bench mode did not rebuild or restart the repeater.</div>
+<?php } ?>
+
 	<div class="server_bar_wrap"<?php if ($updateFlage == false) { echo ' style="display: none;"'; } ?>>
 	<div class="server_bar">
+		<?php if ($benchGuard->isBench()) { ?>
+		<span>Bench mode: configuration rebuild will not publish files or restart the radio.</span>
+		<?php } else { ?>
 		<span>Repeater Configuration Files Rebuild & Restart Required: </span>
 
 		<!-- Button triggered modal -->
 		<button class="rebuild_button" data-toggle="modal" data-target="#restartServer"><i class="icon-refresh icon-white"></i> Rebuild & Restart Repeater</button>
+		<?php } ?>
 	</div>
 	<div class="server_bar_spacer"></div>
 	</div>
@@ -113,7 +123,11 @@ $settings = $Database->get_settings();
 			<form action="functions/svxlink_update.php" method="post" style="margin:0;">
 				<input type="hidden" name="return_url" value="<?php echo $current_page_url; ?>">
 				<button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+				<?php if ($benchGuard->isBench()) { ?>
+				<button type="button" class="btn btn-success" disabled="disabled">Restart blocked on bench</button>
+				<?php } else { ?>
 				<button type="submit" class="btn btn-success"><i class="icon-refresh icon-white"></i> Restart</button>
+				<?php } ?>
 			</form>
 	      </div>
 	    </div><!-- /.modal-content -->
@@ -173,6 +187,7 @@ $settings = $Database->get_settings();
 						    	?>
 									<li><a class="ajax-link" href="dashboard.php"><i class="icon-home"></i><span class="hidden-tablet"> Dashboard</span></a></li>
 									<li><a class="ajax-link" href="advanced.php"><i class="icon-wrench"></i><span class="hidden-tablet"> Advanced</span></a></li>
+									<li><a class="ajax-link" href="gpio.php"><i class="icon-info-sign"></i><span class="hidden-tablet"> GPIO Map</span></a></li>
 									<li><a class="ajax-link" href="log.php"><i class="icon-list-alt"></i><span class="hidden-tablet"> Repeater Log</span></a></li>
 								<?php
 						        break;
@@ -189,6 +204,7 @@ $settings = $Database->get_settings();
 										echo $ModulesClass->nav_setting_links();
 									?>	
 									<li><a class="ajax-link" href="ports.php"><i class="icon-cog"></i><span class="hidden-tablet"> Interface</span></a></li>
+									<li><a class="ajax-link" href="gpio.php"><i class="icon-info-sign"></i><span class="hidden-tablet"> GPIO Map</span></a></li>
 									<li><a class="ajax-link" href="log.php"><i class="icon-list-alt"></i><span class="hidden-tablet"> Repeater Log</span></a></li>
 									<li><a class="ajax-link" href="dtmf.php"><i class="icon-th"></i><span class="hidden-tablet"> DTMF Reference</span></a></li>
 								<?php

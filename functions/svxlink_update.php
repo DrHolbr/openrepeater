@@ -38,6 +38,24 @@ $classSVXLinkTCL = new SVXLink_TCL($settings);
 $classSVXLinkGPIO = new SVXLink_GPIO($gpio);
 
 /* ---------------------------------------------------------- */
+/* --- BENCH: do not publish configs or restart the radio --- */
+
+$benchGuard = BenchGuard::detect();
+if ($benchGuard->isBench()) {
+	if (isset($_POST["return_url"])) {
+		$url = strtok($_POST["return_url"], '?');
+	} else if (isset($_SESSION["new_repeater_settings"])) {
+		session_destroy();
+		$url = '../login.php';
+	} else {
+		$url = '../dashboard.php';
+	}
+	$join = (strpos($url, '?') === false) ? '?' : '&';
+	header('Location: '.$url.$join.'bench_blocked=1');
+	exit;
+}
+
+/* ---------------------------------------------------------- */
 /* --- LOGIC SETTINGS --- */
 
 $classSVXLink->delete_custom_evnets(); // Purge Previous Custom Event Files

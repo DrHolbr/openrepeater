@@ -437,37 +437,96 @@ class SVXLink {
 	# Write Config File
 	###############################################
 
+	public function configDestination($filename) {
+		$guard = BenchGuard::detect();
+		if ($guard->isBench()) {
+			if (basename($filename) !== $filename) {
+				return null;
+			}
+			$dir = $guard->previewDir();
+			if (!BenchGuard::previewAllowed($dir) || is_link($dir)) {
+				return null;
+			}
+			return rtrim($dir, '/') . '/' . $filename;
+		}
+		if ($filename === 'svxlink.conf' || $filename === 'gpio.conf') {
+			return '/etc/svxlink/' . $filename;
+		}
+		if ($filename === 'Logic.tcl') {
+			return '/usr/share/svxlink/events.d/local/' . $filename;
+		}
+		if (strpos($filename, 'Module') === 0) {
+			return '/etc/svxlink/svxlink.d/' . $filename;
+		}
+		if (strpos($filename, 'ORP_') === 0) {
+			return '/usr/share/svxlink/events.d/' . $filename;
+		}
+		return null;
+	}
+
+	public function disarmBenchPreview($filename, $data) {
+		$note = "# BENCH PREVIEW: not installed. Transmitter lines and sysfs GPIO are commented.\n"
+			. "# Do not copy this file to /etc/svxlink, /etc/openrepeater/svxlink, or /usr/local/share/svxlink.\n";
+		if ($filename !== 'svxlink.conf' && $filename !== 'gpio.conf') {
+			return "# BENCH PREVIEW: not published into the SvxLink tree.\n" . $data;
+		}
+		$lines = preg_split("/\r\n|\n|\r/", $data);
+		$out = array();
+		foreach ($lines as $line) {
+			if (preg_match('/^\s*(PTT_|GPIO_SQL_PIN|GPIO_PATH|SQL_GPIOD_|PTT_GPIOD_)/', $line)) {
+				$out[] = '# BENCH DISARMED: ' . $line;
+				continue;
+			}
+			if (preg_match('/^\s*SQL_DET\s*=\s*GPIOD?\b/', $line)) {
+				$out[] = '# BENCH DISARMED: ' . $line;
+				continue;
+			}
+			if (preg_match('/^\s*(GPIO_(?:IN|OUT)_(?:HIGH|LOW))\s*=.*[0-9]/', $line, $match)) {
+				$out[] = '# BENCH DISARMED: ' . $line;
+				$out[] = $match[1] . '=""';
+				continue;
+			}
+			$out[] = $line;
+		}
+		return $note . implode("\n", $out) . "\n";
+	}
+
 	public function write_config($data, $filename, $format = 'text') {
 		
 		if ($format == 'ini') {
 			$data = $this->build_ini($data); // Convert Array to INI format
 		}
-		$file_output = $this->orpFileHeader . $data;
-
-		switch ($filename) {
-		    case "svxlink.conf":
-				$filepath = '/etc/svxlink/';
-		        break;
-		    case "gpio.conf":
-				$filepath = '/etc/svxlink/';
-		        break;
-		    case "Logic.tcl":
-				$filepath = '/usr/share/svxlink/events.d/local/';
-		        break;
-		    case (strpos($filename, "Module") === 0): // Begins with Module
-				$filepath = '/etc/svxlink/svxlink.d/';
-		        break;
-		    case (strpos($filename, "ORP_") === 0): // Event beginning with ORP_
-				$filepath = '/usr/share/svxlink/events.d/';
-		        break;
+		$guard = BenchGuard::detect();
+		if ($guard->isBench()) {
+			$data = $this->disarmBenchPreview($filename, $data);
 		}
-
-		$full_file_path = $filepath . $filename;
-		
-		// If Directory Doesn't Exist, create it.
-		if (!is_dir($filepath)) { mkdir($filepath); }
-
-		// Write the File.
+		$file_output = $this->orpFileHeader . $data;
+		$full_file_path = $this->configDestination($filename);
+		if ($full_file_path === null) {
+			return;
+		}
+		$filepath = dirname($full_file_path);
+		if ($guard->isBench()) {
+			if (!BenchGuard::previewAllowed($filepath) || is_link($filepath) || is_link($full_file_path)) {
+				return;
+			}
+			if (!is_dir($filepath)) {
+				$parent = dirname($filepath);
+				if (!is_dir($parent) || is_link($parent) || !BenchGuard::componentsAreReal($parent)) {
+					return;
+				}
+				mkdir($filepath, 0750);
+			}
+			BenchGuard::writeContained($full_file_path, $file_output);
+			return;
+		}
+		if (is_link($filepath) || is_link($full_file_path)) {
+			return;
+		}
+		if (!is_dir($filepath)) { mkdir($filepath, 0750, true); }
+		if (is_link($filepath) || is_link($full_file_path)) {
+			return;
+		}
 		file_put_contents( $full_file_path, $file_output );
 	}
 
@@ -478,8 +537,23 @@ class SVXLink {
 	###############################################
 
 	public function delete_custom_evnets() {
-		$files = glob('/usr/share/svxlink/events.d/' . 'ORP_*');
-		array_map('unlink', $files);
+		$sample = $this->configDestination('ORP_placeholder.tcl');
+		if ($sample === null) {
+			return;
+		}
+		$dir = dirname($sample);
+		if (!is_dir($dir) || is_link($dir) || !BenchGuard::componentsAreReal($dir)) {
+			return;
+		}
+		$files = glob($dir . '/ORP_*');
+		if ($files) {
+			foreach ($files as $file) {
+				if (is_link($file) || !is_file($file)) {
+					continue;
+				}
+				unlink($file);
+			}
+		}
 	}
 
 

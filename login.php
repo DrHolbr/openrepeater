@@ -77,33 +77,36 @@ if ((isset($_POST['username'])) && (isset($_POST['password']))){
 	$username = SQLite3::escapeString($_POST['username']);
 	$password = SQLite3::escapeString($_POST['password']);
 
-	$loginQuery = "SELECT UserID, password, salt FROM users WHERE username = '$username';";
+	$loginQuery = "SELECT userID, password, salt FROM users WHERE username = '$username';";
 	$loginData = $Database->select_single($loginQuery);
-	
-	// User Doesn't Exist
-	if (!$loginData['salt']){
-		header('location: login.php?error=incorrectLogin');
+	if (is_array($loginData) && !isset($loginData['userID']) && isset($loginData['UserID'])) {
+		$loginData['userID'] = $loginData['UserID'];
 	}
 
-	// User Exists - pull info from DB to compare to submitted credentials
-	$loginHash = hash('sha256', $loginData['salt'] . hash('sha256', $password));
-	if ($loginHash != $loginData['password']){
-		header('location: login.php?error=incorrectLogin');
+	$loginSalt = (is_array($loginData) && isset($loginData['salt'])) ? $loginData['salt'] : '';
+	$loginUserID = (is_array($loginData) && isset($loginData['userID'])) ? $loginData['userID'] : null;
+	$loginPassword = (is_array($loginData) && isset($loginData['password'])) ? $loginData['password'] : '';
 
+	// Unknown user and a wrong password look the same. Do not keep a session.
+	$loginHash = $loginSalt === '' ? '' : hash('sha256', $loginSalt . hash('sha256', $password));
+	if ($loginUserID === null || $loginHash === '' || !hash_equals($loginPassword, $loginHash)) {
+		header('location: login.php?error=incorrectLogin');
+		exit;
+	}
+
+	session_regenerate_id(true);
+	$_SESSION['username'] = $username;
+	$_SESSION['userID'] = $loginUserID;
+	$_SESSION['version_num'] = $versionNum;
+	if ($callsign) {
+		// If callsign is set in DB, then login
+		$_SESSION['callsign'] = $callsign;
+		header('location: dashboard.php');
 	} else {
-		session_regenerate_id();
-		$_SESSION['username'] = $username;
-		$_SESSION['userID'] = $loginData['userID'];
-		$_SESSION['version_num'] = $versionNum;
-		if ($callsign) {
-			// If callsign is set in DB, then login
-			$_SESSION['callsign'] = $callsign;
-			header('location: dashboard.php');
-		} else {
-			// If callsign has not been setup in DB, then send to setup wizard
-			header('location: wizard/index.php');			
-		}
+		// If callsign has not been setup in DB, then send to setup wizard
+		header('location: wizard/index.php');
 	}
+	exit;
 }
 
 

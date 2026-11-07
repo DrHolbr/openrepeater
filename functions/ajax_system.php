@@ -1,11 +1,16 @@
 <?php
 // This is part of an AJAX operation to pass data back and forth between JavaScript, PHP, and BASH (linux system). It lets ORP do things the web server normally wouldn't have privilages to do. Results polled from the the System Class are returned to JavaScript in JSON format.
 
+require_once(__DIR__ . '/../includes/classes/BenchGuard.php');
 
 // Check to make sure options are passed by JavaScript and if so, call the function and echo results
 if (!empty($_POST)) {
-	$service = $_POST['post_service'];
-	$option = $_POST['post_option'];
+	$service = isset($_POST['post_service']) ? $_POST['post_service'] : '';
+	$option = isset($_POST['post_option']) ? $_POST['post_option'] : '';
+	if (!BenchGuard::detect()->commandAllowed($service, $option)) {
+		echo 'refused: bench mode blocks ' . $service . ' ' . $option;
+		exit;
+	}
 	echo exec_orp_helper($service, $option);
 }
 	

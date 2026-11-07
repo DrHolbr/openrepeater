@@ -29,6 +29,65 @@ function display_help {
 	echo "USAGE: orp_helper [service] [option]"
 }
 
+function bench_test_harness {
+	[ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ] || return 1
+	local real
+	real=$(tr -d '[:space:]' < /etc/hostname 2>/dev/null || true)
+	[ "$real" = "orp-test" ] && return 1
+	[ -f /etc/openrepeater/bench-mode ] && return 1
+	return 0
+}
+
+function bench_marker_path {
+	if bench_test_harness && [ -n "${ORP_BENCH_MARKER:-}" ]; then
+		printf '%s' "$ORP_BENCH_MARKER"
+	else
+		printf '%s' /etc/openrepeater/bench-mode
+	fi
+}
+
+function bench_hostname {
+	local file=/etc/hostname
+	if bench_test_harness && [ -n "${ORP_BENCH_HOSTNAME_FILE:-}" ]; then
+		file=$ORP_BENCH_HOSTNAME_FILE
+	fi
+	if [ -f "$file" ]; then
+		tr -d '[:space:]' < "$file"
+	fi
+}
+
+function bench_mode_on {
+	# orp-test stays blocked even if the marker file is removed.
+	if [ "$(bench_hostname)" = "orp-test" ]; then
+		return 0
+	fi
+	[ -f "$(bench_marker_path)" ]
+}
+
+function alsa_state_allowed {
+	case "$1" in
+		/var/www/openrepeater/backup/build/alsamixer.state|/var/www/openrepeater/backup/restore/alsamixer.state)
+			if [ -L "$1" ]; then
+				echo "refused: alsa state path is a symlink"
+				return 1
+			fi
+			return 0
+			;;
+		*)
+			echo "refused: alsa path is outside the backup directory"
+			return 1
+			;;
+	esac
+}
+
+function bench_refuses {
+	if bench_mode_on; then
+		echo "refused: bench mode blocks $1"
+		return 0
+	fi
+	return 1
+}
+
 function svxlink_disable {
 	echo "SVXLink Disable"
 	service svxlink stop
@@ -36,12 +95,18 @@ function svxlink_disable {
 }
 
 function svxlink_enable {
+	if bench_refuses "svxlink enable"; then
+		return 1
+	fi
 	echo "SVXLink Enable"
 	systemctl enable svxlink.service
 	service svxlink start
 }
 
 function svxlink_restart {
+	if bench_refuses "svxlink restart"; then
+		return 1
+	fi
 	service svxlink restart
 	svxlink_status
 }
@@ -52,6 +117,9 @@ function svxlink_stop {
 }
 
 function svxlink_start {
+	if bench_refuses "svxlink start"; then
+		return 1
+	fi
 	service svxlink start
 	svxlink_status
 }
@@ -61,22 +129,34 @@ function svxlink_status {
 }
 
 function svxlink_gpio_up {
-	/usr/sbin/svxlink_gpio_up
+	if bench_refuses "svxlink gpio_up"; then
+		return 1
+	fi
+	"${SVXLINK_GPIO_UP_BIN:-/usr/sbin/svxlink_gpio_up}"
 	echo up
 }
 
 function svxlink_gpio_down {
-	/usr/sbin/svxlink_gpio_down
+	if bench_refuses "svxlink gpio_down"; then
+		return 1
+	fi
+	"${SVXLINK_GPIO_DOWN_BIN:-/usr/sbin/svxlink_gpio_down}"
 	echo down
 }
 
 
 ### SYSTEM FUNCTIONS ###
 function system_reboot {
+	if bench_refuses "system restart"; then
+		return 1
+	fi
 	shutdown -r now
 }
 
 function system_shutdown {
+	if bench_refuses "system stop"; then
+		return 1
+	fi
 	shutdown -h now
 }
 
@@ -105,6 +185,9 @@ function audio_version {
 
 ### AUDIO FUNCTIONS ###
 function set_mixer {
+	if bench_refuses "set_mixer"; then
+		return 1
+	fi
 	if [ -n "$3" ]; then
 		amixer -c$3 set "$1" $2
 	else
@@ -113,11 +196,26 @@ function set_mixer {
 }
 
 function alsamixer_backup {
-	alsactl --file "$1" store
+	if bench_refuses "alsa backup"; then
+		return 1
+	fi
+	if ! alsa_state_allowed "$1"; then
+		return 1
+	fi
+	if ! alsactl --file "$1" store; then
+		echo "refused: alsactl store failed"
+		return 1
+	fi
+	if ! alsa_state_allowed "$1"; then
+		return 1
+	fi
 	chown www-data:www-data "$1"
 }
 
 function alsamixer_restore {
+	if bench_refuses "alsa restore"; then
+		return 1
+	fi
 	alsactl --file "$1" restore
 }
 
@@ -208,6 +306,10 @@ function info_os {
 ###############################################################################
 
 while :; do
+    if [ "${2:-}" = "unmask" ]; then
+        echo "refused: unmask is not permitted"
+        exit 1
+    fi
     case $1 in
         svxlink)
 			if [ "$2" == "start" ]; then svxlink_start

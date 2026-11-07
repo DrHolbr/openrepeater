@@ -5,7 +5,17 @@
 
 class Database {
 
-    private $db_loc = '/var/lib/openrepeater/db/openrepeater.db';
+    private $db_loc;
+
+
+	public function __construct() {
+		$override = getenv('ORP_DB_PATH');
+		if (is_string($override) && $override !== '') {
+			$this->db_loc = $override;
+		} else {
+			$this->db_loc = '/var/lib/openrepeater/db/openrepeater.db';
+		}
+	}
 
 
 	###############################################
@@ -13,7 +23,7 @@ class Database {
 	###############################################
 
 	// SELECT ALL - Return all values of table as nested array. Optional custom SQL.
-	public function select_all($table_name, $custom_sql) {
+	public function select_all($table_name, $custom_sql = null) {
 		$db = new SQLite3($this->db_loc) or die('Unable to open database');
 
 		if (isset($custom_sql)) {
@@ -23,11 +33,18 @@ class Database {
 		}
 
 		// Get column names for table. 	
-		$column_results = $db->query('PRAGMA table_info("' . $table_name . '")');			
+		$column_results = $db->query('PRAGMA table_info("' . $table_name . '")');
+		$columns = array();
+		$primary_key = null;
+		$nested_array = array();
 		while ($colArray = $column_results->fetchArray()) {
 			// Set Primary Key for parent array
 			if ($colArray['pk'] == 1) { $primary_key =  $colArray['name']; }
 			$columns[] = $colArray['name'];
+		}
+
+		if ($primary_key === null) {
+			return $nested_array;
 		}
 
 		$result = $db->query($sql) or die('Query failed');
@@ -46,6 +63,7 @@ class Database {
 	public function select_key_value($sql, $keyCol = NULL, $valueCol = NULL) {
 		$db = new SQLite3($this->db_loc) or die('Unable to open database');
 		$result = $db->query($sql) or die('Unable to select key/value pair.');
+		$select_array = array();
 		
 		// Return key/value pairs as associative array
 		while ($rowArray = $result->fetchArray()) {
@@ -58,7 +76,10 @@ class Database {
 	// SELECT SINGLE - Return single 
 	public function select_single($sql) {
 		$db = new SQLite3($this->db_loc) or die('Unable to open database');
-		$results = $db->querySingle($sql, true) or die('Unable to select single record from database');
+		$results = $db->querySingle($sql, true);
+		if ($results === false || $results === null) {
+			return array();
+		}
 		return $results;
 	}
 
@@ -116,7 +137,7 @@ class Database {
 		} else {
 			// Return requested setting value as string
 			$sql = "SELECT * FROM settings WHERE keyID = '".$returnSetting."'";
-			$results = $this->select_single($sql, 'keyID', 'value');
+			$results = $this->select_single($sql);
 			return $results['value'];
 		}
 	}
@@ -319,26 +340,57 @@ class Database {
 	# Memcache Flag
 	###############################################
 
-	public function set_update_flag($flag) {
-		/* SET FLAG TO LET REPEATER PROGRAM KNOW TO RELOAD SETTINGS */
-		$memcached_obj = new Memcached;
-		$memcached_obj->addServer('localhost', 11211);
-		if($flag == true) {
-			$memcached_obj->set('update_settings_flag', 1); // Set Flag
-		} else {
-			$memcached_obj->set('update_settings_flag', 0); // Clear Flag			
+	private function useMemcached() {
+		$force = getenv('ORP_FLAG_STORE');
+		if ($force === 'sqlite') {
+			return false;
 		}
+		return class_exists('Memcached');
+	}
+
+	public function set_update_flag($flag) {
+		/* SET FLAG TO LET THE UI KNOW A REBUILD WAS REQUESTED */
+		if ($this->useMemcached()) {
+			$memcached_obj = new Memcached;
+			$memcached_obj->addServer('localhost', 11211);
+			if($flag == true) {
+				$memcached_obj->set('update_settings_flag', 1); // Set Flag
+			} else {
+				$memcached_obj->set('update_settings_flag', 0); // Clear Flag			
+			}
+			return;
+		}
+		$db = new SQLite3($this->db_loc);
+		$stmt = $db->prepare('INSERT OR REPLACE INTO system_flags (keyID, value) VALUES (:keyID, :value)');
+		if ($stmt === false) {
+			return;
+		}
+		$stmt->bindValue(':keyID', 'update_settings_flag', SQLITE3_TEXT);
+		$stmt->bindValue(':value', $flag ? '1' : '0', SQLITE3_TEXT);
+		$stmt->execute();
+		$db->close();
 	}
 
 	public function get_update_flag() {
-		$memcached_obj = new Memcached;
-		$memcached_obj->addServer('localhost', 11211);
-		$state = $memcached_obj->get('update_settings_flag');
-		if ($state == 1) {
-			return true;
-		} else {
+		if ($this->useMemcached()) {
+			$memcached_obj = new Memcached;
+			$memcached_obj->addServer('localhost', 11211);
+			$state = $memcached_obj->get('update_settings_flag');
+			return $state == 1;
+		}
+		$db = new SQLite3($this->db_loc);
+		$stmt = $db->prepare('SELECT value FROM system_flags WHERE keyID = :keyID');
+		if ($stmt === false) {
 			return false;
 		}
+		$stmt->bindValue(':keyID', 'update_settings_flag', SQLITE3_TEXT);
+		$result = $stmt->execute();
+		if ($result === false) {
+			return false;
+		}
+		$row = $result->fetchArray(SQLITE3_ASSOC);
+		$db->close();
+		return is_array($row) && isset($row['value']) && $row['value'] === '1';
 	}
 
 }
