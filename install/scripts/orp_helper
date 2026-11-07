@@ -160,6 +160,15 @@ function svxlink_service_ctl {
 			echo "refused: svxlink.conf is not the disconnected-test snapshot. Start was not called."
 			return 1
 		fi
+		if ! native_inputs >/dev/null || ! native_runtime >/dev/null; then
+			echo "refused: native preflight failed. Start was not called."
+			native_inputs || true
+			native_runtime || true
+			return 1
+		fi
+		if native_start_blocked; then
+			return 1
+		fi
 	fi
 	# Never unmask. A masked unit is service-disabled, which is separate
 	# from an unresolved GPIO number and from the dummy audio path.
@@ -243,31 +252,275 @@ function config_real_file() {
 	[ -f "$path" ] && [ ! -L "$path" ]
 }
 
-function config_event_handler() {
-	local path
-	for path in /usr/local/share/svxlink/events.tcl /usr/share/svxlink/events.tcl; do
-		if config_real_file "$path"; then
-			printf '%s' "$path"
-			return 0
+# Source build on orp-test: prefix /usr/local, SYSCONF_INSTALL_DIR=/etc,
+# libraries in /usr/local/lib (not the multiarch distro directories).
+# ORP_ROOT is a fixture prefix. The text written into svxlink.conf stays
+# the real absolute path the process opens.
+function native_path() {
+	printf '%s%s' "${ORP_ROOT:-}" "$1"
+}
+
+function native_harness() {
+	[ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]
+}
+
+function native_open_mode() {
+	find "$1" -maxdepth 0 -perm /022 | grep -q .
+}
+
+function native_root_owned() {
+	if native_harness; then
+		return 0
+	fi
+	[ "$(stat -c '%u:%g' "$1")" = "0:0" ]
+}
+
+function native_report_file() {
+	local logical=$1 path
+	path=$(native_path "$logical")
+	if [ -L "$path" ]; then
+		echo "missing: ${logical} is a symbolic link"
+		return 1
+	fi
+	if [ ! -f "$path" ]; then
+		echo "missing: ${logical} is not a regular file"
+		return 1
+	fi
+	if native_open_mode "$path"; then
+		echo "missing: ${logical} is group or world writable"
+		return 1
+	fi
+	if ! native_root_owned "$path"; then
+		echo "missing: ${logical} is not root:root"
+		return 1
+	fi
+	echo "ok: ${logical}"
+	return 0
+}
+
+function native_report_dir() {
+	local logical=$1 path
+	path=$(native_path "$logical")
+	if [ -L "$path" ]; then
+		echo "missing: ${logical} is a symbolic link"
+		return 1
+	fi
+	if [ ! -d "$path" ]; then
+		echo "missing: ${logical} is not a directory"
+		return 1
+	fi
+	if native_open_mode "$path"; then
+		echo "missing: ${logical} is group or world writable"
+		return 1
+	fi
+	if ! native_root_owned "$path"; then
+		echo "missing: ${logical} is not root:root"
+		return 1
+	fi
+	echo "ok: ${logical}"
+	return 0
+}
+
+function native_inputs() {
+	local rc=0 file path drop mods name
+	native_report_file /usr/local/bin/svxlink || rc=1
+	path=$(native_path /usr/local/bin/svxlink)
+	if [ -f "$path" ] && [ ! -L "$path" ] && [ ! -x "$path" ]; then
+		echo "missing: /usr/local/bin/svxlink is not executable"
+		rc=1
+	fi
+	native_report_dir /usr/local/lib/svxlink || rc=1
+	for file in RepeaterLogic.so SimplexLogic.so DummyLogic.so; do
+		native_report_file "/usr/local/lib/svxlink/${file}" || rc=1
+	done
+	path=$(native_path /usr/local/lib/svxlink)
+	if [ -d "$path" ] && [ ! -L "$path" ]; then
+		mods=$(find -P "$path" -maxdepth 1 -type f -name 'Module*.so' | wc -l | tr -d ' ')
+		echo "note: ${mods} Module*.so files are installed and are not named by the test config"
+	fi
+	native_report_file /usr/local/share/svxlink/events.tcl || rc=1
+	native_report_dir /usr/local/share/svxlink/events.d || rc=1
+	path=$(native_path /usr/local/share/svxlink/events.d)
+	if [ -d "$path" ] && [ ! -L "$path" ] && find -P "$path" -xdev -type l -print | grep -q .; then
+		echo "missing: /usr/local/share/svxlink/events.d contains a symbolic link"
+		rc=1
+	fi
+	for file in globals.tcl squelch_timeout.tcl Module.tcl CW.tcl SelCall.tcl locale.tcl \
+		LogicBase.tcl Logic.tcl SimplexLogicType.tcl RepeaterLogicType.tcl \
+		ReflectorLogicType.tcl ReflectorV2LogicType.tcl SimplexLogic.tcl \
+		RepeaterLogic.tcl ReflectorLogic.tcl
+	do
+		native_report_file "/usr/local/share/svxlink/events.d/${file}" || rc=1
+	done
+	native_report_dir /usr/local/share/svxlink/sounds || rc=1
+	path=$(native_path /usr/local/share/svxlink/sounds/en_US)
+	if [ -d "$path" ] && [ ! -L "$path" ]; then
+		echo "ok: /usr/local/share/svxlink/sounds/en_US"
+	else
+		echo "note: /usr/local/share/svxlink/sounds/en_US is absent. Speech clips are not this lifecycle slice."
+	fi
+	native_report_dir /etc/svxlink || rc=1
+	drop=$(native_path /etc/svxlink/svxlink.d)
+	if [ -d "$drop" ] && [ ! -L "$drop" ]; then
+		echo "note: /etc/svxlink/svxlink.d is not the disconnected-test CFG_DIR"
+		find -P "$drop" -maxdepth 1 -type f -name '*.conf' | while IFS= read -r name; do
+			echo "note: leaving $(basename "$name") in svxlink.d"
+		done
+	elif [ -L "$drop" ]; then
+		echo "missing: /etc/svxlink/svxlink.d is a symbolic link"
+		rc=1
+	fi
+	return "$rc"
+}
+
+function native_account_ok() {
+	if [ -n "${ORP_ROOT:-}" ]; then
+		[ -f "${ORP_ROOT}/etc/passwd" ] && [ -f "${ORP_ROOT}/etc/group" ] \
+			&& grep -q '^svxlink:' "${ORP_ROOT}/etc/passwd" \
+			&& grep -q '^svxlink:' "${ORP_ROOT}/etc/group"
+		return $?
+	fi
+	getent passwd svxlink >/dev/null && getent group svxlink >/dev/null
+}
+
+function native_service_path() {
+	local logical=$1 kind=${2:-dir} path owner
+	path=$(native_path "$logical")
+	if [ -L "$path" ]; then
+		echo "missing: ${logical} is a symbolic link"
+		return 1
+	fi
+	if [ "$kind" = "dir" ] && [ ! -d "$path" ]; then
+		echo "missing: ${logical} is not a directory"
+		return 1
+	fi
+	if [ "$kind" = "file" ] && [ ! -f "$path" ]; then
+		echo "missing: ${logical} is not a regular file"
+		return 1
+	fi
+	if [ ! -e "$path" ]; then
+		echo "missing: ${logical} is absent"
+		return 1
+	fi
+	if native_open_mode "$path"; then
+		echo "missing: ${logical} is group or world writable"
+		return 1
+	fi
+	if ! native_harness; then
+		owner=$(stat -c '%U:%G' "$path")
+		if [ "$owner" != "svxlink:svxlink" ]; then
+			echo "missing: ${logical} is ${owner}, expected svxlink:svxlink"
+			return 1
+		fi
+	fi
+	echo "ok: ${logical}"
+	return 0
+}
+
+function native_unit_text() {
+	cat <<'EOF'
+[Unit]
+Description=SvxLink repeater control software
+Documentation=man:svxlink(1) man:svxlink.conf(5)
+After=network.target
+
+[Service]
+Type=simple
+User=svxlink
+Group=svxlink
+UMask=0022
+WorkingDirectory=/etc/svxlink
+ExecStart=/usr/local/bin/svxlink --logfile=/var/log/svxlink --config=/etc/svxlink/svxlink.conf
+Restart=no
+TimeoutStopSec=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+function native_runtime() {
+	local rc=0 path expected
+	if native_account_ok; then
+		echo "ok: user svxlink"
+	else
+		echo "missing: user and group svxlink"
+		rc=1
+	fi
+	native_service_path /var/lib/svxlink dir || rc=1
+	native_service_path /var/spool/svxlink dir || rc=1
+	native_service_path /var/log/svxlink file || rc=1
+	path=$(native_path /usr/local/lib/systemd/system/svxlink.service)
+	if [ -L "$path" ] || [ ! -f "$path" ]; then
+		echo "missing: /usr/local/lib/systemd/system/svxlink.service is not a regular file"
+		rc=1
+	elif ! native_root_owned "$path" || native_open_mode "$path"; then
+		echo "missing: vendor svxlink.service is not a root-owned private file"
+		rc=1
+	else
+		expected=$(mktemp)
+		native_unit_text > "$expected"
+		if cmp -s "$expected" "$path"; then
+			echo "ok: /usr/local/lib/systemd/system/svxlink.service"
+		else
+			echo "missing: vendor svxlink.service does not match the reviewed unit"
+			rc=1
+		fi
+		rm -f "$expected"
+	fi
+	return "$rc"
+}
+
+function native_masks() {
+	local rc=0 unit path
+	for unit in svxlink.service remotetrx.service svxreflector.service; do
+		path=$(native_path "/etc/systemd/system/${unit}")
+		if [ -L "$path" ] && [ "$(readlink "$path")" = "/dev/null" ]; then
+			echo "ok: ${unit} -> /dev/null"
+		else
+			echo "missing: ${unit} is not a /dev/null mask"
+			rc=1
 		fi
 	done
-	return 1
+	return "$rc"
+}
+
+function native_preflight() {
+	local rc=0
+	native_inputs || rc=1
+	native_runtime || rc=1
+	native_masks || rc=1
+	return "$rc"
+}
+
+function native_start_blocked() {
+	local path
+	path=$(native_path /etc/systemd/system/svxlink.service)
+	if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+		return 1
+	fi
+	if [ -L "$path" ] && [ "$(readlink "$path")" = "/dev/null" ]; then
+		echo "refused: svxlink.service is masked. Unmask was not performed. Start was not called."
+		return 0
+	fi
+	echo "refused: /etc/systemd/system/svxlink.service is not the administrative mask. Start was not called."
+	return 0
+}
+
+function config_event_handler() {
+	local path
+	path=$(native_path /usr/local/share/svxlink/events.tcl)
+	config_real_file "$path" || return 1
+	printf '%s' /usr/local/share/svxlink/events.tcl
 }
 
 function config_module_dir() {
 	local path
-	for path in \
-		/usr/local/lib/aarch64-linux-gnu/svxlink \
-		/usr/local/lib/arm-linux-gnueabihf/svxlink \
-		/usr/lib/aarch64-linux-gnu/svxlink \
-		/usr/lib/x86_64-linux-gnu/svxlink
-	do
-		if [ -d "$path" ] && [ ! -L "$path" ]; then
-			printf '%s' "$path"
-			return 0
-		fi
-	done
-	return 1
+	path=$(native_path /usr/local/lib/svxlink)
+	[ -d "$path" ] && [ ! -L "$path" ] || return 1
+	config_real_file "${path}/RepeaterLogic.so" || return 1
+	printf '%s' /usr/local/lib/svxlink
 }
 
 function config_callsign() {
@@ -329,8 +582,9 @@ function config_render() {
 	cat > "$out" <<EOF
 [GLOBAL]
 MODULE_PATH=${modules}
+LOGIC_CORE_PATH=${modules}
 LOGICS=RepeaterLogic
-CFG_DIR=/etc/svxlink/svxlink.d
+CFG_DIR=/etc/svxlink/functional-test.d
 TIMESTAMP_FORMAT="%c"
 CARD_SAMPLE_RATE=16000
 [RepeaterLogic]
@@ -394,8 +648,8 @@ function config_publish {
 		echo "refused: stored call sign is not a plain station token. It was not changed and was not published."
 		return 1
 	fi
-	if ! config_event_handler >/dev/null || ! config_module_dir >/dev/null; then
-		echo "refused: installed SvxLink event handler or module directory is missing"
+	if ! native_inputs; then
+		echo "refused: installed SvxLink layout is incomplete. Stored wiring was not changed."
 		return 1
 	fi
 	dest=$(config_dest)
@@ -406,12 +660,23 @@ function config_publish {
 	if ! config_parent_anchored "$parent"; then
 		return 1
 	fi
-	if [ -L "$dest" ] || [ -L "${parent}/svxlink.d" ]; then
+	if [ -L "$dest" ] || [ -L "${parent}/svxlink.d" ] || [ -L "${parent}/functional-test.d" ]; then
 		echo "refused: live svxlink path is a symbolic link"
 		return 1
 	fi
-	if [ -e "${parent}/svxlink.d" ] && [ ! -d "${parent}/svxlink.d" ]; then
-		echo "refused: svxlink.d is not a directory"
+	if [ -e "${parent}/functional-test.d" ] && [ ! -d "${parent}/functional-test.d" ]; then
+		echo "refused: functional-test.d is not a directory"
+		return 1
+	fi
+	if [ ! -d "${parent}/functional-test.d" ]; then
+		mkdir -m 755 "${parent}/functional-test.d"
+	fi
+	if native_open_mode "${parent}/functional-test.d"; then
+		echo "refused: functional-test.d is group or world writable"
+		return 1
+	fi
+	if find -P "${parent}/functional-test.d" -mindepth 1 -print | grep -q .; then
+		echo "refused: functional-test.d is not empty. Sample svxlink.d files were not copied."
 		return 1
 	fi
 	snapshot=$(mktemp "${parent}/.orp-svxlink.XXXXXX")
@@ -429,9 +694,6 @@ function config_publish {
 		fi
 		mkdir -p "$backup"
 		cp -p "$dest" "$backup/svxlink.conf"
-	fi
-	if [ ! -d "${parent}/svxlink.d" ]; then
-		mkdir -m 755 "${parent}/svxlink.d"
 	fi
 	mv -f "$snapshot" "$dest"
 	chmod 644 "$dest"
@@ -625,6 +887,13 @@ while :; do
         config)
 			if [ "$2" == "publish" ]; then config_publish
 			else echo "INVALID OPTION"; echo "USAGE: orp_helper config publish"
+			fi
+			exit;;
+        native)
+			if [ "$2" == "preflight" ]; then native_preflight
+			elif [ "$2" == "inputs" ]; then native_inputs
+			elif [ "$2" == "unit" ]; then native_unit_text
+			else echo "INVALID OPTION"; echo "USAGE: orp_helper native (preflight|inputs|unit)"
 			fi
 			exit;;
         svxlink)

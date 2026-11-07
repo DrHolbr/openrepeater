@@ -4,6 +4,8 @@ set -euo pipefail
 
 export ORP_BENCH_TEST_HARNESS=1
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/native_layout.sh
+. "$ROOT_DIR/upgrade/tests/lib/native_layout.sh"
 INSTALL="$ROOT_DIR/upgrade/install-orp-ui.sh"
 HELPER="$ROOT_DIR/install/scripts/orp_helper"
 fail=0
@@ -88,6 +90,7 @@ EOF
 	printf 'archive\n' > "$root/opt/orp-test/keep"
 	printf 'stock-svxlink\n' > "$root/etc/svxlink/svxlink.conf"
 	printf 'default-site\n' > "$root/etc/nginx/sites-enabled/default"
+	plant_native_layout "$root"
 }
 
 checksum() { sha256sum "$1" | awk '{print $1}'; }
@@ -188,6 +191,55 @@ if [ ! -e "$good/var/lib/orp-test/build.swap" ]; then
 	ok "build.swap was not created"
 else
 	bad "build.swap was created"
+fi
+
+unit="$good/usr/local/lib/systemd/system/svxlink.service"
+if [ -f "$unit" ] && [ ! -L "$unit" ] \
+	&& grep -q '^ExecStart=/usr/local/bin/svxlink --logfile=/var/log/svxlink --config=/etc/svxlink/svxlink.conf$' "$unit" \
+	&& ! grep -E -q 'gpio|EnvironmentFile|ExecStartPre|ExecStopPost|/usr/bin/svxlink' "$unit"
+then
+	ok "vendor unit points at the source-install binary and has no GPIO hook"
+else
+	bad "vendor unit"
+	cat "$unit" >&2 || true
+fi
+for masked in svxlink.service remotetrx.service svxreflector.service; do
+	if [ -L "$good/etc/systemd/system/$masked" ] && [ "$(readlink "$good/etc/systemd/system/$masked")" = "/dev/null" ]; then
+		ok "mask preserved: $masked"
+	else
+		bad "mask changed: $masked"
+	fi
+done
+if grep -q '^daemon-reload$' "$log" && ! grep -E -q 'unmask|start svxlink|enable svxlink' "$log"; then
+	ok "installer reloaded systemd and did not unmask or start svxlink"
+else
+	bad "systemctl log during install"
+	cat "$log" >&2 || true
+fi
+
+# Missing RepeaterLogic.so is the native layout the previous publisher missed.
+# The install stops before the web tree and does not write a unit.
+short="$tmp/short-layout"
+seed_identity "$short"
+rm -f "$short/usr/local/lib/svxlink/RepeaterLogic.so"
+: > "$tmp/short.log"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$short" ORP_SYSTEMCTL="$bin/systemctl" ORP_SYSTEMCTL_LOG="$tmp/short.log" \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/short.out" 2>"$tmp/short.err"
+rc=$?
+set -e
+if [ "$rc" -eq 7 ] && [ ! -d "$short/var/www/openrepeater" ] \
+	&& [ ! -e "$short/usr/local/lib/systemd/system/svxlink.service" ] \
+	&& [ "$(readlink "$short/etc/systemd/system/svxlink.service")" = "/dev/null" ] \
+	&& grep -q 'RepeaterLogic.so' "$tmp/short.out" "$tmp/short.err"
+then
+	ok "missing native plugin aborts before the unit or the web tree"
+else
+	bad "missing plugin rc=$rc"
+	echo '--- stdout ---' >&2
+	cat "$tmp/short.out" >&2 || true
+	echo '--- stderr ---' >&2
+	cat "$tmp/short.err" >&2 || true
 fi
 
 site="$good/etc/nginx/sites-available/openrepeater"

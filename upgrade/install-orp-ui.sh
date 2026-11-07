@@ -210,6 +210,21 @@ bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/bench-preview)"
 bench_chmod 1770 "$(p /var/lib/openrepeater/bench-preview)"
 bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/db)"
 
+# The source install has no systemd unit, only the administrative masks.
+# Refuse before packages or the web tree if that layout is incomplete.
+# Do not create a mask and do not replace one.
+for unit in svxlink.service remotetrx.service svxreflector.service; do
+	link=$(p "/etc/systemd/system/${unit}")
+	if [ ! -L "$link" ] || [ "$(readlink "$link")" != "/dev/null" ]; then
+		echo "refused: ${unit} is not a /dev/null mask. It was not replaced." >&2
+		exit 4
+	fi
+done
+if ! env ORP_ROOT="$ROOT" "$REPO_ROOT/install/scripts/orp_helper" native inputs; then
+	echo "refused: native SvxLink layout is incomplete. No unit was written and no service was unmasked." >&2
+	exit 7
+fi
+
 if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] && [ "${ORP_INSTALL_SKIP_APT:-0}" != 1 ]; then
 	install_service_block
 	export DEBIAN_FRONTEND=noninteractive
@@ -337,6 +352,75 @@ rm -f "$sudoers_tmp"
 bench_chmod 440 "$(p /etc/sudoers.d/openrepeater)"
 bench_chown root:root "$(p /etc/sudoers.d/openrepeater)"
 
+# Account, log, and state directories for the reviewed unit. The unit file
+# goes to the /usr/local vendor directory. The /etc mask is not replaced.
+if [ -n "$ROOT" ]; then
+	touch "$(p /etc/passwd)" "$(p /etc/group)"
+	if ! grep -q '^svxlink:' "$(p /etc/group)"; then
+		printf '%s\n' 'svxlink:x:200:' >> "$(p /etc/group)"
+	fi
+	if ! grep -q '^svxlink:' "$(p /etc/passwd)"; then
+		printf '%s\n' 'svxlink:x:200:200::/var/lib/svxlink:/usr/sbin/nologin' >> "$(p /etc/passwd)"
+	fi
+else
+	getent group svxlink >/dev/null || groupadd --system svxlink
+	getent passwd svxlink >/dev/null || useradd --system --gid svxlink --home-dir /var/lib/svxlink --shell /usr/sbin/nologin svxlink
+fi
+# These directories are owned by the svxlink user after the first install.
+# Repeat installs must not try to reclaim that ownership as the installer.
+ensure_service_dir() {
+	local path=$1
+	case "$(bench_lstat_kind "$path")" in
+		symlink|file|other)
+			echo "refused: $path is not a directory" >&2
+			exit 6
+			;;
+		missing)
+			bench_anchor_dir "$(dirname "$path")"
+			mkdir -m 755 "$path"
+			;;
+	esac
+	bench_chmod 755 "$path"
+	bench_chown svxlink:svxlink "$path"
+}
+ensure_service_dir "$(p /var/lib/svxlink)"
+ensure_service_dir "$(p /var/spool/svxlink)"
+bench_anchor_dir "$(p /var/log)"
+svx_log=$(p /var/log/svxlink)
+case "$(bench_lstat_kind "$svx_log")" in
+	symlink|dir|other)
+		echo "refused: /var/log/svxlink is not a regular file" >&2
+		exit 6
+		;;
+	missing)
+		: > "$svx_log"
+		;;
+esac
+bench_chmod 755 "$(p /var/lib/svxlink)"
+bench_chmod 755 "$(p /var/spool/svxlink)"
+bench_chmod 644 "$svx_log"
+bench_chown svxlink:svxlink "$(p /var/lib/svxlink)"
+bench_chown svxlink:svxlink "$(p /var/spool/svxlink)"
+bench_chown svxlink:svxlink "$svx_log"
+unit_body=$(mktemp)
+env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native unit > "$unit_body"
+bench_place_file "$unit_body" "$(p /usr/local/lib/systemd/system/svxlink.service)"
+rm -f "$unit_body"
+bench_chmod 644 "$(p /usr/local/lib/systemd/system/svxlink.service)"
+bench_chown root:root "$(p /usr/local/lib/systemd/system/svxlink.service)"
+for unit in svxlink.service remotetrx.service svxreflector.service; do
+	link=$(p "/etc/systemd/system/${unit}")
+	if [ ! -L "$link" ] || [ "$(readlink "$link")" != "/dev/null" ]; then
+		echo "refused: ${unit} mask changed while writing the vendor unit" >&2
+		exit 4
+	fi
+done
+if ! env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native preflight; then
+	echo "refused: native preflight failed after the vendor unit was written" >&2
+	exit 7
+fi
+orp_systemctl daemon-reload
+
 db_file=$(p /var/lib/openrepeater/db/openrepeater.db)
 # Parent is anchored above, so a planted symlink cannot be swapped in now.
 if ! bench_ensure_regular "$db_file"; then
@@ -378,7 +462,8 @@ bench_assert_masks
 echo "OpenRepeater UI files are staged for orp-test."
 echo "Radio units were not started and their masks were checked again."
 echo "The bench marker remains at /etc/openrepeater/bench-mode and is not web-writable."
-echo "Bootstrap files under /var/lib/orp-test, /usr/local, and /opt/orp-test were not modified."
+echo "Bootstrap binary, share tree, and /etc/svxlink/svxlink.conf were not modified."
+echo "The reviewed unit is /usr/local/lib/systemd/system/svxlink.service. The /dev/null masks were left in place."
 echo "No GPIO output, audio, or RF test was run."
 if [ -d "$backup_root" ]; then
 	echo "Backup of previous mutable files: ${backup_root}"

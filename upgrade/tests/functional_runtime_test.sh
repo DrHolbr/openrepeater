@@ -1,13 +1,11 @@
 #!/bin/bash
-# Publish a no-PTT SvxLink config and load it with the svxlink process.
-# The cloud binary is not the Pi 26.05.2 build. GPIOD is not used.
+# Publish a no-PTT config for the source-install layout.
+# This does not execute the distro svxlink binary. The Pi binary is not here.
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-if [ ! -x /usr/bin/svxlink ]; then
-	echo "FAIL: /usr/bin/svxlink is not installed; the process test cannot run" >&2
-	exit 1
-fi
+# shellcheck source=lib/native_layout.sh
+. "$ROOT_DIR/upgrade/tests/lib/native_layout.sh"
 tmp=$(mktemp -d)
 preview=$(mktemp -d /tmp/orp-preview-runtime.XXXXXX)
 trap 'rm -rf "$tmp" "$preview"' EXIT
@@ -18,6 +16,9 @@ mode="$tmp/operating-mode"
 log="$tmp/svx.log"
 pid="$tmp/svx.pid"
 mkdir -p "$live/etc/svxlink/svxlink.d" "$live/var/backups/orp-ui"
+plant_native_layout "$live"
+chmod 755 "$live" "$live/etc" "$live/etc/svxlink" "$live/var" "$live/var/backups" "$live/var/backups/orp-ui"
+printf 'ModuleEchoLink sample\n' > "$live/etc/svxlink/svxlink.d/ModuleEchoLink.conf"
 printf 'orp-test\n' > "$host"
 printf 'functional-test\n' > "$mode"
 chmod 644 "$mode"
@@ -49,6 +50,18 @@ fi
 printf '%s\n' "$pub" | grep -q 'published'
 printf '%s\n' "$pub" | grep -q 'simulation/dummy-path'
 grep -q '^PTT_TYPE=NONE$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^MODULE_PATH=/usr/local/lib/svxlink$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^LOGIC_CORE_PATH=/usr/local/lib/svxlink$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^EVENT_HANDLER=/usr/local/share/svxlink/events.tcl$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^CFG_DIR=/etc/svxlink/functional-test.d$' "$live/etc/svxlink/svxlink.conf"
+if grep -q 'ModuleEchoLink\|/usr/lib/\|/usr/share/svxlink' "$live/etc/svxlink/svxlink.conf"; then
+	echo "FAIL: published config followed distro paths or svxlink.d" >&2
+	exit 1
+fi
+if [ -n "$(find "$live/etc/svxlink/functional-test.d" -mindepth 1 -print)" ]; then
+	echo "FAIL: functional-test.d is not empty" >&2
+	exit 1
+fi
 if grep -E -q '^[^#].*(PTT_PIN|GPIO_)' "$live/etc/svxlink/svxlink.conf"; then
 	echo "FAIL: published config contains GPIO or PTT" >&2
 	exit 1
@@ -65,18 +78,5 @@ if [ "$now" != "$stored" ]; then
 	exit 1
 fi
 
-timeout 4 /usr/bin/svxlink --config="$live/etc/svxlink/svxlink.conf" --logfile="$log" --pidfile="$pid" || true
-grep -q 'Event handler script successfully loaded' "$log"
-grep -q 'Shutting down application' "$log"
-if grep -E -q 'GPIO|PTT_PIN|gpio498' "$log"; then
-	echo "FAIL: svxlink log shows GPIO or PTT activity" >&2
-	cat "$log" >&2
-	exit 1
-fi
-if [ -f "$pid" ] && kill -0 "$(cat "$pid")" 2>/dev/null; then
-	echo "FAIL: svxlink still running after shutdown" >&2
-	kill "$(cat "$pid")" || true
-	exit 1
-fi
-echo "ok: svxlink process loaded the no-PTT config and shut down"
+echo "ok: published bytes name the source-install paths and leave svxlink.d unloaded"
 echo "functional runtime checks passed"

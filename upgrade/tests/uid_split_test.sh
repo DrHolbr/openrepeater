@@ -59,6 +59,7 @@ printf 'bootstrap\n' | sudo tee "$root/usr/local/sbin/orp-test-bootstrap.sh" >/d
 printf 'archive\n' | sudo tee "$root/opt/orp-test/keep" >/dev/null
 printf 'CANARY-BYTES\n' | sudo tee "$root/etc/svxlink/svxlink.conf" >/dev/null
 sudo chmod 600 "$root/etc/svxlink/svxlink.conf"
+sudo bash -c 'source "$1"; plant_native_layout "$2"' bash "$ROOT_DIR/upgrade/tests/lib/native_layout.sh" "$root"
 printf 'default-site\n' | sudo tee "$root/etc/nginx/sites-enabled/default" >/dev/null
 
 run_install() {

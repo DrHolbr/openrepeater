@@ -4,6 +4,8 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/native_layout.sh
+. "$ROOT_DIR/upgrade/tests/lib/native_layout.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 live="$tmp/live"
@@ -14,6 +16,7 @@ stage="$tmp/staged.conf"
 ctl="$tmp/systemctl"
 log="$tmp/systemctl.log"
 mkdir -p "$live/etc/svxlink" "$live/var/lib/openrepeater/db" "$live/var/backups/orp-ui"
+plant_native_layout "$live"
 chmod 755 "$live" "$live/etc" "$live/etc/svxlink" "$live/var" "$live/var/lib" "$live/var/lib/openrepeater" "$live/var/lib/openrepeater/db" "$live/var/backups" "$live/var/backups/orp-ui"
 printf 'orp-test\n' > "$host"
 printf 'functional-test\n' > "$mode"
@@ -94,11 +97,29 @@ fi
 grep -q '^PTT_TYPE=NONE$' "$dest"
 grep -q '^AUDIO_DEV=udp:127.0.0.1:17001$' "$dest"
 grep -q '^AUDIO_DEV=udp:127.0.0.1:17002$' "$dest"
-grep -q '^EVENT_HANDLER=/usr/share/svxlink/events.tcl$' "$dest"
+grep -q '^EVENT_HANDLER=/usr/local/share/svxlink/events.tcl$' "$dest"
 grep -q '^CALLSIGN=FIXTURE$' "$dest"
 [ "$(grep -c '^\[Tx' "$dest")" -eq 1 ]
+grep -q '^MODULE_PATH=/usr/local/lib/svxlink$' "$dest"
 [ ! -s "$log" ]
+unit_dir="$live/usr/local/lib/systemd/system"
+mkdir -p "$unit_dir"
+"$ROOT_DIR/install/scripts/orp_helper" native unit > "$unit_dir/svxlink.service"
+chmod 644 "$unit_dir/svxlink.service"
+mkdir -p "$live/var/lib/svxlink" "$live/var/spool/svxlink"
+: > "$live/var/log/svxlink"
+chmod 755 "$live/var/lib/svxlink" "$live/var/spool/svxlink"
+chmod 644 "$live/var/log/svxlink"
+set +e
+masked=$("$ROOT_DIR/install/scripts/orp_helper" svxlink start 2>&1)
+masked_rc=$?
+set -e
+[ "$masked_rc" -ne 0 ]
+printf '%s\n' "$masked" | grep -q 'Unmask was not performed'
+[ ! -s "$log" ]
+[ "$(readlink "$live/etc/systemd/system/svxlink.service")" = "/dev/null" ]
 echo "ok: publisher ignored the mutable staged file, including a racing rewrite"
+echo "ok: start does not unmask the administrative mask"
 
 # Corrupt the installed bytes. Start must not run.
 printf 'PTT_PIN=gpio498\n' >> "$dest"
