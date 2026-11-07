@@ -84,19 +84,33 @@ function operating_mode_token {
 	esac
 }
 
+function functional_test_on {
+	[ "$(operating_mode_token)" = "functional-test" ]
+}
+
 function bench_mode_on {
-	# functional-test changes the label only. It still refuses radio start,
-	# GPIO drive, reboot, and unmask. A missing or untrusted mode file does
-	# not turn hostname orp-test back into legacy operation.
+	# functional-test is not bench. A missing or untrusted mode file does
+	# not turn hostname orp-test into legacy operation.
 	local token
 	token=$(operating_mode_token)
-	if [ "$token" = "functional-test" ] || [ "$token" = "bench" ]; then
+	if [ "$token" = "functional-test" ]; then
+		return 1
+	fi
+	if [ "$token" = "bench" ]; then
 		return 0
 	fi
 	if [ "$(bench_hostname)" = "orp-test" ]; then
 		return 0
 	fi
 	[ -f "$(bench_marker_path)" ]
+}
+
+function drive_refuses {
+	if functional_test_on || bench_mode_on; then
+		echo "refused: GPIO and PTT setup stay blocked ($1). This is not a service start and not proof a transmitter unkeyed."
+		return 0
+	fi
+	return 1
 }
 
 function alsa_state_allowed {
@@ -138,7 +152,30 @@ function svxlink_enable {
 	service svxlink start
 }
 
+function svxlink_service_ctl {
+	local action=$1
+	local rc
+	# Never unmask. A masked unit is service-disabled, which is separate
+	# from an unresolved GPIO number and from the dummy audio path.
+	if [ -n "${ORP_SYSTEMCTL:-}" ]; then
+		"${ORP_SYSTEMCTL}" "$action" svxlink.service
+		return $?
+	fi
+	systemctl "$action" svxlink.service
+	rc=$?
+	if systemctl is-enabled svxlink.service 2>/dev/null | grep -q '^masked$'; then
+		echo "service-disabled: svxlink.service is masked. Unmask was not performed."
+		return "$rc"
+	fi
+	systemctl is-active svxlink.service || true
+	return "$rc"
+}
+
 function svxlink_restart {
+	if functional_test_on; then
+		svxlink_service_ctl restart
+		return $?
+	fi
 	if bench_refuses "svxlink restart"; then
 		return 1
 	fi
@@ -147,11 +184,22 @@ function svxlink_restart {
 }
 
 function svxlink_stop {
+	if functional_test_on; then
+		svxlink_service_ctl stop
+		return $?
+	fi
+	if bench_refuses "svxlink stop"; then
+		return 1
+	fi
 	service svxlink stop
 	svxlink_status
 }
 
 function svxlink_start {
+	if functional_test_on; then
+		svxlink_service_ctl start
+		return $?
+	fi
 	if bench_refuses "svxlink start"; then
 		return 1
 	fi
@@ -164,7 +212,7 @@ function svxlink_status {
 }
 
 function svxlink_gpio_up {
-	if bench_refuses "svxlink gpio_up"; then
+	if drive_refuses "svxlink gpio_up"; then
 		return 1
 	fi
 	"${SVXLINK_GPIO_UP_BIN:-/usr/sbin/svxlink_gpio_up}"
@@ -172,7 +220,7 @@ function svxlink_gpio_up {
 }
 
 function svxlink_gpio_down {
-	if bench_refuses "svxlink gpio_down"; then
+	if drive_refuses "svxlink gpio_down"; then
 		return 1
 	fi
 	"${SVXLINK_GPIO_DOWN_BIN:-/usr/sbin/svxlink_gpio_down}"
@@ -181,7 +229,53 @@ function svxlink_gpio_down {
 
 
 ### SYSTEM FUNCTIONS ###
+function config_publish {
+	local src dest dir backup
+	if ! functional_test_on; then
+		echo "refused: config publish requires functional-test"
+		return 1
+	fi
+	src="${ORP_STAGED_CONFIG:-${ORP_BENCH_PREVIEW:-/var/lib/openrepeater/bench-preview}/svxlink.conf}"
+	dest="${ORP_ROOT:-}/etc/svxlink/svxlink.conf"
+	if [ ! -f "$src" ] || [ -L "$src" ]; then
+		echo "refused: staged svxlink.conf is missing"
+		return 1
+	fi
+	if grep -E -q '^[[:space:]]*[^#].*(PTT_PIN|GPIO_SQL_PIN|GPIO_PATH|PTT_TYPE=GPIO|SQL_DET=GPIO|SQL_DET=GPIOD)' "$src"; then
+		echo "refused: staged config contains GPIO or PTT hardware. Stored wiring was not changed."
+		return 1
+	fi
+	if ! grep -q '^PTT_TYPE=NONE$' "$src"; then
+		echo "refused: disconnected runtime requires PTT_TYPE=NONE"
+		return 1
+	fi
+	if ! grep -q '/share/svxlink/events.tcl' "$src"; then
+		echo "refused: EVENT_HANDLER is not the installed SvxLink events.tcl"
+		return 1
+	fi
+	dir=$(dirname "$dest")
+	mkdir -p "$dir" "${ORP_ROOT:-}/etc/svxlink/svxlink.d"
+	if [ -L "$dest" ]; then
+		echo "refused: live svxlink.conf is a symbolic link"
+		return 1
+	fi
+	if [ -f "$dest" ]; then
+		backup="${ORP_ROOT:-}/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%SZ)"
+		mkdir -p "$backup"
+		cp -p "$dest" "$backup/svxlink.conf"
+	fi
+	install -m 644 "$src" "$dest"
+	echo "published ${dest}"
+	echo "runtime=simulation/dummy-path PTT_TYPE=NONE udp audio"
+	echo "gpio=unresolved-not-applied"
+	echo "stored wiring was not modified"
+}
+
 function system_reboot {
+	if functional_test_on; then
+		echo "refused: host reboot stays blocked in functional-test"
+		return 1
+	fi
 	if bench_refuses "system restart"; then
 		return 1
 	fi
@@ -189,6 +283,10 @@ function system_reboot {
 }
 
 function system_shutdown {
+	if functional_test_on; then
+		echo "refused: host shutdown stays blocked in functional-test"
+		return 1
+	fi
 	if bench_refuses "system stop"; then
 		return 1
 	fi
@@ -346,6 +444,11 @@ while :; do
         exit 1
     fi
     case $1 in
+        config)
+			if [ "$2" == "publish" ]; then config_publish
+			else echo "INVALID OPTION"; echo "USAGE: orp_helper config publish"
+			fi
+			exit;;
         svxlink)
 			if [ "$2" == "start" ]; then svxlink_start
 			elif [ "$2" == "stop" ]; then svxlink_stop

@@ -42,6 +42,27 @@ $classSVXLinkGPIO = new SVXLink_GPIO($gpio);
 
 $benchGuard = BenchGuard::detect();
 
+if ($benchGuard->operatingMode() === 'functional-test') {
+	$runtime = $classSVXLink->disconnectedRuntimeConfig();
+	$wrote = $classSVXLink->write_config($runtime, 'svxlink.conf', 'ini');
+	$publish = shell_exec('sudo /usr/sbin/orp_helper config publish 2>&1');
+	$lifecycle = shell_exec('sudo /usr/sbin/orp_helper svxlink restart 2>&1');
+	$notice = 'functional_published=1';
+	if ($wrote !== true || (is_string($publish) && strpos($publish, 'refused:') !== false)) {
+		$notice = 'functional_publish_failed=1';
+	} elseif (is_string($lifecycle) && (strpos($lifecycle, 'masked') !== false || strpos($lifecycle, 'service-disabled') !== false)) {
+		$notice = 'functional_published=1&service_masked=1';
+	}
+	if (isset($_POST['return_url'])) {
+		$url = strtok($_POST['return_url'], '?');
+	} else {
+		$url = '../dashboard.php';
+	}
+	$join = (strpos($url, '?') === false) ? '?' : '&';
+	header('Location: '.$url.$join.$notice);
+	exit;
+}
+
 /* ---------------------------------------------------------- */
 /* --- LOGIC SETTINGS --- */
 
@@ -193,7 +214,7 @@ if (!$publishFailed) {
 	$classDB->set_update_flag(false);
 }
 
-if ($publishFailed || $onBench) {
+if ($publishFailed || $onBench || $benchGuard->operatingMode() === 'functional-test') {
 	if ($publishFailed) {
 		$notice = 'preview_failed=1';
 	} else {

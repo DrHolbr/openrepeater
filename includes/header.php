@@ -95,12 +95,18 @@ $benchGuard = BenchGuard::detect();
 	<div class="alert alert-info">Configuration preview was written. The radio was not restarted.</div>
 <?php } elseif (isset($_GET['bench_blocked'])) { ?>
 	<div class="alert alert-error">Bench mode did not rebuild or restart the repeater.</div>
+<?php } elseif (isset($_GET['functional_published']) && isset($_GET['service_masked'])) { ?>
+	<div class="alert alert-info">Disconnected test config was published. svxlink.service is masked, so it was not started. Unmask was not performed. Stored wiring was not changed.</div>
+<?php } elseif (isset($_GET['functional_published'])) { ?>
+	<div class="alert alert-info">Disconnected test config was published and svxlink was restarted. PTT_TYPE=NONE does not key a radio. Stored wiring was not changed.</div>
+<?php } elseif (isset($_GET['functional_publish_failed'])) { ?>
+	<div class="alert alert-error">Functional-test publish was refused. Stored account, settings, and port wiring were not changed.</div>
 <?php } ?>
 
 	<div class="server_bar_wrap"<?php if ($updateFlage == false) { echo ' style="display: none;"'; } ?>>
 	<div class="server_bar">
 		<?php if ($benchGuard->operatingMode() === 'functional-test') { ?>
-		<span>Functional test: rebuild stays in the preview directory. It does not start svxlink, unmask a unit, or drive a GPIO line. A refused or accepted helper command is not evidence the transmitter is unkeyed.</span>
+		<span>Functional test publishes /etc/svxlink/svxlink.conf with UDP audio and PTT_TYPE=NONE. Stored GPIO numbers are not applied. Start and stop control svxlink only and do not unmask a unit. A masked unit is service-disabled. That is separate from an unresolved GPIO number, and neither means a transmitter has unkeyed.</span>
 		<?php } elseif ($benchGuard->isBench()) { ?>
 		<span>Bench mode: configuration rebuild will not publish files or restart the radio. A refused shutdown command is not evidence the transmitter is unkeyed.</span>
 		<?php } else { ?>

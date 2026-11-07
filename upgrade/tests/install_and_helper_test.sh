@@ -240,11 +240,14 @@ else
 fi
 sudoers="$good/etc/sudoers.d/openrepeater"
 if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoers" \
-	&& ! grep -E -q 'alsa|svxlink start|gpio_up|set_mixer' "$sudoers" \
+	&& ! grep -E -q 'alsa|gpio_up|set_mixer|unmask' "$sudoers" \
 	&& grep -q 'orp_helper svxlink status' "$sudoers" \
+	&& grep -q 'orp_helper svxlink start' "$sudoers" \
+	&& grep -q 'orp_helper svxlink stop' "$sudoers" \
+	&& grep -q 'orp_helper config publish' "$sudoers" \
 	&& grep -q 'orp_helper info os' "$sudoers"
 then
-	ok "sudoers is a closed read-only helper list"
+	ok "sudoers allows exact svxlink lifecycle commands and still has no gpio or unmask"
 else
 	bad "sudoers contract"
 	cat "$sudoers" >&2 || true

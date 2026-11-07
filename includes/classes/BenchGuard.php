@@ -97,11 +97,11 @@ class BenchGuard {
 	}
 
 	public function isBench() {
-		// functional-test is still not legacy operation. Radio start, GPIO
-		// drive, and live publish stay blocked. Deleting the marker does not
-		// leave hostname orp-test. Only a trusted functional-test token
-		// changes the label, and it does not unmask a service.
-		return $this->operatingMode() !== 'legacy';
+		// Only the bench token keeps publication in the preview directory.
+		// functional-test is a different mode: it publishes a no-PTT runtime
+		// and may start the svxlink process. Deleting the marker does not
+		// select it. A missing or untrusted token on orp-test stays bench.
+		return $this->operatingMode() === 'bench';
 	}
 
 	public function hostname() {
@@ -215,6 +215,16 @@ class BenchGuard {
 		}
 		if ($this->operatingMode() === 'legacy') {
 			return true;
+		}
+		if ($this->operatingMode() === 'functional-test') {
+			$allowed = array(
+				'svxlink' => array('start', 'stop', 'status', 'restart'),
+				'config' => array('publish'),
+				'info' => array('timezone', 'cpu_type', 'cpu_speed', 'cpu_load', 'cpu_temp', 'uptime', 'memory_usage', 'disk_usage', 'os'),
+				'audio' => array('inputs', 'outputs', 'version'),
+				'system' => array('uptime', 'user'),
+			);
+			return isset($allowed[$service]) && in_array($option, $allowed[$service], true);
 		}
 		$blocked = array(
 			'svxlink' => array('start', 'restart', 'enable', 'gpio_up', 'gpio_down'),

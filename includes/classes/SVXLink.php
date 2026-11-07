@@ -92,8 +92,11 @@ class SVXLink {
 
 	public function build_global() {
 		$logicsList = implode(",", $this->logics); // Convert array to CSV.
-		
-		$global_array['MODULE_PATH'] = '/usr/lib/arm-linux-gnueabihf/svxlink';
+		if (BenchGuard::detect()->operatingMode() === 'functional-test') {
+			$global_array['MODULE_PATH'] = self::modulePath(self::svxlinkPrefix());
+		} else {
+			$global_array['MODULE_PATH'] = '/usr/lib/arm-linux-gnueabihf/svxlink';
+		}
 		$global_array['LOGICS'] = $logicsList;
 		$global_array['CFG_DIR'] = 'svxlink.d';
 		$global_array['TIMESTAMP_FORMAT'] = '"%c"';
@@ -121,7 +124,112 @@ class SVXLink {
 		return array($parts[0], $channel);
 	}
 
+	public static function svxlinkPrefix() {
+		$override = getenv('ORP_SVXLINK_PREFIX');
+		if (BenchGuard::testHarnessActive() && is_string($override) && $override !== '' && $override[0] === '/') {
+			return rtrim($override, '/');
+		}
+		if (is_file('/usr/local/share/svxlink/events.tcl')) {
+			return '/usr/local';
+		}
+		if (is_file('/usr/share/svxlink/events.tcl')) {
+			return '/usr';
+		}
+		return '/usr/local';
+	}
+
+	public static function modulePath($prefix) {
+		$candidates = array(
+			$prefix . '/lib/aarch64-linux-gnu/svxlink',
+			$prefix . '/lib/arm-linux-gnueabihf/svxlink',
+			$prefix . '/lib/x86_64-linux-gnu/svxlink',
+			$prefix . '/lib/svxlink/modules',
+			$prefix . '/lib/svxlink',
+		);
+		foreach ($candidates as $path) {
+			if (is_dir($path)) {
+				return $path;
+			}
+		}
+		return $prefix . '/lib/aarch64-linux-gnu/svxlink';
+	}
+
+	private function firstPort() {
+		if (!is_array($this->portsArray) || count($this->portsArray) === 0) {
+			return null;
+		}
+		foreach ($this->portsArray as $port) {
+			if (is_array($port)) {
+				return $port;
+			}
+		}
+		return null;
+	}
+
+	// Disconnected test runtime. Stored ports stay in the database. The
+	// generated file uses SvxLink's UDP audio device and PTT_TYPE=NONE, which
+	// the 26.05 manual defines as no PTT hardware. SIGLEV squelch has no
+	// GPIO pin. This is a simulation path, not radio wiring, and it is not
+	// a libgpiod mapping. The installed binary was built with GPIOD disabled.
+	public function disconnectedRuntimeConfig() {
+		$prefix = self::svxlinkPrefix();
+		$port = $this->firstPort();
+		$storedRx = is_array($port) && isset($port['rxGPIO']) ? (string)$port['rxGPIO'] : '';
+		$storedTx = is_array($port) && isset($port['txGPIO']) ? (string)$port['txGPIO'] : '';
+		$call = trim((string)(isset($this->settingsArray['callSign']) ? $this->settingsArray['callSign'] : ''));
+		$cw = $this->morseSpeedAllowed() ? '1' : '0';
+		$logic = array(
+			'TYPE' => 'Repeater',
+			'RX' => 'Rx1',
+			'TX' => 'Tx1',
+			'CALLSIGN' => $call,
+			'EVENT_HANDLER' => $prefix . '/share/svxlink/events.tcl',
+			'SHORT_VOICE_ID_ENABLE' => '1',
+			'SHORT_CW_ID_ENABLE' => $cw,
+			'LONG_VOICE_ID_ENABLE' => '1',
+			'LONG_CW_ID_ENABLE' => $cw,
+		);
+		$logic += $this->identificationIntervalKeys();
+		if ($cw === '1') {
+			$logic['CW_WPM'] = (string)(int)$this->settingsArray['ID_Morse_WPM'];
+		}
+		return array(
+			'GLOBAL' => array(
+				'MODULE_PATH' => self::modulePath($prefix),
+				'LOGICS' => 'RepeaterLogic',
+				'CFG_DIR' => '/etc/svxlink/svxlink.d',
+				'TIMESTAMP_FORMAT' => '"%c"',
+				'CARD_SAMPLE_RATE' => '16000',
+			),
+			'RepeaterLogic' => $logic,
+			'Rx1' => array(
+				'TYPE' => 'Local',
+				'AUDIO_DEV' => 'udp:127.0.0.1:17001',
+				'AUDIO_CHANNEL' => '0',
+				'SQL_DET' => 'SIGLEV',
+				'SQL_START_DELAY' => '1',
+				'SQL_DELAY' => '40',
+				'SIGLEV_SLOPE' => '1',
+				'SIGLEV_OFFSET' => '0',
+				'SIGLEV_OPEN_THRESH' => '30',
+				'SIGLEV_CLOSE_THRESH' => '10',
+				'#STORED_RX_GPIO' => ($storedRx === '' ? 'none' : $storedRx) . ' not applied',
+			),
+			'Tx1' => array(
+				'TYPE' => 'Local',
+				'AUDIO_DEV' => 'udp:127.0.0.1:17002',
+				'AUDIO_CHANNEL' => '0',
+				'PTT_TYPE' => 'NONE',
+				'#STORED_TX_GPIO' => ($storedTx === '' ? 'none' : $storedTx) . ' not applied; simulation/dummy path',
+			),
+		);
+	}
+
 	public function build_rx($curPort) {
+		if (BenchGuard::detect()->operatingMode() === 'functional-test') {
+			$cfg = $this->disconnectedRuntimeConfig();
+			return array('Rx1' => $cfg['Rx1']);
+		}
 		list($audioDevice, $audioChannel) = $this->audioDeviceParts($this->portsArray[$curPort]['rxAudioDev']);
 		
 		$rx_array['RX_Port'.$curPort] = [
@@ -181,6 +289,10 @@ class SVXLink {
 	###############################################
 
 	public function build_tx($curPort) {
+		if (BenchGuard::detect()->operatingMode() === 'functional-test') {
+			$cfg = $this->disconnectedRuntimeConfig();
+			return array('Tx1' => $cfg['Tx1']);
+		}
 		list($audioDevice, $audioChannel) = $this->audioDeviceParts($this->portsArray[$curPort]['txAudioDev']);
 	
 		$tx_array['TX_Port'.$curPort] = [
@@ -380,6 +492,16 @@ class SVXLink {
 
 	public function configDestination($filename) {
 		$guard = BenchGuard::detect();
+		if ($guard->operatingMode() === 'functional-test') {
+			if ($filename !== 'svxlink.conf') {
+				return null;
+			}
+			$root = getenv('ORP_LIVE_CONFIG_ROOT');
+			if ($guard->testHarnessActive() && is_string($root) && $root !== '' && $root[0] === '/') {
+				return rtrim($root, '/') . '/etc/svxlink/svxlink.conf';
+			}
+			return '/etc/svxlink/svxlink.conf';
+		}
 		if ($guard->isBench()) {
 			if (basename($filename) !== $filename) {
 				return null;
@@ -622,6 +744,22 @@ class SVXLink {
 			}
 			if (BenchGuard::writeContained($full_file_path, $file_output) !== true) {
 				return $this->publishFailure();
+			}
+			return true;
+		}
+		if ($guard->operatingMode() === 'functional-test') {
+			$stageDir = $guard->previewDir();
+			if (!is_dir($stageDir) && !mkdir($stageDir, 0770, true) && !is_dir($stageDir)) {
+				return $this->publishFailure();
+			}
+			$staged = rtrim($stageDir, '/') . '/svxlink.conf';
+			if (BenchGuard::writeContained($staged, $file_output) !== true) {
+				return $this->publishFailure();
+			}
+			if (is_dir($filepath) && is_writable($filepath) && !is_link($full_file_path)) {
+				if (@file_put_contents($full_file_path, $file_output) === false) {
+					return $this->publishFailure();
+				}
 			}
 			return true;
 		}

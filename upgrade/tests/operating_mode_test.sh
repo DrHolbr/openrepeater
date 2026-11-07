@@ -17,6 +17,7 @@ rm -f "$missing"
 php -r '
 require $argv[1] . "/includes/classes/BenchGuard.php";
 require $argv[1] . "/includes/classes/GpioMap.php";
+require $argv[1] . "/includes/classes/SVXLink.php";
 function fail($msg) { fwrite(STDERR, "FAIL: {$msg}\n"); exit(1); }
 putenv("ORP_BENCH_TEST_HARNESS=1");
 putenv("ORP_BENCH_HOSTNAME_FILE=" . $argv[2]);
@@ -26,11 +27,13 @@ file_put_contents($argv[4], "functional-test\n");
 chmod($argv[4], 0644);
 $guard = BenchGuard::detect();
 if ($guard->operatingMode() !== "functional-test") fail("trusted functional-test token was not read");
-if ($guard->isBench() !== true) fail("functional-test was treated as legacy operation");
-if ($guard->commandAllowed("svxlink", "start") !== false) fail("functional-test allowed svxlink start");
+if ($guard->isBench() !== false) fail("functional-test was still forced into bench publication");
+if ($guard->commandAllowed("svxlink", "start") !== true) fail("functional-test did not allow svxlink start");
+if ($guard->commandAllowed("svxlink", "stop") !== true) fail("functional-test did not allow svxlink stop");
+if ($guard->commandAllowed("config", "publish") !== true) fail("functional-test did not allow config publish");
 if ($guard->commandAllowed("svxlink", "unmask") !== false) fail("functional-test allowed unmask");
 if ($guard->commandAllowed("svxlink", "gpio_up") !== false) fail("functional-test allowed gpio_up");
-if ($guard->commandAllowed("system", "stop") !== false) fail("functional-test allowed shutdown");
+if ($guard->commandAllowed("system", "stop") !== false) fail("functional-test allowed host shutdown");
 chmod($argv[4], 0666);
 if (BenchGuard::detect()->operatingMode() !== "bench") fail("world-writable mode file was trusted");
 chmod($argv[4], 0644);
@@ -65,7 +68,16 @@ foreach (GpioMap::fromDefinitions($defs) as $row) {
 	}
 }
 if (!$saw498 || !$saw26) fail("preset rows for 498 and 26 were missing");
-echo "ok: functional-test token does not unmask or drive, and unresolved preset outputs stay unsupported\n";
+if (strpos(GpioMap::fromDefinitions($defs)[0]["note"], "gpio base was 496") === false && strpos(json_encode(GpioMap::fromDefinitions($defs)), "gpio base was 496") === false) {
+	fail("498 was not described as a historical gpio-base offset");
+}
+putenv("ORP_BENCH_HOSTNAME_FILE=" . $argv[2]);
+putenv("ORP_BENCH_MARKER=" . $argv[3]);
+putenv("ORP_OPERATING_MODE_FILE=" . $argv[4]);
+chmod($argv[4], 0644);
+$live = (new SVXLink(array("callSign" => "FIXTURE", "ID_Short_Mode" => "morse", "ID_Short_IntervalMin" => "5", "ID_Long_Mode" => "disabled", "ID_Morse_WPM" => "20", "ID_Short_IdentOnlyAfterTX" => "False"), array(array("rxGPIO" => "26", "txGPIO" => "498")), array()))->configDestination("svxlink.conf");
+if ($live !== "/etc/svxlink/svxlink.conf") fail("functional-test publication target was " . $live);
+echo "ok: functional-test publishes to /etc/svxlink, allows start/stop, and still blocks GPIO\n";
 ' "$ROOT_DIR" "$host" "$marker" "$mode" "$missing" "$tmp/other-host"
 
 printf 'functional-test\n' > "$mode"
@@ -74,15 +86,35 @@ export ORP_BENCH_TEST_HARNESS=1
 export ORP_BENCH_HOSTNAME_FILE="$host"
 export ORP_BENCH_MARKER="$missing"
 export ORP_OPERATING_MODE_FILE="$mode"
-set +e
-out=$("$ROOT_DIR/install/scripts/orp_helper" svxlink start 2>&1)
-set -e
-printf '%s\n' "$out" | grep -q 'refused:'
-if printf '%s\n' "$out" | grep -q 'systemctl'; then
-	echo "FAIL: functional-test start reached systemctl" >&2
+ctl="$tmp/systemctl"
+cat > "$ctl" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "${ORP_SYSTEMCTL_LOG:?}"
+if [ "$1" = "is-enabled" ]; then
+	echo masked
 	exit 1
 fi
-echo "ok: helper refuses svxlink start in functional-test without calling systemctl"
+exit 0
+EOF
+chmod 755 "$ctl"
+export ORP_SYSTEMCTL="$ctl"
+export ORP_SYSTEMCTL_LOG="$tmp/systemctl.log"
+: > "$ORP_SYSTEMCTL_LOG"
+set +e
+gpio_out=$("$ROOT_DIR/install/scripts/orp_helper" svxlink gpio_up 2>&1)
+gpio_rc=$?
+set -e
+[ "$gpio_rc" -ne 0 ]
+printf '%s\n' "$gpio_out" | grep -q 'GPIO and PTT setup stay blocked'
+set +e
+"$ROOT_DIR/install/scripts/orp_helper" svxlink start >/dev/null 2>&1
+set -e
+grep -q 'start svxlink.service' "$ORP_SYSTEMCTL_LOG"
+if grep -q 'unmask' "$ORP_SYSTEMCTL_LOG"; then
+	echo "FAIL: functional-test start unmasked the unit" >&2
+	exit 1
+fi
+echo "ok: helper start targets svxlink.service and gpio_up stays blocked"
 
 mkdir -p "$tmp/root/etc/openrepeater"
 printf 'orp-test\n' > "$tmp/root/etc/hostname"

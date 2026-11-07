@@ -83,8 +83,8 @@ $classSystem = new System();
 				      </div>
 				      <div class="modal-footer">
 							<button class="btn btn-default" data-dismiss="modal">Cancel</button>
-							<?php if ($benchGuard->isBench()) { ?>
-							<button class="btn btn-success" disabled="disabled">Restart blocked on bench</button>
+							<?php if ($benchGuard->operatingMode() !== 'legacy') { ?>
+							<button class="btn btn-success" disabled="disabled">Host restart blocked</button>
 							<?php } else { ?>
 							<button class="btn btn-success" onclick="reboot_orp_system();"><i class="icon-refresh icon-white"></i> Restart</button>
 							<?php } ?>
@@ -108,8 +108,8 @@ $classSystem = new System();
 				      </div>
 				      <div class="modal-footer">
 							<button class="btn btn-default" data-dismiss="modal">Cancel</button>
-							<?php if ($benchGuard->isBench()) { ?>
-							<button class="btn btn-danger" disabled="disabled">Shutdown blocked on bench</button>
+							<?php if ($benchGuard->operatingMode() !== 'legacy') { ?>
+							<button class="btn btn-danger" disabled="disabled">Host shutdown blocked</button>
 							<?php } else { ?>
 							<button class="btn btn-danger" onclick="shutdown_orp_system();"><i class="icon-off icon-white"></i> Shutdown</button>
 							<?php } ?>

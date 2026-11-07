@@ -82,8 +82,22 @@ class GpioMap {
 			'line_offset_candidate' => $class['line_offset_candidate'],
 			'output_supported' => false,
 			'drivable' => false,
-			'note' => $note,
+			'note' => self::expanderNote($number, $note),
 		);
+	}
+
+	private static function expanderNote($number, $note) {
+		$digits = (string)$number;
+		if ($digits === '' || !ctype_digit($digits)) {
+			return $note;
+		}
+		$n = (int)$digits;
+		if ($n < 496 || $n > 511) {
+			return $note;
+		}
+		$offset = $n - 496;
+		return $note . ' If the old kernel gpio base was 496, this is expander line offset ' . $offset
+			. '. The ICS manual names 498 as GPA2 and 506 as PTT, which matches offsets 2 and 10 under that base. That is not a BCM number. orp-test gpiodetect showed gpiochip0 and raspberrypi-exp-gpio and no MCP23017, so this offset is not an active line. Not driven.';
 	}
 
 	public static function fromDefinitions($definitions) {
