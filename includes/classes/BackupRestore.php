@@ -23,6 +23,7 @@ class BackupRestore {
 	
 	private $Database;
 	private $Modules;
+	private $markerIdentity = null;
 
 
 	public function __construct() {
@@ -295,7 +296,12 @@ class BackupRestore {
 		if ($path === false || !is_string($bytes) || $this->marker_occupied()) {
 			return false;
 		}
-		return $this->exclusive_nofollow_write($path, $bytes);
+		$created = $this->exclusive_nofollow_write($path, $bytes);
+		if ($created === false) {
+			return false;
+		}
+		$this->markerIdentity = $created;
+		return true;
 	}
 
 	private function replace_regular_marker($bytes) {
@@ -308,15 +314,21 @@ class BackupRestore {
 			return false;
 		}
 		$tmp = dirname($path) . '/.restore-recovery-' . bin2hex(random_bytes(6)) . '.tmp';
-		if (!$this->exclusive_nofollow_write($tmp, $bytes)) {
+		$created = $this->exclusive_nofollow_write($tmp, $bytes);
+		if ($created === false) {
 			return false;
 		}
-		if (@lstat($path) === false || !$this->is_regular_mode(lstat($path)['mode']) || !rename($tmp, $path)) {
-			$this->unlink_regular($tmp);
+		$still = @lstat($path);
+		if ($still === false || !$this->is_regular_mode($still['mode']) || !rename($tmp, $path)) {
+			$this->unlink_owned($tmp, $created['dev'], $created['ino']);
 			return false;
 		}
 		$after = @lstat($path);
-		return $after !== false && $this->is_regular_mode($after['mode']) && (int) $after['size'] === strlen($bytes);
+		if ($after === false || !$this->is_regular_mode($after['mode']) || (int) $after['size'] !== strlen($bytes) || (int) $after['dev'] !== $created['dev'] || (int) $after['ino'] !== $created['ino']) {
+			return false;
+		}
+		$this->markerIdentity = $created;
+		return true;
 	}
 
 	private function exclusive_nofollow_write($path, $bytes) {
@@ -326,12 +338,25 @@ class BackupRestore {
 		// PHP fopen mode x follows a dangling symlink and creates the target.
 		// Python os.open with O_NOFOLLOW|O_EXCL does not. The web SAPI disables FFI.
 		$script = <<<'PY'
-import os, sys
+import os, stat, sys, time
 path = sys.stdin.buffer.readline()[:-1].decode()
 data = sys.stdin.buffer.read()
+pause = os.environ.get("ORP_MARKER_PAUSE_FILE", "")
+if pause:
+    open(pause, "w").close()
+    while not os.path.exists(pause + ".go"):
+        time.sleep(0.02)
 flags = os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_WRONLY | getattr(os, "O_CLOEXEC", 0)
-fd = os.open(path, flags, 0o600)
 try:
+    fd = os.open(path, flags, 0o600)
+except OSError:
+    sys.stdout.write("open-failed\n")
+    sys.exit(1)
+owned = os.fstat(fd)
+try:
+    if os.environ.get("ORP_MARKER_SHORT_WRITE") == "1":
+        os.write(fd, b"x")
+        raise OSError("short write")
     view = memoryview(data)
     off = 0
     while off < len(view):
@@ -341,8 +366,18 @@ try:
         off += wrote
     os.fsync(fd)
     os.fchmod(fd, 0o600)
-finally:
+except OSError:
     os.close(fd)
+    try:
+        now = os.lstat(path)
+        if now.st_dev == owned.st_dev and now.st_ino == owned.st_ino and stat.S_ISREG(now.st_mode):
+            os.unlink(path)
+    except OSError:
+        pass
+    sys.stdout.write("write-failed\n")
+    sys.exit(1)
+os.close(fd)
+sys.stdout.write("owned %d %d\n" % (owned.st_dev, owned.st_ino))
 PY;
 		$script = implode("\n", array_map(function ($line) {
 			return ltrim($line, "\t");
@@ -353,33 +388,41 @@ PY;
 		}
 		fwrite($pipes[0], $path . "\n" . $bytes);
 		fclose($pipes[0]);
+		$out = stream_get_contents($pipes[1]);
 		fclose($pipes[1]);
 		fclose($pipes[2]);
 		$rc = proc_close($proc);
-		$st = @lstat($path);
-		if ($rc !== 0 || $st === false || !$this->is_regular_mode($st['mode']) || (int) $st['size'] !== strlen($bytes)) {
-			$this->unlink_regular($path);
+		if ($rc !== 0 || !is_string($out) || !preg_match('/^owned ([0-9]+) ([0-9]+)$/', trim($out), $owned)) {
 			return false;
 		}
-		return true;
+		$dev = (int) $owned[1];
+		$ino = (int) $owned[2];
+		$st = @lstat($path);
+		if ($st === false || !$this->is_regular_mode($st['mode']) || (int) $st['dev'] !== $dev || (int) $st['ino'] !== $ino || (int) $st['size'] !== strlen($bytes)) {
+			$this->unlink_owned($path, $dev, $ino);
+			return false;
+		}
+		return array('dev' => $dev, 'ino' => $ino);
 	}
 
 	private function is_regular_mode($mode) {
 		return ((int) $mode & 0170000) === 0100000;
 	}
 
-	private function unlink_regular($path) {
+	private function unlink_owned($path, $dev, $ino) {
 		$st = @lstat($path);
-		if ($st !== false && $this->is_regular_mode($st['mode'])) {
+		if ($st !== false && $this->is_regular_mode($st['mode']) && (int) $st['dev'] === (int) $dev && (int) $st['ino'] === (int) $ino) {
 			unlink($path);
 		}
 	}
 
 	private function clear_recovery_manifest() {
 		$path = $this->marker_path();
-		if (is_string($path)) {
-			$this->unlink_regular($path);
+		if (!is_string($path) || !is_array($this->markerIdentity)) {
+			return;
 		}
+		$this->unlink_owned($path, $this->markerIdentity['dev'], $this->markerIdentity['ino']);
+		$this->markerIdentity = null;
 	}
 
 	private function stage_restore_files() {

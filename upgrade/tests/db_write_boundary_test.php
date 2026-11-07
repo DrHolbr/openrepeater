@@ -13,6 +13,9 @@ if (isset($argv[2]) && $argv[2] === '--as-web') {
 if (isset($argv[2]) && $argv[2] === '--partial-copy') {
 	exit(partial_copy_fixture($argv[3]));
 }
+if (isset($argv[2]) && $argv[2] === '--marker-race') {
+	exit(marker_race_loser($argv[3]));
+}
 
 function fail($message) {
 	fwrite(STDERR, "FAIL: $message\n");
@@ -63,6 +66,27 @@ function partial_copy_fixture($layout) {
 	echo 'live_keep=' . (is_file($keep) ? file_get_contents($keep) : 'MISSING') . "\n";
 	$stashes = glob($layout . '/sounds/.orp-stash-*');
 	echo 'stash_count=' . (is_array($stashes) ? count($stashes) : 0) . "\n";
+	return 0;
+}
+function marker_race_loser($layout) {
+	global $root;
+	$_SERVER['DOCUMENT_ROOT'] = $root;
+	$_SERVER['HTTP_HOST'] = '127.0.0.1';
+	putenv('ORP_DB_PATH=' . $layout . '/app.db');
+	putenv('ORP_FLAG_STORE=sqlite');
+	putenv('ORP_BENCH_TEST_HARNESS=1');
+	putenv('ORP_BENCH_MARKER=' . $layout . '/no-marker');
+	putenv('ORP_BENCH_HOSTNAME_FILE=' . $layout . '/hostname');
+	putenv('ORP_SOUNDS_PATH=' . $layout . '/sounds');
+	putenv('ORP_BACKUP_PATH=' . $layout . '/backup');
+	putenv('ORP_MODULES_PATH=' . $layout . '/modules');
+	putenv('ORP_MARKER_PAUSE_FILE=' . $layout . '/pause');
+	require_once $root . '/includes/classes/BenchGuard.php';
+	require_once $root . '/includes/classes/Modules.php';
+	require_once $root . '/includes/classes/BackupRestore.php';
+	$restore = new BackupRestore();
+	$result = $restore->restore_backup();
+	echo 'msg=' . (isset($result['msgText']) ? $result['msgText'] : '') . "\n";
 	return 0;
 }
 function web_uid_fixture($layout) {
@@ -596,6 +620,41 @@ if (!is_array($updateNote) || $updateNote['phase'] !== 'ready' || $updateNote['a
 	fail('a recovery-note update failure did not keep the destination and stash mapping');
 }
 echo "ok: a recovery-note update failure keeps the mapped stash and does not change the database\n";
+
+$short = marker_layout('orp-marker-short', $dump, $copy);
+putenv('ORP_MARKER_SHORT_WRITE=1');
+$shortRestore = new BackupRestore();
+$shortResult = $shortRestore->restore_backup();
+putenv('ORP_MARKER_SHORT_WRITE');
+if (is_file($short . '/backup/restore-recovery.json') || file_get_contents($short . '/sounds/courtesy_tones/keep.wav') !== 'keep' || strpos($shortResult['msgText'], 'left unchanged') === false) {
+	fail('a partial recovery-note write left a file or changed the live tree');
+}
+echo "ok: a partial recovery-note write removes only the file that attempt created\n";
+
+$race = marker_layout('orp-marker-race', $dump, $copy);
+$raceProc = proc_open('php ' . escapeshellarg(__FILE__) . ' ' . escapeshellarg($root) . ' --marker-race ' . escapeshellarg($race), array(1 => array('pipe', 'w'), 2 => array('file', $race . '/loser.err', 'w')), $racePipes);
+$raceDeadline = time() + 5;
+while (!is_file($race . '/pause') && time() < $raceDeadline) {
+	usleep(20000);
+}
+if (!is_file($race . '/pause')) {
+	proc_terminate($raceProc);
+	fail('the losing restore did not reach the exclusive create');
+}
+$winnerBytes = '{"winner":true,"stash":"/orig/stash"}';
+$winnerCmd = 'python3 -c ' . escapeshellarg('import os,sys; p=sys.argv[1]; d=sys.stdin.buffer.read(); fd=os.open(p, os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_WRONLY, 0o600); os.write(fd, d); os.close(fd)');
+$winnerProc = proc_open($winnerCmd . ' ' . escapeshellarg($race . '/backup/restore-recovery.json'), array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $winnerPipes);
+fwrite($winnerPipes[0], $winnerBytes);
+fclose($winnerPipes[0]);
+$winnerRc = proc_close($winnerProc);
+file_put_contents($race . '/pause.go', "go\n");
+$raceOut = stream_get_contents($racePipes[1]);
+$raceRc = proc_close($raceProc);
+if ($winnerRc !== 0 || $raceRc !== 0 || file_get_contents($race . '/backup/restore-recovery.json') !== $winnerBytes || file_get_contents($race . '/sounds/courtesy_tones/keep.wav') !== 'keep' || strpos($raceOut, 'left unchanged') === false) {
+	fwrite(STDERR, $raceOut);
+	fail('a failed exclusive create deleted the other restore note');
+}
+echo "ok: a failed exclusive create leaves the other restore note in place\n";
 
 $layout = sys_get_temp_dir() . '/orp-sticky-' . getmypid();
 $stickyDb = $layout . '/db/openrepeater.db';
