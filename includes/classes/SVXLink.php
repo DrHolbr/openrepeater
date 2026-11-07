@@ -114,13 +114,19 @@ class SVXLink {
 	# Build RX Port
 	###############################################
 
+	private function audioDeviceParts($value) {
+		$parts = explode('|', (string)$value);
+		$channel = array_key_exists(1, $parts) ? $parts[1] : '0';
+		return array($parts[0], $channel);
+	}
+
 	public function build_rx($curPort) {
-		$audio_dev = explode("|", $this->portsArray[$curPort]['rxAudioDev']);
+		list($audioDevice, $audioChannel) = $this->audioDeviceParts($this->portsArray[$curPort]['rxAudioDev']);
 		
 		$rx_array['RX_Port'.$curPort] = [
 			'TYPE' => 'Local',
-			'AUDIO_DEV' => $audio_dev[0],
-			'AUDIO_CHANNEL' => $audio_dev[1],
+			'AUDIO_DEV' => $audioDevice,
+			'AUDIO_CHANNEL' => $audioChannel,
 		];
 	
 		if (strtolower($this->portsArray[$curPort]['rxMode']) == 'vox') {
@@ -174,12 +180,12 @@ class SVXLink {
 	###############################################
 
 	public function build_tx($curPort) {
-		$audio_dev = explode("|", $this->portsArray[$curPort]['txAudioDev']);
+		list($audioDevice, $audioChannel) = $this->audioDeviceParts($this->portsArray[$curPort]['txAudioDev']);
 	
 		$tx_array['TX_Port'.$curPort] = [
 			'TYPE' => 'Local',
-			'AUDIO_DEV' => $audio_dev[0],
-			'AUDIO_CHANNEL' => $audio_dev[1],
+			'AUDIO_DEV' => $audioDevice,
+			'AUDIO_CHANNEL' => $audioChannel,
 			'PTT_TYPE' => 'GPIO',
 			'PTT_PORT' => 'GPIO',
 			'PTT_PIN' => 'gpio'.$this->portsArray[$curPort]['txGPIO'],

@@ -13,13 +13,44 @@ log="$tmp/apt.log"
 : > "$state"
 : > "$log"
 
-mkdir -p "$tmp/root/etc/apt/sources.list.d"
-cat > "$tmp/root/etc/apt/sources.list.d/debian.sources" <<'EOF'
+write_pi_sources() {
+	mkdir -p "$tmp/root/etc/apt/sources.list.d"
+	cat > "$tmp/root/etc/apt/sources.list.d/debian.sources" <<'EOF'
+# Raspberry Pi OS Trixie keeps Debian and Debian security as separate stanzas.
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: http://deb.debian.org/debian-security
+Suites: trixie-security
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+# deb-src is not an install source
+Types: deb-src
+URIs: http://deb.debian.org/debian
+Suites: trixie
+Components: main
+Enabled: no
+EOF
+	cat > "$tmp/root/etc/apt/sources.list.d/raspi.sources" <<'EOF'
+Types: deb
+URIs: http://archive.raspberrypi.com/debian
+Suites: trixie
+Components: main
+EOF
+	cat > "$tmp/root/etc/apt/sources.list.d/debian.sources.bak" <<'EOF'
 Types: deb
 URIs: http://deb.debian.org/debian-security
 Suites: trixie-security
 Components: main
+Enabled: no
 EOF
+}
+write_pi_sources
 
 seed_pkg() {
 	local pkg=$1 installed=$2 candidate=$3
@@ -32,6 +63,8 @@ reset_state() {
 	seed_pkg php8.4-fpm "$1" "$2"
 	seed_pkg php8.4-cli "$3" "$4"
 	seed_pkg php8.4-sqlite3 "$5" "$6"
+	seed_pkg php8.4-common "$4" "$4"
+	seed_pkg php8.4-opcache "$4" "$4"
 }
 
 cat > "$tmp/apt-get" <<'EOF'
@@ -73,6 +106,19 @@ while read -r name inst cand; do
 done < "${PHP_APT_STATE:?}"
 printf 'Installed: %s\n' "$installed"
 printf 'Candidate: %s\n' "$candidate"
+printf 'Version table:\n'
+if [ -n "$candidate" ] && [ "$candidate" != "(none)" ]; then
+	printf ' *** %s 500\n' "$candidate"
+	origin_file="${PHP_APT_ORIGINS:-}/$pkg"
+	if [ -f "$origin_file" ]; then
+		while read -r uri suite; do
+			[ -n "$uri" ] || continue
+			printf '        500 %s %s/main arm64 Packages\n' "$uri" "$suite"
+		done < "$origin_file"
+	else
+		printf '        500 http://deb.debian.org/debian-security trixie-security/main arm64 Packages\n'
+	fi
+fi
 EOF
 chmod 755 "$tmp/apt-get" "$tmp/apt-cache"
 
@@ -143,13 +189,7 @@ else
 	exit 1
 fi
 
-mkdir -p "$tmp/root/etc/apt/sources.list.d"
-cat > "$tmp/root/etc/apt/sources.list.d/debian.sources" <<'EOF'
-Types: deb
-URIs: http://deb.debian.org/debian-security
-Suites: trixie-security
-Components: main
-EOF
+write_pi_sources
 reset_state 8.4.11-1 8.4.16-1 8.4.16-1 8.4.16-1 8.4.16-1 8.4.16-1
 set +e
 run_php 1 >"$tmp/stick.out" 2>"$tmp/stick.err"
@@ -180,4 +220,48 @@ if grep -n -- '--no-upgrade' "$ROOT_DIR/upgrade/install-orp-ui.sh" | grep -E 'ph
 	exit 1
 fi
 echo "ok: installer --no-upgrade does not cover PHP"
+
+disabled="$tmp/disabled-root"
+mkdir -p "$disabled/etc/apt/sources.list.d"
+cat > "$disabled/etc/apt/sources.list.d/debian.sources" <<'EOF'
+# Suites: trixie-security
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main
+
+Types: deb
+URIs: http://deb.debian.org/debian-security
+Suites: trixie-security
+Components: main
+Enabled: no
+EOF
+if ROOT="$disabled" bench_php_security_enabled; then
+	echo "FAIL: Enabled: no security stanza was accepted" >&2
+	exit 1
+fi
+echo "ok: disabled deb822 trixie-security is not an enabled source"
+
+mkdir -p "$tmp/origins"
+cat > "$tmp/origins/php8.4-fpm" <<'EOF'
+http://deb.debian.org/debian-security trixie-security
+https://packages.example.com/php trixie
+EOF
+for pkg in php8.4-cli php8.4-common php8.4-sqlite3 php8.4-opcache; do
+	printf '%s\n' 'http://deb.debian.org/debian-security trixie-security' > "$tmp/origins/$pkg"
+done
+reset_state 8.4.27-1~deb13u1 8.4.27-1~deb13u1 8.4.27-1~deb13u1 8.4.27-1~deb13u1 8.4.27-1~deb13u1 8.4.27-1~deb13u1
+set +e
+ROOT="$tmp/root" ORP_APT_GET="$tmp/apt-get" ORP_APT_CACHE="$tmp/apt-cache" \
+	PHP_APT_LOG="$log" PHP_APT_STATE="$state" PHP_APT_ORIGINS="$tmp/origins" PHP_APT_STICK=0 \
+	bench_install_php84 >"$tmp/third.out" 2>"$tmp/third.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && grep -q 'outside Debian' "$tmp/third.err" && ! grep -q '^install ' "$log"; then
+	echo "ok: same-version third-party origin is refused"
+else
+	echo "FAIL: third-party origin rc=$rc" >&2
+	cat "$tmp/third.err" >&2
+	exit 1
+fi
 echo "php package policy checks passed"

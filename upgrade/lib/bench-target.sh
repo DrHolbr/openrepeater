@@ -498,10 +498,10 @@ bench_ensure_regular() {
 	return 1
 }
 
-# Debian Trixie PHP 8.4 from the already enabled security suite.
-# These three packages may be installed or upgraded to the apt candidate.
-# Nothing else is upgraded here. No third-party PHP repository is added.
-BENCH_PHP84_PACKAGES=(php8.4-fpm php8.4-cli php8.4-sqlite3)
+# Debian Trixie PHP 8.4 from enabled Debian archive and security suites.
+# Raspberry Pi OS also enables archive.raspberrypi.com; that archive is not
+# a Debian origin for these packages. No apt source is added or edited.
+BENCH_PHP84_PACKAGES=(php8.4-fpm php8.4-cli php8.4-common php8.4-sqlite3 php8.4-opcache)
 
 bench_apt() {
 	if [ -n "${ORP_APT_GET:-}" ]; then
@@ -519,18 +519,196 @@ bench_apt_cache() {
 	fi
 }
 
+bench_php_uri_kind() {
+	local uri=${1%/}
+	case "$uri" in
+		http://deb.debian.org/debian-security|https://deb.debian.org/debian-security|\
+		http://security.debian.org|https://security.debian.org|\
+		http://security.debian.org/debian-security|https://security.debian.org/debian-security|\
+		http://ftp.debian.org/debian-security|https://ftp.debian.org/debian-security)
+			printf '%s' security
+			;;
+		http://deb.debian.org/debian|https://deb.debian.org/debian|\
+		http://ftp.debian.org/debian|https://ftp.debian.org/debian)
+			printf '%s' archive
+			;;
+		*)
+			printf '%s' other
+			;;
+	esac
+}
+
+bench_php_note_origin() {
+	local kind suite
+	kind=$(bench_php_uri_kind "$1")
+	suite=$2
+	case "${kind}:${suite}" in
+		security:trixie-security) BENCH_SAW_DEBIAN_SECURITY=1 ;;
+		archive:trixie|archive:trixie-updates) BENCH_SAW_DEBIAN_ARCHIVE=1 ;;
+	esac
+}
+
+bench_php_origin_authorized() {
+	local kind suite
+	kind=$(bench_php_uri_kind "$1")
+	suite=${2%%/*}
+	case "${kind}:${suite}" in
+		security:trixie-security|archive:trixie|archive:trixie-updates) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# Read one deb822 or one-line apt source file. Enabled: no, commented lines,
+# deb-src-only stanzas, and backup filenames are not treated as enabled.
+# Prints nothing. Sets BENCH_SAW_DEBIAN_SECURITY and BENCH_SAW_DEBIAN_ARCHIVE.
+bench_php_read_source_file() {
+	local file=$1
+	local base tmp_origins
+	base=$(basename "$file")
+	tmp_origins=$(mktemp)
+	case "$base" in
+		*.bak|*.save|*.disabled|*.dpkg-old|*~) return 0 ;;
+	esac
+	[ -f "$file" ] || return 0
+	[ -L "$file" ] && return 0
+	case "$base" in
+		*.sources)
+			awk '
+				function flush() {
+					if (types == "" && uris == "" && suites == "") return
+					enabled = tolower(enabled)
+					if (enabled == "no") return
+					n = split(types, tv, /[[:space:]]+/)
+					hasdeb = 0
+					for (i = 1; i <= n; i++) if (tv[i] == "deb") hasdeb = 1
+					if (!hasdeb) return
+					nu = split(uris, uv, /[[:space:]]+/)
+					ns = split(suites, sv, /[[:space:]]+/)
+					for (ui = 1; ui <= nu; ui++) {
+						if (uv[ui] == "") continue
+						for (si = 1; si <= ns; si++) {
+							if (sv[si] == "") continue
+							print uv[ui], sv[si]
+						}
+					}
+				}
+				BEGIN { types = ""; uris = ""; suites = ""; enabled = "yes"; key = "" }
+				/^[[:space:]]*#/ || /^[[:space:]]*$/ {
+					if ($0 ~ /^[[:space:]]*$/) flush()
+					if ($0 ~ /^[[:space:]]*$/) { types = ""; uris = ""; suites = ""; enabled = "yes"; key = "" }
+					next
+				}
+				{
+					line = $0
+					if (line ~ /^[[:space:]]/) {
+						sub(/^[[:space:]]+/, "", line)
+						if (key == "types") types = types " " line
+						else if (key == "uris") uris = uris " " line
+						else if (key == "suites") suites = suites " " line
+						else if (key == "enabled") enabled = enabled " " line
+						next
+					}
+					split(line, kv, /:[[:space:]]*/)
+					key = tolower(kv[1])
+					val = line
+					sub(/^[^:]+:[[:space:]]*/, "", val)
+					if (key == "types") types = val
+					else if (key == "uris") uris = val
+					else if (key == "suites") suites = val
+					else if (key == "enabled") enabled = val
+				}
+				END { flush() }
+			' "$file" > "$tmp_origins"
+			while read -r uri suite; do
+				bench_php_note_origin "$uri" "$suite"
+			done < "$tmp_origins"
+			;;
+		sources.list|*.list)
+			while IFS= read -r line || [ -n "$line" ]; do
+				case "$line" in
+					''|\#*) continue ;;
+				esac
+				set -- $line
+				[ "$1" = "deb" ] || continue
+				shift
+				if [ "${1#-}" != "$1" ] || [ "${1#\[}" != "$1" ]; then
+					opts=$1
+					shift
+					case "$(printf '%s' "$opts" | tr '[:upper:]' '[:lower:]')" in
+						*enabled=no*) continue ;;
+					esac
+				fi
+				[ $# -ge 2 ] || continue
+				bench_php_note_origin "$1" "$2"
+			done < "$file"
+			;;
+	esac
+	rm -f "$tmp_origins"
+}
+
 bench_php_security_enabled() {
-	local dir file
+	local dir
 	dir="${ROOT:-}/etc/apt"
 	if [ ! -d "$dir" ]; then
 		echo "refused: apt sources directory $dir is absent" >&2
 		return 1
 	fi
-	if grep -R -l -E --include='sources.list' --include='*.list' --include='*.sources' '^[^#]*trixie-security' "$dir" >/dev/null 2>&1; then
-		return 0
+	BENCH_SAW_DEBIAN_SECURITY=0
+	BENCH_SAW_DEBIAN_ARCHIVE=0
+	if [ -f "$dir/sources.list" ]; then
+		bench_php_read_source_file "$dir/sources.list"
 	fi
-	echo "refused: Debian trixie-security is not enabled in $dir" >&2
-	return 1
+	local file
+	for file in "$dir"/sources.list.d/*.list "$dir"/sources.list.d/*.sources; do
+		[ -e "$file" ] || continue
+		bench_php_read_source_file "$file"
+	done
+	if [ "$BENCH_SAW_DEBIAN_SECURITY" != 1 ] || [ "$BENCH_SAW_DEBIAN_ARCHIVE" != 1 ]; then
+		echo "refused: enabled Debian trixie and trixie-security sources are required" >&2
+		return 1
+	fi
+	return 0
+}
+
+bench_php_candidate_origins_ok() {
+	local pkg=$1
+	local candidate=$2
+	local saw=0 bad=0 uri suitecomp
+	while read -r uri suitecomp; do
+		[ -n "$uri" ] || continue
+		saw=1
+		if ! bench_php_origin_authorized "$uri" "$suitecomp"; then
+			bad=1
+		fi
+	done < <(bench_apt_cache policy "$pkg" | awk -v cand="$candidate" '
+		BEGIN { inver = 0 }
+		{
+			line = $0
+			sub(/\r$/, "", line)
+		}
+		line ~ /^ +(\*\*\* +)?[^ ]+ +[0-9]+$/ {
+			ver = line
+			sub(/^ +\*+ +/, "", ver)
+			sub(/^ +/, "", ver)
+			split(ver, parts, /[[:space:]]+/)
+			inver = (parts[1] == cand)
+			next
+		}
+		inver && line ~ /^ +[0-9]+ +https?:\/\// {
+			print $2, $3
+			next
+		}
+		line ~ /^[^[:space:]]/ { inver = 0 }
+	')
+	if [ "$saw" != 1 ]; then
+		echo "refused: apt did not report a Debian origin for ${pkg} candidate ${candidate}" >&2
+		return 1
+	fi
+	if [ "$bad" != 0 ]; then
+		echo "refused: ${pkg} candidate ${candidate} is also published outside Debian trixie or trixie-security" >&2
+		return 1
+	fi
+	return 0
 }
 
 bench_php_policy_field() {
@@ -548,8 +726,8 @@ bench_php_candidate_is_84() {
 	esac
 }
 
-# Refresh apt, then install or upgrade only the PHP 8.4 runtime and the
-# sqlite3 extension up to the candidate from the enabled distro repositories.
+# Refresh apt, then install or upgrade only the PHP 8.4 runtime packages
+# up to the candidate from enabled Debian trixie and trixie-security.
 # --no-upgrade is intentionally not used here: a reinstall must not keep an
 # older installed PHP when the candidate is newer. Returns 0 only when each
 # package's installed version equals that candidate.
@@ -574,6 +752,9 @@ bench_install_php84() {
 			echo "refused: candidate for ${pkg} is ${candidate}, expected PHP 8.4 from Debian" >&2
 			return 5
 		fi
+		if ! bench_php_candidate_origins_ok "$pkg" "$candidate"; then
+			return 5
+		fi
 		if [ "$installed" != "$candidate" ]; then
 			stale+=("$pkg")
 		fi
@@ -589,6 +770,9 @@ bench_install_php84() {
 		installed=$(bench_php_policy_field "$pkg" Installed)
 		if [ "$installed" != "$candidate" ] || ! bench_php_candidate_is_84 "$installed"; then
 			echo "refused: ${pkg} installed (${installed:-none}) is not the apt candidate (${candidate:-none})" >&2
+			return 5
+		fi
+		if ! bench_php_candidate_origins_ok "$pkg" "$candidate"; then
 			return 5
 		fi
 	done

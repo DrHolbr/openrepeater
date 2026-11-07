@@ -327,6 +327,9 @@ db_file=$(p /var/lib/openrepeater/db/openrepeater.db)
 if ! bench_ensure_regular "$db_file"; then
 	exit 6
 fi
+# An existing database is the station account and configuration. A reinstall
+# copies the stock file only when this path is missing. It does not seed
+# over users, settings, ports, or modules.
 if [ "$(bench_lstat_kind "$db_file")" = missing ]; then
 	bench_place_file "$REPO_ROOT/install/sql/openrepeater.db" "$db_file"
 fi

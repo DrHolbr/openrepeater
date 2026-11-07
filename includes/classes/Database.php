@@ -345,7 +345,10 @@ class Database {
 		if ($force === 'sqlite') {
 			return false;
 		}
-		return class_exists('Memcached');
+		// extension_loaded does not ask the autoloader to invent
+		// includes/classes/Memcached.php. The class check is also
+		// non-autoloading, so a missing extension uses system_flags.
+		return extension_loaded('memcached') && class_exists('Memcached', false);
 	}
 
 	public function set_update_flag($flag) {

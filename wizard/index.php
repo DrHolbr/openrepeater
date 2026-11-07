@@ -12,7 +12,9 @@ if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
 require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/autoloadClasses.php');
 ################################################################################
 
-session_name("open_repeater_wizard");   // In case there are several session based applications
+// Keep the login session. session_name() after session_start() does not
+// switch cookies and warns on PHP 8: "Session name cannot be changed when
+// a session is active".
 
 if (!isset($_POST["page"])) {
 	// Default Settings are not visiable to the user. They will get written into database as defaults that they can change later on.
