@@ -36,13 +36,35 @@ class RequestGuard {
 
 	public static function authenticated() {
 		self::start();
-		if (!isset($_SESSION['username']) || !is_string($_SESSION['username']) || $_SESSION['username'] === '') {
+		$username = isset($_SESSION['username']) ? $_SESSION['username'] : null;
+		$userID = isset($_SESSION['userID']) ? $_SESSION['userID'] : null;
+		if (!is_string($username) || $username === '' || strlen($username) > 64) {
 			return false;
 		}
-		if (!isset($_SESSION['userID']) || $_SESSION['userID'] === '' || $_SESSION['userID'] === null) {
+		if (strpos($username, "\0") !== false || strpos($username, "\n") !== false || strpos($username, "\r") !== false) {
 			return false;
 		}
-		return true;
+		$id = self::positiveAccountId($userID);
+		if ($id === null) {
+			return false;
+		}
+		return self::accountRowMatches($id, $username);
+	}
+
+	// A positive scalar account id. Arrays, floats, and padded or nonnumeric
+	// strings are not an account. This does not by itself prove a cookie was
+	// forged; it rejects a session that is not tied to one existing row.
+	public static function positiveAccountId($userID) {
+		if (is_int($userID)) {
+			if ($userID < 1) {
+				return null;
+			}
+			return $userID;
+		}
+		if (is_string($userID) && preg_match('/^[1-9][0-9]{0,8}$/', $userID)) {
+			return (int)$userID;
+		}
+		return null;
 	}
 
 	public static function deny($code) {
@@ -132,25 +154,108 @@ class RequestGuard {
 	}
 
 	private static function originAllowed() {
-		$host = isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '';
-		if (isset($_SERVER['HTTP_ORIGIN']) && $_SERVER['HTTP_ORIGIN'] !== '') {
-			return self::hostMatches($host, $_SERVER['HTTP_ORIGIN']);
+		$expected = self::effectiveRequestOrigin();
+		if (isset($_SERVER['HTTP_ORIGIN']) && is_string($_SERVER['HTTP_ORIGIN']) && $_SERVER['HTTP_ORIGIN'] !== '') {
+			return $expected !== null && self::sameOrigin($expected, $_SERVER['HTTP_ORIGIN']);
 		}
-		if (isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER'] !== '') {
-			return self::hostMatches($host, $_SERVER['HTTP_REFERER']);
+		if (isset($_SERVER['HTTP_REFERER']) && is_string($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER'] !== '') {
+			return $expected !== null && self::sameOrigin($expected, $_SERVER['HTTP_REFERER']);
 		}
 		return true;
 	}
 
-	private static function hostMatches($expectedHost, $url) {
+	// The bench Pi is reached over HTTP with no proxy. X-Forwarded-Proto is
+	// ignored unless ORP_TRUST_FORWARDED_PROTO=1 is set for an explicit proxy.
+	private static function effectiveRequestOrigin() {
+		$scheme = 'http';
+		if (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') {
+			$scheme = 'https';
+		} elseif (isset($_SERVER['REQUEST_SCHEME']) && strtolower((string)$_SERVER['REQUEST_SCHEME']) === 'https') {
+			$scheme = 'https';
+		}
+		if (getenv('ORP_TRUST_FORWARDED_PROTO') === '1' && isset($_SERVER['HTTP_X_FORWARDED_PROTO'])) {
+			$forwarded = strtolower(trim((string)$_SERVER['HTTP_X_FORWARDED_PROTO']));
+			if ($forwarded === 'http' || $forwarded === 'https') {
+				$scheme = $forwarded;
+			}
+		}
+		$hostHeader = isset($_SERVER['HTTP_HOST']) ? (string)$_SERVER['HTTP_HOST'] : '';
+		if ($hostHeader === '' || strpos($hostHeader, "\n") !== false || strpos($hostHeader, "\r") !== false) {
+			return null;
+		}
+		$host = $hostHeader;
+		$port = null;
+		if ($hostHeader[0] === '[') {
+			if (!preg_match('/^\[([^\]]+)\](?::(\d+))?$/', $hostHeader, $match)) {
+				return null;
+			}
+			$host = $match[1];
+			if (isset($match[2]) && $match[2] !== '') {
+				$port = (int)$match[2];
+			}
+		} elseif (substr_count($hostHeader, ':') === 1) {
+			$pieces = explode(':', $hostHeader, 2);
+			$host = $pieces[0];
+			if (!preg_match('/^\d+$/', $pieces[1])) {
+				return null;
+			}
+			$port = (int)$pieces[1];
+		} elseif (substr_count($hostHeader, ':') > 1) {
+			return null;
+		}
+		if ($host === '') {
+			return null;
+		}
+		if ($port === null) {
+			$port = ($scheme === 'https') ? 443 : 80;
+		}
+		if ($port < 1 || $port > 65535) {
+			return null;
+		}
+		return array('scheme' => $scheme, 'host' => strtolower($host), 'port' => $port);
+	}
+
+	private static function sameOrigin($expected, $url) {
 		$parts = parse_url($url);
-		if (!is_array($parts) || empty($parts['host'])) {
+		if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
 			return false;
 		}
-		$got = $parts['host'];
-		if (isset($parts['port'])) {
-			$got .= ':' . $parts['port'];
+		$scheme = strtolower($parts['scheme']);
+		if ($scheme !== 'http' && $scheme !== 'https') {
+			return false;
 		}
-		return strcasecmp($got, $expectedHost) === 0;
+		$port = isset($parts['port']) ? (int)$parts['port'] : (($scheme === 'https') ? 443 : 80);
+		$host = strtolower($parts['host']);
+		return $scheme === $expected['scheme']
+			&& $host === $expected['host']
+			&& $port === $expected['port'];
+	}
+
+	private static function accountRowMatches($id, $username) {
+		$path = getenv('ORP_DB_PATH');
+		if (!is_string($path) || $path === '') {
+			$path = '/var/lib/openrepeater/db/openrepeater.db';
+		}
+		if (!is_file($path) || is_link($path)) {
+			return false;
+		}
+		try {
+			$db = new SQLite3($path, SQLITE3_OPEN_READONLY);
+		} catch (Throwable $e) {
+			return false;
+		}
+		$stmt = $db->prepare('SELECT username FROM users WHERE userID = :id');
+		if ($stmt === false) {
+			$db->close();
+			return false;
+		}
+		$stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+		$result = $stmt->execute();
+		$row = ($result instanceof SQLite3Result) ? $result->fetchArray(SQLITE3_ASSOC) : false;
+		$db->close();
+		if (!is_array($row) || !isset($row['username']) || !is_string($row['username'])) {
+			return false;
+		}
+		return hash_equals($row['username'], $username);
 	}
 }

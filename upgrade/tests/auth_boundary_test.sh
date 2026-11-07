@@ -29,6 +29,11 @@ $stmt->execute();
 ' "$db"
 printf 'orp-test\n' > "$hostfile"
 : > "$log"
+gate_db="$tmp/gate.db"
+gate_sessions="$tmp/sessions"
+mkdir -p "$gate_sessions"
+cp "$db" "$gate_db"
+php "$ROOT_DIR/upgrade/tests/auth_account_gate_test.php" "$gate_db" "$gate_sessions"
 password_before=$(php -r 'echo (new SQLite3($argv[1]))->querySingle("SELECT password FROM users WHERE username=\"admin\"");' "$db")
 
 export ORP_DB_PATH="$db"
@@ -131,6 +136,43 @@ code=$(curl -s -o "$tmp/unmask.body" -w '%{http_code}' -b "$jar" \
 [ "$(callsign)" = "TEST" ]
 echo "ok: missing token, bad token, GET, cross-origin, and unmask stop before the helper"
 
+code=$(curl -s -o "$tmp/https-origin.body" -w '%{http_code}' -b "$jar" \
+	-H "Origin: https://127.0.0.1" \
+	--data-urlencode 'post_service=svxlink' \
+	--data-urlencode 'post_option=status' \
+	--data-urlencode "csrf_token=${token}" \
+	"$base/functions/ajax_system.php")
+[ "$code" = "403" ]
+code=$(curl -s -o "$tmp/https-port.body" -w '%{http_code}' -b "$jar" \
+	-H "Origin: https://127.0.0.1:${port}" \
+	-H 'X-Forwarded-Proto: https' \
+	--data-urlencode 'post_service=svxlink' \
+	--data-urlencode 'post_option=status' \
+	--data-urlencode "csrf_token=${token}" \
+	"$base/functions/ajax_system.php")
+[ "$code" = "403" ]
+code=$(curl -s -o "$tmp/wrong-port.body" -w '%{http_code}' -b "$jar" \
+	-H "Origin: http://127.0.0.1:9" \
+	--data-urlencode 'post_service=svxlink' \
+	--data-urlencode 'post_option=status' \
+	--data-urlencode "csrf_token=${token}" \
+	"$base/functions/ajax_system.php")
+[ "$code" = "403" ]
+[ ! -s "$log" ]
+echo "ok: https and the wrong port are not this HTTP origin, and forwarded proto is not trusted"
+
+sqlite3 "$db" "UPDATE users SET username='renamed' WHERE userID=1;"
+code=$(curl -s -o "$tmp/mismatch.body" -w '%{http_code}' -b "$jar" \
+	--data-urlencode 'post_service=svxlink' \
+	--data-urlencode 'post_option=status' \
+	--data-urlencode "csrf_token=${token}" \
+	"$base/functions/ajax_system.php")
+[ "$code" = "401" ]
+sqlite3 "$db" "UPDATE users SET username='admin' WHERE userID=1;"
+[ ! -s "$log" ]
+[ "$(callsign)" = "TEST" ]
+echo "ok: a session whose username no longer matches the account row is 401"
+
 code=$(curl -s -o "$tmp/status.body" -w '%{http_code}' -b "$jar" \
 	--data-urlencode 'post_service=svxlink' \
 	--data-urlencode 'post_option=status' \
@@ -165,4 +207,15 @@ code=$(curl -s -o "$tmp/rebuild-post.body" -w '%{http_code}' -b "$jar" \
 [ "$code" = "403" ]
 [ "$(grep -c . "$log")" -eq 1 ]
 echo "ok: config rebuild is not a GET and is not a tokenless POST"
+
+sqlite3 "$db" "DELETE FROM users WHERE userID=1;"
+code=$(curl -s -o "$tmp/deleted.body" -w '%{http_code}' -b "$jar" \
+	--data-urlencode 'post_service=svxlink' \
+	--data-urlencode 'post_option=start' \
+	--data-urlencode "csrf_token=${token}" \
+	"$base/functions/ajax_system.php")
+[ "$code" = "401" ]
+[ "$(grep -c . "$log")" -eq 1 ]
+[ "$(callsign)" = "TEST2" ]
+echo "ok: a deleted account is 401 before the helper"
 echo "auth boundary checks passed"

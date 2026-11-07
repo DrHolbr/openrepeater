@@ -6,7 +6,7 @@ Status values: `page-render-passed` means the installed page closed and showed t
 
 ## Authenticated mutation boundary
 
-`2e1cf4d` let `functions/ajax_system.php` call the helper with no session. The boundary below is the auth milestone. A cloud HTTP fixture covers the denial codes and one authenticated `svxlink status` POST. It does not unmask a radio. Spoken identification and preset propagation remain open.
+`2e1cf4d` let `functions/ajax_system.php` call the helper with no session. A mutation now requires a positive account id whose users row still has the same username. An array, a nonnumeric id, a mismatched name, and a deleted row are refused before the helper. That check is not a claim that a cookie alone can forge those session fields. Origin comparison includes scheme, host, and port. `X-Forwarded-Proto` is ignored unless `ORP_TRUST_FORWARDED_PROTO=1`. The Pi is direct HTTP, so an https Origin does not match. CSRF is still required on its own. A cloud HTTP fixture covers the denial codes and one authenticated `svxlink status` POST. It does not unmask a radio. Spoken identification and preset propagation remain open.
 
 | Endpoint | Verb | Anonymous | Missing or bad CSRF | Foreign Origin | Authenticated POST |
 | --- | --- | --- | --- | --- | --- |
