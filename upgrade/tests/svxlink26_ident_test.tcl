@@ -53,6 +53,8 @@ proc mixin {ns} {
 }
 proc printInfo {msg} {lappend ::trace [list info $msg]}
 proc printWarning {msg} {lappend ::trace [list warning $msg]}
+# Replaced when LogicBase.tcl sources locale.tcl. A leftover stub means the
+# native speller did not load; the phonetic assertions below then fail.
 proc spellWord {word} {lappend ::trace [list spellWord $word]}
 proc playMsg {args} {lappend ::trace [list playMsg {*}$args]}
 proc playSilence {ms} {lappend ::trace [list playSilence $ms]}
@@ -94,6 +96,40 @@ proc saw {kind value} {
 	}
 	return 0
 }
+# locale.tcl spellWord lowercases the word and plays one Default clip per
+# letter. PHONETIC_SPELLING defaults to 1, so the clip is phonetic_<letter>.
+# This records that procedure. It is not an RF or end-of-communication result.
+proc spelling_rows {call {phonetic 1}} {
+	set call [string tolower $call]
+	set rows {}
+	for {set i 0} {$i < [string length $call]} {incr i} {
+		set char [string index $call $i]
+		if {![regexp {[a-z0-9]} $char]} {
+			continue
+		}
+		if {$phonetic} {
+			lappend rows [list playMsg Default phonetic_$char]
+		} else {
+			lappend rows [list playMsg Default $char]
+		}
+	}
+	return $rows
+}
+proc default_spell_rows {} {
+	set rows {}
+	foreach row $::trace {
+		if {[lindex $row 0] eq "playMsg" && [lindex $row 1] eq "Default"} {
+			lappend rows $row
+		}
+	}
+	return $rows
+}
+proc spelled {call {phonetic 1}} {
+	if {[default_spell_rows] ne [spelling_rows $call $phonetic]} {
+		return 0
+	}
+	return 1
+}
 proc reset_trace {} {
 	set ::trace {}
 	set ::Logic::prev_ident 0
@@ -107,7 +143,7 @@ reset_trace
 if {![saw CW::play FIXTURE/R]} {
 	fail "periodic short CW identification did not play FIXTURE/R"
 }
-if {[saw spellWord FIXTURE]} {
+if {[saw spellWord FIXTURE] || [spelled FIXTURE]} {
 	fail "CW-only short identification also spelled the call sign"
 }
 puts "ok: 26.05 checkPeriodicIdentify plays FIXTURE/R on a 5 minute modulus"
@@ -116,7 +152,7 @@ puts "ok: 26.05 checkPeriodicIdentify plays FIXTURE/R on a 5 minute modulus"
 set ::fake_now [_real_clock scan "2026-01-01 00:06:00" -gmt 1]
 reset_trace
 ::Logic::checkPeriodicIdentify
-if {[saw CW::play FIXTURE/R] || [saw spellWord FIXTURE]} {
+if {[saw CW::play FIXTURE/R] || [saw spellWord FIXTURE] || [spelled FIXTURE]} {
 	fail "checkPeriodicIdentify identified on a minute the modulus does not select"
 }
 puts "ok: 26.05 checkPeriodicIdentify stays quiet one minute later"
@@ -150,27 +186,37 @@ if {![saw CW::play FIXTURE/R]} {
 puts "ok: 26.05 ident_only_after_tx follows need_ident and does not convert the interval to seconds"
 set ::Logic::ident_only_after_tx 0
 
-# End of a communication is repeater_down, not the periodic procedure.
+# repeater_down is the upstream end-of-transmission handler. Calling it here
+# does not close a receiver and is not an end-of-communication observation.
 set ::fake_now [_real_clock scan "2026-01-01 00:20:00" -gmt 1]
 reset_trace
 ::RepeaterLogic::repeater_down IDLE
-if {![saw spellWord FIXTURE]} {
-	fail "repeater_down IDLE did not spell FIXTURE"
+if {![spelled FIXTURE]} {
+	fail "repeater_down IDLE did not spell FIXTURE through locale.tcl"
 }
-puts "ok: 26.05 repeater_down IDLE spells the configured call sign"
+if {![saw playMsg repeater] || ![saw playSilence 250]} {
+	fail "repeater_down IDLE did not follow the call with the repeater clip and silence"
+}
+if {[spelled OTHER]} {
+	fail "repeater_down IDLE spelled a substituted call sign"
+}
+puts "ok: 26.05 repeater_down IDLE spells the configured call sign as phonetic clips"
 
 reset_trace
 set ::Logic::prev_ident [expr {$::fake_now - 10}]
 ::RepeaterLogic::repeater_down IDLE
-if {[saw spellWord FIXTURE]} {
+if {[spelled FIXTURE] || [saw spellWord FIXTURE]} {
 	fail "repeater_down IDLE spelled the call sign inside the 120 second window"
+}
+if {![saw playTone 400] || ![saw playTone 360]} {
+	fail "repeater_down IDLE did not play the courtesy tones inside 120 seconds"
 }
 puts "ok: 26.05 repeater_down IDLE uses courtesy tones inside 120 seconds"
 
 reset_trace
 set ::Logic::prev_ident 0
 ::RepeaterLogic::repeater_down SQL_FLAP_SUP
-if {[saw spellWord FIXTURE] || [saw CW::play FIXTURE/R]} {
+if {[spelled FIXTURE] || [saw spellWord FIXTURE] || [saw CW::play FIXTURE/R]} {
 	fail "SQL_FLAP_SUP identified the station"
 }
 if {![saw playMsg interference]} {
@@ -184,14 +230,28 @@ set ::Logic::short_voice_id_enable 1
 set ::fake_now [_real_clock scan "2026-01-01 00:25:00" -gmt 1]
 reset_trace
 ::Logic::checkPeriodicIdentify
-if {![saw spellWord FIXTURE]} {
-	fail "voice short identification did not spell FIXTURE"
+if {![spelled FIXTURE]} {
+	fail "voice short identification did not spell FIXTURE through locale.tcl"
 }
 if {[saw CW::play FIXTURE/R]} {
 	fail "voice short identification played CW"
 }
-if {[saw spellWord OTHER]} {
+if {[spelled OTHER] || [saw spellWord OTHER]} {
 	fail "voice short identification spelled a substituted call sign"
 }
 puts "ok: 26.05 send_short_ident spells only the configured call sign when voice is enabled"
+
+# The same speller uses plain letter clips when PHONETIC_SPELLING is 0.
+set ::cfg(RepeaterLogic,PHONETIC_SPELLING) 0
+set ::Logic::short_cw_id_enable 0
+set ::Logic::short_voice_id_enable 1
+reset_trace
+::Logic::checkPeriodicIdentify
+if {![spelled FIXTURE 0]} {
+	fail "PHONETIC_SPELLING 0 did not spell FIXTURE as plain letters"
+}
+if {[spelled FIXTURE 1]} {
+	fail "PHONETIC_SPELLING 0 still used phonetic clips"
+}
+puts "ok: 26.05 spellWord follows PHONETIC_SPELLING"
 puts "svxlink 26.05 identification procedures passed"

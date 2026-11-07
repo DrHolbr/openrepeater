@@ -61,6 +61,7 @@ curl -s -c "$jar" -b "$jar" -o /dev/null \
 page=$(curl -s -b "$jar" "$base/ports.php")
 token=$(http_token "$page")
 printf '%s' "$page" | grep -q 'loadBoardPreset'
+modules_before=$(sqlite3 "$db" "SELECT moduleKey || hex(ifnull(moduleOptions,'')) FROM modules ORDER BY moduleKey;")
 for id in 0 1 2 3 4; do
 	code=$(curl -s -o "$tmp/load-$id.body" -w '%{http_code}' -b "$jar" \
 		--data-urlencode 'action=loadBoardPreset' \
@@ -70,7 +71,22 @@ for id in 0 1 2 3 4; do
 	[ "$code" = "200" ]
 	php "$ROOT_DIR/upgrade/tests/preset_roundtrip_check.php" "$ROOT_DIR" "$db" "$id"
 done
-echo "ok: all five presets round-trip from the form into the copied database"
+modules_after=$(sqlite3 "$db" "SELECT moduleKey || hex(ifnull(moduleOptions,'')) FROM modules ORDER BY moduleKey;")
+if [ "$modules_before" != "$modules_after" ]; then
+	echo "FAIL: preset load changed a module options blob" >&2
+	exit 1
+fi
+php -r '
+$db = new SQLite3($argv[1], SQLITE3_OPEN_READONLY);
+$call = $db->querySingle("SELECT value FROM settings WHERE keyID=\"callSign\"");
+$wpm = $db->querySingle("SELECT value FROM settings WHERE keyID=\"ID_Morse_WPM\"");
+$user = $db->querySingle("SELECT username || \" \" || password FROM users WHERE userID=1");
+if ($call !== "TEST" || $wpm !== "20" || $user !== "admin " . hash("sha256", "testhost" . hash("sha256", "bench-only-test"))) {
+	fwrite(STDERR, "FAIL: preset load changed the account or the stored identification\n");
+	exit(1);
+}
+' "$db"
+echo "ok: all five presets round-trip from the form into the copied database and leave the account and call sign unchanged"
 
 printf 'functional-test\n' > "$mode"
 export ORP_OPERATING_MODE_FILE="$mode"

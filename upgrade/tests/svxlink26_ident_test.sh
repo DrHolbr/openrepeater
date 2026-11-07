@@ -12,14 +12,17 @@ import hashlib, pathlib, sys
 root = pathlib.Path("$fixture")
 pins = {
     "Logic.tcl": "2de34e66bee46e15a64b8d43f90d0a9aebd9a642c94ab67aae00df4d217dac4f",
+    "LogicBase.tcl": "2840ccfa28ddfc12ceeee533e8c5d069097ae26e772a63fd2dc51f10166d380f",
+    "locale.tcl": "01f54727222129ee2e212aa3e698aa75cac94dcaf05773147e2c6cda8b8a874a",
     "RepeaterLogicType.tcl": "2113bffea43cf43f06c13d8160ddc432bc3835334c8f263dd6e830364c8577a5",
     "CW.tcl": "d18efb4ef08d31efbbdba3f4df95ebd4061621d6b544ed77f334ad1a1726cce7",
+    "squelch_timeout.tcl": "71e33b2c5685b9ce69ae0bfd04fb7d7bd0fad2b3256f6ab547e1228d6462ddc0",
 }
 for name, pin in pins.items():
     digest = hashlib.sha256((root / name).read_bytes()).hexdigest()
     if digest != pin:
         sys.exit(f"FAIL: {name} digest {digest} is not the 26.05 pin")
-print("ok: pinned 26.05 Logic.tcl, RepeaterLogicType.tcl, and CW.tcl")
+print("ok: pinned 26.05 Logic.tcl, LogicBase.tcl, locale.tcl, RepeaterLogicType.tcl, and CW.tcl")
 PY
 tclsh "$ROOT_DIR/upgrade/tests/svxlink26_ident_test.tcl" "$fixture"
 
