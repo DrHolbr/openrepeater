@@ -512,6 +512,90 @@ if (strpos($againMsg, 'needs recovery') === false || !$stashKeep) {
 	fail('a second restore ignored the recovery notes');
 }
 echo "ok: a populated destination is reported as recovery required and the original tree is kept in the stash\n";
+$collisionNote = json_decode(file_get_contents($collision . '/backup/restore-recovery.json'), true);
+$mappedStash = is_array($collisionNote) && isset($collisionNote['moves'][0]['stash']) ? $collisionNote['moves'][0]['stash'] : '';
+$mappedDest = is_array($collisionNote) && isset($collisionNote['moves'][0]['destination']) ? $collisionNote['moves'][0]['destination'] : '';
+if ($collisionNote['phase'] !== 'ready' || $collisionNote['automated_recovery'] !== false || $mappedDest !== $collision . '/sounds/courtesy_tones' || !is_file($mappedStash . '/keep.wav') || file_get_contents($mappedStash . '/keep.wav') !== 'keep') {
+	fail('the recovery note did not record the destination and stash before the failed publish');
+}
+echo "ok: the recovery note maps the destination to the stash that holds the original tree\n";
+
+function marker_layout($name, $dump, $db) {
+	$work = sys_get_temp_dir() . '/' . $name . '-' . getmypid();
+	mkdir($work . '/sounds/courtesy_tones', 0755, true);
+	mkdir($work . '/backup/restore/courtesy_tones', 0755, true);
+	mkdir($work . '/modules', 0755, true);
+	file_put_contents($work . '/sounds/courtesy_tones/keep.wav', 'keep');
+	file_put_contents($work . '/backup/restore/courtesy_tones/new.wav', 'new');
+	copy($dump, $work . '/backup/restore/backup.sql');
+	copy($db, $work . '/app.db');
+	file_put_contents($work . '/hostname', "cloud\n");
+	putenv('ORP_DB_PATH=' . $work . '/app.db');
+	putenv('ORP_SOUNDS_PATH=' . $work . '/sounds');
+	putenv('ORP_BACKUP_PATH=' . $work . '/backup');
+	putenv('ORP_MODULES_PATH=' . $work . '/modules');
+	putenv('ORP_RESTORE_FAULT');
+	return $work;
+}
+$dangling = marker_layout('orp-dangling-marker', $dump, $copy);
+$danglingOutside = $dangling . '/outside.json';
+symlink($danglingOutside, $dangling . '/backup/restore-recovery.json');
+$danglingRestore = new BackupRestore();
+$danglingResult = $danglingRestore->restore_backup();
+if (file_exists($danglingOutside) || file_get_contents($dangling . '/sounds/courtesy_tones/keep.wav') !== 'keep' || strpos($danglingResult['msgText'], 'successfully restored') !== false || strpos($danglingResult['msgText'], 'needs recovery') === false) {
+	fail('a dangling recovery marker was followed or the live tree changed');
+}
+echo "ok: a dangling recovery marker is not followed and creates nothing outside the backup directory\n";
+
+$liveLink = marker_layout('orp-live-marker', $dump, $copy);
+$liveOutside = $liveLink . '/outside.json';
+file_put_contents($liveOutside, 'OLD');
+symlink($liveOutside, $liveLink . '/backup/restore-recovery.json');
+$liveLinkRestore = new BackupRestore();
+$liveLinkResult = $liveLinkRestore->restore_backup();
+if (file_get_contents($liveOutside) !== 'OLD' || file_get_contents($liveLink . '/sounds/courtesy_tones/keep.wav') !== 'keep' || strpos($liveLinkResult['msgText'], 'needs recovery') === false) {
+	fail('a live recovery-marker symlink was followed');
+}
+echo "ok: a live recovery-marker symlink is not followed\n";
+
+$existing = marker_layout('orp-existing-marker', $dump, $copy);
+file_put_contents($existing . '/backup/restore-recovery.json', 'CANARY');
+chmod($existing . '/backup/restore-recovery.json', 0644);
+$existingRestore = new BackupRestore();
+$existingResult = $existingRestore->restore_backup();
+if (file_get_contents($existing . '/backup/restore-recovery.json') !== 'CANARY' || file_get_contents($existing . '/sounds/courtesy_tones/keep.wav') !== 'keep' || strpos($existingResult['msgText'], 'needs recovery') === false) {
+	fail('an existing recovery marker was replaced');
+}
+echo "ok: an existing recovery marker is left untouched\n";
+
+$unwritable = marker_layout('orp-marker-write', $dump, $copy);
+chmod($unwritable . '/backup', 0555);
+$unwritableRestore = new BackupRestore();
+$unwritableResult = $unwritableRestore->restore_backup();
+chmod($unwritable . '/backup', 0755);
+if (file_get_contents($unwritable . '/sounds/courtesy_tones/keep.wav') !== 'keep' || is_file($unwritable . '/sounds/courtesy_tones/new.wav') || is_file($unwritable . '/backup/restore-recovery.json') || strpos($unwritableResult['msgText'], 'left unchanged') === false) {
+	fail('a recovery-note write failure changed the live tree');
+}
+echo "ok: a recovery-note write failure leaves the live tree unchanged\n";
+
+$updateFail = marker_layout('orp-marker-update', $dump, $copy);
+$updateDb = new Database();
+if ($updateDb->update_existing_settings(array('callSign' => 'BEFORENOTE')) !== true) {
+	fail('could not mark the database before the recovery-note update failure');
+}
+putenv('ORP_RESTORE_FAULT=marker-update');
+$updateRestore = new BackupRestore();
+$updateResult = $updateRestore->restore_backup();
+putenv('ORP_RESTORE_FAULT');
+$updateNote = json_decode(file_get_contents($updateFail . '/backup/restore-recovery.json'), true);
+$updateStash = is_array($updateNote) && isset($updateNote['moves'][0]['stash']) ? $updateNote['moves'][0]['stash'] : '';
+$updateDest = is_array($updateNote) && isset($updateNote['moves'][0]['destination']) ? $updateNote['moves'][0]['destination'] : '';
+$updateSign = snap($updateFail . '/app.db')['settings']['callSign'];
+if (!is_array($updateNote) || $updateNote['phase'] !== 'ready' || $updateNote['automated_recovery'] !== false || $updateDest !== $updateFail . '/sounds/courtesy_tones' || file_get_contents($updateStash . '/keep.wav') !== 'keep' || $updateSign !== 'BEFORENOTE' || strpos($updateResult['msgText'], 'needs recovery') === false || strpos($updateResult['msgText'], 'automated recovery') === false || substr(sprintf('%o', fileperms($updateFail . '/backup/restore-recovery.json')), -4) !== '0600') {
+	fwrite(STDERR, isset($updateResult['msgText']) ? $updateResult['msgText'] : '' . "\n");
+	fail('a recovery-note update failure did not keep the destination and stash mapping');
+}
+echo "ok: a recovery-note update failure keeps the mapped stash and does not change the database\n";
 
 $layout = sys_get_temp_dir() . '/orp-sticky-' . getmypid();
 $stickyDb = $layout . '/db/openrepeater.db';

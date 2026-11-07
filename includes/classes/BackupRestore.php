@@ -170,10 +170,13 @@ class BackupRestore {
 	public function restore_backup() {
 		// One SQLite commit is atomic for the four tables. Directory replacement
 		// is a separate rename. The mixer is applied only after both succeed and
-		// is not undone. A crash between those steps is recoverable from the
-		// manifest and stashes, not one atomic commit.
-		if (is_file($this->recovery_manifest())) {
-			return $this->restore_needs_recovery('A previous restore left recovery notes.');
+		// is not undone. The recovery note lists destination and stash paths for
+		// a person. This program does not replay that note.
+		if ($this->marker_path() === false) {
+			return $this->restore_unchanged();
+		}
+		if ($this->marker_occupied()) {
+			return $this->restore_needs_recovery('A recovery note is already present and was not replaced.');
 		}
 		$sql_file = $this->backup_restore_dir . $this->backup_db_file;
 		$rows = $this->Database->load_backup_rows($this->db_tables, $sql_file);
@@ -196,6 +199,9 @@ class BackupRestore {
 				return $this->restore_unchanged();
 			}
 			return $this->restore_needs_recovery('A file tree could not be put back after a failed publish.');
+		}
+		if (!$this->update_recovery_phase($staged['moves'], 'files-published')) {
+			return $this->restore_needs_recovery('The recovery note could not be updated after the file publish. It still lists each destination and stash.');
 		}
 		if ($this->Database->replace_backup_tables($this->db_tables, $rows) !== true) {
 			if ($this->undo_published($published['done']) === true) {
@@ -223,7 +229,24 @@ class BackupRestore {
 	}
 
 	private function recovery_manifest() {
-		return $this->backupPath . 'restore-recovery.json';
+		$path = $this->marker_path();
+		return is_string($path) ? $path : $this->backupPath . 'restore-recovery.json';
+	}
+
+	private function marker_path() {
+		$anchor = $this->real_anchor(rtrim($this->backupPath, '/'));
+		if ($anchor === false) {
+			return false;
+		}
+		return $anchor . '/restore-recovery.json';
+	}
+
+	private function marker_occupied() {
+		$path = $this->marker_path();
+		if ($path === false) {
+			return true;
+		}
+		return @lstat($path) !== false;
 	}
 
 	private function restore_unchanged() {
@@ -234,29 +257,128 @@ class BackupRestore {
 	}
 
 	private function restore_needs_recovery($reason) {
+		$path = $this->marker_path();
+		$where = is_string($path) ? ' Recovery notes were kept at ' . $path . '.' : '';
 		return array(
 			'msgType' => 'error',
-			'msgText' => 'The backup restore needs recovery. ' . $reason . ' Recovery notes were kept at ' . $this->recovery_manifest() . '. The backup archive was not deleted.'
+			'msgText' => 'The backup restore needs recovery. ' . $reason . $where . ' The backup archive was not deleted. These notes are not an automated recovery.'
 		);
 	}
 
 	private function write_recovery_manifest($moves) {
-		$note = array(
-			'phase' => 'publishing',
-			'crash_atomic' => false,
-			'moves' => $moves,
-		);
-		$encoded = json_encode($note);
-		if (!is_string($encoded)) {
+		return $this->exclusive_marker_create($this->marker_note($moves, 'ready'));
+	}
+
+	private function update_recovery_phase($moves, $phase) {
+		if (getenv('ORP_RESTORE_FAULT') === 'marker-update') {
 			return false;
 		}
-		return file_put_contents($this->recovery_manifest(), $encoded) !== false;
+		$encoded = $this->marker_note($moves, $phase);
+		if ($encoded === false) {
+			return false;
+		}
+		return $this->replace_regular_marker($encoded);
+	}
+
+	private function marker_note($moves, $phase) {
+		$encoded = json_encode(array(
+			'phase' => $phase,
+			'automated_recovery' => false,
+			'crash_atomic' => false,
+			'moves' => $moves,
+		));
+		return is_string($encoded) ? $encoded : false;
+	}
+
+	private function exclusive_marker_create($bytes) {
+		$path = $this->marker_path();
+		if ($path === false || !is_string($bytes) || $this->marker_occupied()) {
+			return false;
+		}
+		return $this->exclusive_nofollow_write($path, $bytes);
+	}
+
+	private function replace_regular_marker($bytes) {
+		$path = $this->marker_path();
+		if ($path === false || !is_string($bytes)) {
+			return false;
+		}
+		$current = @lstat($path);
+		if ($current === false || !$this->is_regular_mode($current['mode'])) {
+			return false;
+		}
+		$tmp = dirname($path) . '/.restore-recovery-' . bin2hex(random_bytes(6)) . '.tmp';
+		if (!$this->exclusive_nofollow_write($tmp, $bytes)) {
+			return false;
+		}
+		if (@lstat($path) === false || !$this->is_regular_mode(lstat($path)['mode']) || !rename($tmp, $path)) {
+			$this->unlink_regular($tmp);
+			return false;
+		}
+		$after = @lstat($path);
+		return $after !== false && $this->is_regular_mode($after['mode']) && (int) $after['size'] === strlen($bytes);
+	}
+
+	private function exclusive_nofollow_write($path, $bytes) {
+		if (@lstat($path) !== false) {
+			return false;
+		}
+		// PHP fopen mode x follows a dangling symlink and creates the target.
+		// Python os.open with O_NOFOLLOW|O_EXCL does not. The web SAPI disables FFI.
+		$script = <<<'PY'
+import os, sys
+path = sys.stdin.buffer.readline()[:-1].decode()
+data = sys.stdin.buffer.read()
+flags = os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_WRONLY | getattr(os, "O_CLOEXEC", 0)
+fd = os.open(path, flags, 0o600)
+try:
+    view = memoryview(data)
+    off = 0
+    while off < len(view):
+        wrote = os.write(fd, view[off:])
+        if wrote <= 0:
+            raise OSError("short write")
+        off += wrote
+    os.fsync(fd)
+    os.fchmod(fd, 0o600)
+finally:
+    os.close(fd)
+PY;
+		$script = implode("\n", array_map(function ($line) {
+			return ltrim($line, "\t");
+		}, explode("\n", $script)));
+		$proc = proc_open('python3 -c ' . escapeshellarg($script), array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+		if (!is_resource($proc)) {
+			return false;
+		}
+		fwrite($pipes[0], $path . "\n" . $bytes);
+		fclose($pipes[0]);
+		fclose($pipes[1]);
+		fclose($pipes[2]);
+		$rc = proc_close($proc);
+		$st = @lstat($path);
+		if ($rc !== 0 || $st === false || !$this->is_regular_mode($st['mode']) || (int) $st['size'] !== strlen($bytes)) {
+			$this->unlink_regular($path);
+			return false;
+		}
+		return true;
+	}
+
+	private function is_regular_mode($mode) {
+		return ((int) $mode & 0170000) === 0100000;
+	}
+
+	private function unlink_regular($path) {
+		$st = @lstat($path);
+		if ($st !== false && $this->is_regular_mode($st['mode'])) {
+			unlink($path);
+		}
 	}
 
 	private function clear_recovery_manifest() {
-		$path = $this->recovery_manifest();
-		if (is_file($path) && !is_link($path)) {
-			unlink($path);
+		$path = $this->marker_path();
+		if (is_string($path)) {
+			$this->unlink_regular($path);
 		}
 	}
 
@@ -282,7 +404,12 @@ class BackupRestore {
 				$this->remove_private_stages($stages);
 				return false;
 			}
-			$moves[] = array('live' => $live, 'staged' => $soundsStage . '/' . $name, 'links' => null);
+			$stash = $this->plan_stash($live);
+			if ($stash === false) {
+				$this->remove_private_stages($stages);
+				return false;
+			}
+			$moves[] = array('destination' => $live, 'live' => $live, 'staged' => $soundsStage . '/' . $name, 'stash' => $stash, 'links' => null);
 		}
 		$moduleRoot = $restore . '/modules';
 		if (is_dir($moduleRoot) && !is_link($moduleRoot)) {
@@ -294,7 +421,12 @@ class BackupRestore {
 						$this->remove_private_stages($stages);
 						return false;
 					}
-					$moves[] = array('live' => $live, 'staged' => null, 'links' => null);
+					$stash = $this->plan_stash($live);
+					if ($stash === false) {
+						$this->remove_private_stages($stages);
+						return false;
+					}
+					$moves[] = array('destination' => $live, 'live' => $live, 'staged' => null, 'stash' => $stash, 'links' => null);
 				}
 			}
 			$incoming = glob($moduleRoot . '/*', GLOB_ONLYDIR);
@@ -309,7 +441,12 @@ class BackupRestore {
 					$this->remove_private_stages($stages);
 					return false;
 				}
-				$moves[] = array('live' => $live, 'staged' => $modulesStage . '/' . $mod_name, 'links' => $mod_name);
+				$stash = $this->plan_stash($live);
+				if ($stash === false) {
+					$this->remove_private_stages($stages);
+					return false;
+				}
+				$moves[] = array('destination' => $live, 'live' => $live, 'staged' => $modulesStage . '/' . $mod_name, 'stash' => $stash, 'links' => $mod_name);
 			}
 		}
 		return array('moves' => $moves, 'stages' => $stages);
@@ -336,23 +473,20 @@ class BackupRestore {
 	private function publish_staged_trees($moves) {
 		$done = array();
 		foreach ($moves as $move) {
-			$stash = null;
-			if (file_exists($move['live'])) {
-				if (is_link($move['live'])) {
-					return array('ok' => false, 'rolled_back' => $this->undo_published($done), 'done' => $done);
-				}
-				$stash = dirname($move['live']) . '/.orp-stash-' . bin2hex(random_bytes(6));
-				if (!rename($move['live'], $stash)) {
+			$live = $move['destination'];
+			$stash = $move['stash'];
+			if (file_exists($live)) {
+				if (!is_string($stash) || is_link($live) || @lstat($stash) !== false || !rename($live, $stash)) {
 					return array('ok' => false, 'rolled_back' => $this->undo_published($done), 'done' => $done);
 				}
 				if (getenv('ORP_RESTORE_FAULT') === 'publish-collision' && count($done) === 0) {
-					mkdir($move['live'], 0755);
-					file_put_contents($move['live'] . '/collision', 'occupied');
+					mkdir($live, 0755);
+					file_put_contents($live . '/collision', 'occupied');
 				}
 			}
 			if (is_string($move['staged'])) {
-				if (!rename($move['staged'], $move['live'])) {
-					$rolled = $this->undo_published($done) && $this->restore_unmoved($move['live'], $stash);
+				if (!rename($move['staged'], $live)) {
+					$rolled = $this->undo_published($done) && $this->restore_unmoved($live, $stash);
 					return array('ok' => false, 'rolled_back' => $rolled, 'done' => $done);
 				}
 			}
@@ -360,13 +494,29 @@ class BackupRestore {
 			if (is_string($move['links'])) {
 				$links = $this->Modules->link_module_files($move['links']);
 				if ($links === false) {
-					$done[] = array('live' => $move['live'], 'stash' => $stash, 'links' => null);
+					$done[] = array('live' => $live, 'stash' => $stash, 'links' => null);
 					return array('ok' => false, 'rolled_back' => $this->undo_published($done), 'done' => $done);
 				}
 			}
-			$done[] = array('live' => $move['live'], 'stash' => $stash, 'links' => $links);
+			$done[] = array('live' => $live, 'stash' => $stash, 'links' => $links);
 		}
 		return array('ok' => true, 'rolled_back' => true, 'done' => $done);
+	}
+
+	private function plan_stash($live) {
+		if (!file_exists($live)) {
+			return null;
+		}
+		if (is_link($live)) {
+			return false;
+		}
+		for ($i = 0; $i < 5; $i++) {
+			$stash = dirname($live) . '/.orp-stash-' . bin2hex(random_bytes(6));
+			if (@lstat($stash) === false) {
+				return $stash;
+			}
+		}
+		return false;
 	}
 
 	private function restore_unmoved($live, $stash) {
