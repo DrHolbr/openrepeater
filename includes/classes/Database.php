@@ -688,6 +688,14 @@ class Database {
 	###############################################
 
 	public function db_import($db_tables, $sql_file) {
+		$copy = $this->stage_db_import($db_tables, $sql_file);
+		if (!is_string($copy)) {
+			return false;
+		}
+		return $this->publish_staged_import($copy);
+	}
+
+	public function stage_db_import($db_tables, $sql_file) {
 		if (!is_string($sql_file) || !is_file($sql_file) || !is_readable($sql_file)) {
 			return false;
 		}
@@ -729,7 +737,19 @@ class Database {
 			$failed = true;
 		}
 		$db->close();
-		if ($failed || !rename($copy, $this->db_loc)) {
+		if ($failed) {
+			$this->discard_import_copy($copy);
+			return false;
+		}
+		return $copy;
+	}
+
+	public function publish_staged_import($copy) {
+		$dir = dirname($this->db_loc);
+		if (!is_string($copy) || dirname($copy) !== $dir || !preg_match('/^\.orp-import-[0-9a-f]{12}\.db$/', basename($copy)) || !is_file($copy)) {
+			return false;
+		}
+		if (!rename($copy, $this->db_loc)) {
 			$this->discard_import_copy($copy);
 			return false;
 		}

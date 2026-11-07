@@ -168,7 +168,15 @@ class BackupRestore {
 
 
 	public function restore_backup() {
-		
+		$sql_file = $this->backup_restore_dir . $this->backup_db_file;
+		$staged = $this->Database->stage_db_import($this->db_tables, $sql_file);
+		if (!is_string($staged)) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The backup was not restored. The previous database rows were left unchanged.'
+			);
+		}
+
 		########################################
 		# Copy Sounds into place
 
@@ -223,9 +231,9 @@ class BackupRestore {
 			exec('sudo orp_helper alsa restore "' . $this->backup_restore_dir . $this->alsa_state_file . '"');
 		}
 
-		// Replace the database only when the whole import commits on a copy.
-		$sql_file = $this->backup_restore_dir . $this->backup_db_file;
-		if ($this->Database->db_import( $this->db_tables, $sql_file ) !== true) {
+		// The staged copy replaces the live database only after the file copy.
+		// initialize_module may insert rows; this rename puts the backup rows back.
+		if ($this->Database->publish_staged_import($staged) !== true) {
 			return array(
 				'msgType' => 'error',
 				'msgText' => 'The backup was not restored. The previous database rows were left unchanged.'

@@ -240,4 +240,43 @@ if ($db->db_export(array('settings'), $bad . '/nested.sql') === true) {
 	fail('an unwritable backup path was reported as success');
 }
 echo "ok: a backup export that cannot create the file returns failure\n";
+
+$work = sys_get_temp_dir() . '/orp-restore-boundary-' . getmypid();
+$sounds = $work . '/sounds';
+$backup = $work . '/backup';
+$modules = $work . '/modules';
+foreach (array($sounds . '/courtesy_tones', $backup . '/restore/courtesy_tones', $modules) as $dir) {
+	if (!mkdir($dir, 0755, true)) {
+		fail('could not build the restore fixture');
+	}
+}
+file_put_contents($sounds . '/courtesy_tones/keep.wav', 'keep');
+file_put_contents($backup . '/restore/courtesy_tones/new.wav', 'new');
+file_put_contents($backup . '/restore/backup.sql', "this is not sql;\n");
+file_put_contents($work . '/hostname', "cloud\n");
+$_SERVER['DOCUMENT_ROOT'] = $root;
+$_SERVER['HTTP_HOST'] = '127.0.0.1';
+putenv('ORP_BENCH_TEST_HARNESS=1');
+putenv('ORP_BENCH_MARKER=' . $work . '/no-marker');
+putenv('ORP_BENCH_HOSTNAME_FILE=' . $work . '/hostname');
+putenv('ORP_SOUNDS_PATH=' . $sounds);
+putenv('ORP_BACKUP_PATH=' . $backup);
+putenv('ORP_MODULES_PATH=' . $modules);
+require_once $root . '/includes/classes/BenchGuard.php';
+require_once $root . '/includes/classes/Modules.php';
+require_once $root . '/includes/classes/BackupRestore.php';
+$before = snap($copy);
+$restore = new BackupRestore();
+$result = $restore->restore_backup();
+$caller = (is_array($result) && isset($result['msgText'])) ? $result['msgText'] : '';
+if (!is_array($result) || $result['msgType'] !== 'error' || strpos($caller, 'successfully restored') !== false) {
+	fail('a bad backup restore was reported as success');
+}
+if (file_get_contents($sounds . '/courtesy_tones/keep.wav') !== 'keep' || is_file($sounds . '/courtesy_tones/new.wav')) {
+	fail('a bad backup restore changed courtesy files');
+}
+if (snap($copy) != $before) {
+	fail('a bad backup restore changed database rows');
+}
+echo "ok: a bad backup restore leaves courtesy files and database rows unchanged\n";
 echo "database write boundary checks passed\n";
