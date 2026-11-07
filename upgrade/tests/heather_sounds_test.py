@@ -161,6 +161,43 @@ def main():
         raise SystemExit("FAIL: symlink archive was accepted")
     except heather.Refuse as exc:
         check("not a regular file" in str(exc), "a symlinked archive is refused")
+
+    sound_parent = dest_root / "usr/local/share/svxlink/sounds"
+    published = sound_parent / "en_US" / "Core" / "repeater.wav"
+    kept = published.read_bytes()
+    check(published.stat().st_dev == sound_parent.stat().st_dev, "published tree is on the destination filesystem")
+    check(not list(sound_parent.glob(".orp-heather.*")), "a successful install leaves no private stage")
+    code, detail = run_install(good, dest_root, "0" * 64)
+    check(code == 2 and "does not match" in detail and published.read_bytes() == kept, "a corrupt archive leaves the published tree unchanged")
+    code, detail = run_install(tmp / "escaping_symlink_is_refused.tar.bz2", dest_root, __import__("hashlib").sha256((tmp / "escaping_symlink_is_refused.tar.bz2").read_bytes()).hexdigest())
+    check(code == 2 and published.read_bytes() == kept, "a link escape leaves the published tree unchanged (" + detail + ")")
+    real_same = heather.same_device
+    heather.same_device = lambda left, right: False
+    try:
+        code, detail = run_install(good, dest_root, digest)
+    finally:
+        heather.same_device = real_same
+    check(code == 2 and "destination filesystem" in detail and published.read_bytes() == kept, "a cross-filesystem stage is not published")
+    check(not list(sound_parent.glob(".orp-heather.*")), "a refused stage is removed")
+    precious = tmp / "precious-target"
+    precious.write_text("keep")
+    stage = heather.private_stage(str(tmp))
+    os.symlink(precious, os.path.join(stage, "escape"))
+    heather.remove_private_tree(stage)
+    check(precious.read_text() == "keep" and not os.path.exists(stage), "private cleanup unlinks a symlink and does not follow it")
+    calls = {"n": 0}
+    real_extract = tarfile.TarFile.extractfile
+    def counting(self, member, *args, **kwargs):
+        calls["n"] += 1
+        return real_extract(self, member, *args, **kwargs)
+    tarfile.TarFile.extractfile = counting
+    try:
+        counted = tmp / "counted-root"
+        counted.mkdir()
+        code, _detail = run_install(good, counted, digest)
+    finally:
+        tarfile.TarFile.extractfile = real_extract
+    check(code == 0 and calls["n"] == 1, "each regular member is read once from the bzip2 stream")
     print("heather sound installer checks passed")
 
 

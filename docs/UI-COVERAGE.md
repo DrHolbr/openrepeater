@@ -36,7 +36,13 @@ The deployed client requests `functions/log_stream.php`, sends the CSRF header, 
 
 Before, after install, and after the tests, the database file was byte-identical, SHA256 `ae65ca06082f85aeb1091ba66ca7e7f4604889997efb1efefffc0fb957b29c3c`. The earlier unattributed `moduleEnabled` and `system_flags` difference was not restored. The binary stayed `d814861a156bdf35a30d9ecc95365452c8cc51685854695bf68b037d62f6a687`. The config stayed `465cac40d5703f7a9f80ef29ce275eb3e48b3645827938cbe01ca4f8ffb5c5e2`. Nine pages returned 200 with a CSRF meta tag. Seventy-two assets returned 200. Fifty-eight PHP files linted clean. nginx and PHP 8.4.27 matched. svxlink was left inactive, unmasked, and disabled. `remotetrx` and `svxreflector` stayed inactive and masked. English clips were still absent. Heather was not installed.
 
-The native Tcl failure remains for the next review: after four periodic checks, `repeater_down IDLE did not spell FIXTURE` because the trace is `playMsg` `phonetic_f` through `phonetic_e`, then `repeater` and `playSilence 250`. `41f3703` changes the harness expectation. It is not installed. A speech install is still a separate review.
+That paragraph describes the log install. The Tcl harness result is in the next section.
+
+## Native 41f3703 Tcl harness, measured on orp-test
+
+Installed `41f37034a34c68290c2e5858c37320dfc9d348f6` on November 6, 2026, about 10:23–10:37 PM EST. `tclsh upgrade/tests/svxlink26_ident_test.tcl /usr/local/share/svxlink/events.d` exited 0 on all nine checks, including phonetic `repeater_down` and plain-letter spelling. `locale.tcl` was `01f54727222129ee2e212aa3e698aa75cac94dcaf05773147e2c6cda8b8a874a`. That run records audio primitives. It is not a receiver end-of-communication, heard speech, or RF. The log suffix check passed again: 206, `bytes 12640-13864/13865`, length 1225. The database stayed `ae65ca06082f85aeb1091ba66ca7e7f4604889997efb1efefffc0fb957b29c3c`. The binary and config hashes were unchanged. PHP 8.4.27 and nginx matched. svxlink was left inactive, unmasked, and disabled. The other two units stayed masked.
+
+Heather was not installed. Two bounded runs of the reviewed installer expired at 90 and 420 seconds while still reading the bzip2 archive. 476 files were in a private stage. `/usr/local/share/svxlink/sounds/en_US` was absent. `/tmp` is a different filesystem from the sound directory on this Pi, so a stage created there cannot be renamed into place. No installer process remained. The partial stages were left as evidence. Playback is not proven.
 
 ## Authenticated mutation boundary
 
@@ -120,7 +126,7 @@ Numbers 0–27 are BCM header candidates only. The map is `GpioMap::headerMap()`
 | Create, upload, restore, delete backup | `backup.php` | Cloud create, restore, and delete stay in the backup directory. Not deployed. |
 | Advanced config textareas, standard mode, advanced mode | `advanced.php` | Text is stored. Publish stays `PTT_TYPE=NONE` and does not copy `gpio498`. Not deployed. |
 | Wizard agree, call sign, board, port, Save, Finish | `wizard/index.php` | `software-proven` on a copy for the Memcached-free save and the Finish POST form. Not the station database. |
-| Heather installer | `upgrade/install_heather_sounds.py` | Pin reviewed in cloud fixtures. Not installed. Playback unverified. Next review is the installer pin on the Pi, not a speech claim. |
+| Heather installer | `upgrade/install_heather_sounds.py` | Stored pin unchanged. Not applied on the Pi: the 41f3703 run did not publish `en_US`. The next installer reads the archive once and stages on the destination filesystem. Playback is not executed. |
 
 ## Form matrix on a copied database
 

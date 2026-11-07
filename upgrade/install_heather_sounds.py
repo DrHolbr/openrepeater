@@ -18,7 +18,6 @@ import shutil
 import stat
 import sys
 import tarfile
-import tempfile
 from datetime import datetime, timezone
 
 ROOT_NAME = "en_US-heather-16k"
@@ -117,7 +116,72 @@ def validate_members(members):
     return by_name, resolved
 
 
-def write_tree(archive, members, resolved, stage_root):
+def same_device(left, right):
+    return os.stat(left).st_dev == os.stat(right).st_dev
+
+
+def remove_private_tree(root):
+    """Delete a directory this installer created. A symlink is unlinked, not followed."""
+    try:
+        info = os.lstat(root)
+    except OSError:
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return
+    dev = info.st_dev
+    ino = info.st_ino
+
+    def discard(directory):
+        current = os.lstat(directory)
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode) or current.st_dev != dev:
+            return
+        for name in os.listdir(directory):
+            path = os.path.join(directory, name)
+            child = os.lstat(path)
+            if stat.S_ISLNK(child.st_mode):
+                os.unlink(path)
+            elif stat.S_ISDIR(child.st_mode):
+                discard(path)
+                os.rmdir(path)
+            else:
+                os.unlink(path)
+
+    discard(root)
+    again = os.lstat(root)
+    if again.st_dev == dev and again.st_ino == ino and stat.S_ISDIR(again.st_mode) and not stat.S_ISLNK(again.st_mode):
+        os.rmdir(root)
+
+
+def private_stage(parent):
+    if os.path.islink(parent) or not os.path.isdir(parent):
+        refuse("sounds parent is not a real directory. Nothing was installed.")
+    stage = os.path.join(parent, ".orp-heather." + os.urandom(8).hex())
+    os.mkdir(stage, 0o700)
+    return stage
+
+
+def spool_members(archive, spool_dir):
+    """Read the bzip2 stream once. A later extractfile() restarts decompression."""
+    infos = []
+    files = {}
+    index = 0
+    for info in archive:
+        infos.append(info)
+        if not info.isreg():
+            continue
+        source = archive.extractfile(info)
+        if source is None:
+            refuse("regular file %s could not be read. Nothing was installed." % info.name)
+        path = os.path.join(spool_dir, str(index))
+        index += 1
+        with open(path, "wb") as handle:
+            shutil.copyfileobj(source, handle)
+        os.chmod(path, 0o600)
+        files[info.name] = path
+    return infos, files
+
+
+def assemble_tree(members, resolved, files, stage_root):
     ordered = sorted(members, key=lambda item: (item.name.count("/"), item.name))
     for info in ordered:
         rel = info.name[len(ROOT_NAME):].lstrip("/")
@@ -129,20 +193,61 @@ def write_tree(archive, members, resolved, stage_root):
                 os.mkdir(dest, 0o755)
             continue
         if info.issym():
-            target = resolved[info.name]
-            source = archive.extractfile(target)
-            if source is None:
-                refuse("regular file %s could not be read. Nothing was installed." % target.name)
-            with open(dest, "wb") as handle:
-                shutil.copyfileobj(source, handle)
-            os.chmod(dest, 0o644)
-            continue
-        source = archive.extractfile(info)
-        if source is None:
-            refuse("regular file %s could not be read. Nothing was installed." % info.name)
-        with open(dest, "wb") as handle:
+            source_name = resolved[info.name].name
+        elif info.isreg():
+            source_name = info.name
+        else:
+            refuse("archive member %s is not installed. Nothing was installed." % info.name)
+        source_path = files.get(source_name)
+        if source_path is None or stat.S_ISLNK(os.lstat(source_path).st_mode) or not stat.S_ISREG(os.lstat(source_path).st_mode):
+            refuse("regular file %s could not be copied. Nothing was installed." % source_name)
+        parent = os.path.dirname(dest)
+        if os.path.islink(parent):
+            refuse("staging path became a symlink at %s. Nothing was installed." % parent)
+        with open(source_path, "rb") as source, open(dest, "wb") as handle:
             shutil.copyfileobj(source, handle)
         os.chmod(dest, 0o644)
+
+
+def assert_no_symlinks(root):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        if os.path.islink(dirpath):
+            refuse("staging path became a symlink at %s. Nothing was installed." % dirpath)
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            if os.path.islink(path):
+                refuse("staging path became a symlink at %s. Nothing was installed." % path)
+
+
+def publish_tree(tree, dest, parent, harness):
+    if not same_device(tree, parent):
+        refuse("staging is not on the destination filesystem. Nothing was installed.")
+    assert_no_symlinks(tree)
+    backup = None
+    if os.path.lexists(dest):
+        if not os.path.isdir(dest) or os.path.islink(dest):
+            refuse("sounds destination is not a real directory. Nothing was installed.")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = os.path.join(parent, "en_US.bak." + stamp)
+        os.rename(dest, backup)
+    try:
+        os.rename(tree, dest)
+    except OSError:
+        if backup is not None and not os.path.lexists(dest):
+            os.rename(backup, dest)
+        refuse("the sound tree could not be published. The previous tree was left in place.")
+    for dirpath, dirnames, filenames in os.walk(dest, followlinks=False):
+        os.chmod(dirpath, 0o755)
+        for filename in filenames:
+            path = os.path.join(dirpath, filename)
+            if os.path.islink(path):
+                refuse("installed sounds contain a symbolic link at %s." % path)
+            os.chmod(path, 0o644)
+    if not harness:
+        for dirpath, dirnames, filenames in os.walk(dest, followlinks=False):
+            os.chown(dirpath, 0, 0)
+            for filename in filenames:
+                os.chown(os.path.join(dirpath, filename), 0, 0)
 
 
 def install(archive_path, dest, pin_file, harness):
@@ -168,48 +273,34 @@ def install(archive_path, dest, pin_file, harness):
         refuse("archive digest does not match the pin. Nothing was extracted.")
     if pinned == OFFICIAL_SHA256 and size != OFFICIAL_SIZE:
         refuse("official archive size is %s bytes, expected %s. Nothing was extracted." % (size, OFFICIAL_SIZE))
-    with tarfile.open(archive_path, "r:bz2") as archive:
-        members = [info for info in archive.getmembers()]
-        _by_name, resolved = validate_members(members)
-        stage = tempfile.mkdtemp(prefix="orp-heather.")
-        try:
-            os.chmod(stage, 0o755)
-            write_tree(archive, members, resolved, stage)
-        except Exception:
-            shutil.rmtree(stage, ignore_errors=True)
-            raise
     if os.path.islink(dest):
-        shutil.rmtree(stage, ignore_errors=True)
         refuse("sounds destination is a symbolic link. Nothing was installed.")
     parent = os.path.dirname(dest)
     acc = ""
     for part in parent.split("/")[1:]:
         acc = acc + "/" + part
         if os.path.islink(acc):
-            shutil.rmtree(stage, ignore_errors=True)
             refuse("symbolic link in the sounds path at %s. Nothing was installed." % acc)
         if not os.path.isdir(acc):
             os.mkdir(acc, 0o755)
-    if os.path.lexists(dest):
-        if not os.path.isdir(dest) or os.path.islink(dest):
-            shutil.rmtree(stage, ignore_errors=True)
-            refuse("sounds destination is not a real directory. Nothing was installed.")
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = os.path.join(parent, "en_US.bak." + stamp)
-        os.rename(dest, backup)
-    os.rename(stage, dest)
-    for dirpath, dirnames, filenames in os.walk(dest):
-        os.chmod(dirpath, 0o755)
-        for filename in filenames:
-            path = os.path.join(dirpath, filename)
-            if os.path.islink(path):
-                refuse("installed sounds contain a symbolic link at %s." % path)
-            os.chmod(path, 0o644)
-    if not harness:
-        for dirpath, dirnames, filenames in os.walk(dest):
-            os.chown(dirpath, 0, 0)
-            for filename in filenames:
-                os.chown(os.path.join(dirpath, filename), 0, 0)
+    work = None
+    try:
+        work = private_stage(parent)
+        spool = os.path.join(work, "spool")
+        tree = os.path.join(work, "tree")
+        os.mkdir(spool, 0o700)
+        os.mkdir(tree, 0o755)
+        with tarfile.open(archive_path, "r:bz2") as archive:
+            infos, files = spool_members(archive, spool)
+        _by_name, resolved = validate_members(infos)
+        assemble_tree(infos, resolved, files, tree)
+        publish_tree(tree, dest, parent, harness)
+    except Exception:
+        if work is not None:
+            remove_private_tree(work)
+        raise
+    if work is not None:
+        remove_private_tree(work)
     return dest
 
 
