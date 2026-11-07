@@ -89,7 +89,11 @@ $benchGuard = BenchGuard::detect();
 	$updateFlage = $Database->get_update_flag();
 ?>
 
-<?php if (isset($_GET['bench_blocked'])) { ?>
+<?php if (isset($_GET['preview_failed'])) { ?>
+	<div class="alert alert-error">Configuration preview was not written. The radio was not restarted.</div>
+<?php } elseif (isset($_GET['bench_preview_ok'])) { ?>
+	<div class="alert alert-info">Configuration preview was written. The radio was not restarted.</div>
+<?php } elseif (isset($_GET['bench_blocked'])) { ?>
 	<div class="alert alert-error">Bench mode did not rebuild or restart the repeater.</div>
 <?php } ?>
 

@@ -12,6 +12,7 @@ class SVXLink {
 	private $logics = array();
 	private $links = array();
 	private $orpFileHeader;
+	private $publishFailed = false;
     private $web_path = '/var/www/openrepeater/';	
 
 	public function __construct($settingsArray, $portsArray, $modulesArray) {
@@ -491,8 +492,19 @@ class SVXLink {
 		return $note . implode("\n", $out) . "\n";
 	}
 
+	public function publishFailed() {
+		return $this->publishFailed;
+	}
+
+	private function publishFailure() {
+		$this->publishFailed = true;
+		return false;
+	}
+
 	public function write_config($data, $filename, $format = 'text') {
-		
+		if ($data === false || $data === null) {
+			return $this->publishFailure();
+		}
 		if ($format == 'ini') {
 			$data = $this->build_ini($data); // Convert Array to INI format
 		}
@@ -503,22 +515,26 @@ class SVXLink {
 		$file_output = $this->orpFileHeader . $data;
 		$full_file_path = $this->configDestination($filename);
 		if ($full_file_path === null) {
-			return;
+			return $this->publishFailure();
 		}
 		$filepath = dirname($full_file_path);
 		if ($guard->isBench()) {
 			if (!BenchGuard::previewAllowed($filepath) || is_link($filepath) || is_link($full_file_path)) {
-				return;
+				return $this->publishFailure();
 			}
 			if (!is_dir($filepath)) {
 				$parent = dirname($filepath);
 				if (!is_dir($parent) || is_link($parent) || !BenchGuard::componentsAreReal($parent)) {
-					return;
+					return $this->publishFailure();
 				}
-				mkdir($filepath, 0750);
+				if (!mkdir($filepath, 0770) && !is_dir($filepath)) {
+					return $this->publishFailure();
+				}
 			}
-			BenchGuard::writeContained($full_file_path, $file_output);
-			return;
+			if (BenchGuard::writeContained($full_file_path, $file_output) !== true) {
+				return $this->publishFailure();
+			}
+			return true;
 		}
 		if (is_link($filepath) || is_link($full_file_path)) {
 			return;
@@ -527,7 +543,10 @@ class SVXLink {
 		if (is_link($filepath) || is_link($full_file_path)) {
 			return;
 		}
-		file_put_contents( $full_file_path, $file_output );
+		if (file_put_contents( $full_file_path, $file_output ) === false) {
+			return $this->publishFailure();
+		}
+		return true;
 	}
 
 

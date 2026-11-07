@@ -14,7 +14,7 @@ NGINX_TEMPLATE=${NGINX_TEMPLATE:-$REPO_ROOT/upgrade/nginx/openrepeater.conf.temp
 # shellcheck source=lib/bench-target.sh
 . "$SCRIPT_DIR/lib/bench-target.sh"
 
-if [ -n "${ORP_ROOT:-}" ] || [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ]; then
+if [ -n "${ORP_ROOT:-}" ] || [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ] || [ "${ORP_INSTALL_APPLY_OWNERSHIP:-0}" = 1 ]; then
 	if ! bench_test_harness_allowed; then
 		echo "refused: test overrides are ignored on the bench host" >&2
 		exit 1
@@ -188,8 +188,16 @@ bench_chmod 644 "$(p /etc/openrepeater/bench-mode)"
 bench_chown root:root "$(p /etc/openrepeater)"
 bench_chown root:root "$(p /etc/openrepeater/bench-mode)"
 bench_chown root:root "$(p /var/lib/openrepeater)"
-bench_chown root:root "$(p /var/lib/openrepeater/bench-preview)"
-bench_chown root:root "$(p /var/lib/openrepeater/db)"
+# Directory inodes only. www-data can create new files here and cannot
+# replace a root-owned inode. Root does not chown files inside these directories.
+if getent group www-data >/dev/null 2>&1 && { [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] || [ "${ORP_INSTALL_APPLY_OWNERSHIP:-0}" = 1 ]; }; then
+	web_group=www-data
+else
+	web_group=$(id -gn)
+fi
+bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/bench-preview)"
+bench_chmod 1770 "$(p /var/lib/openrepeater/bench-preview)"
+bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/db)"
 
 if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] && [ "${ORP_INSTALL_SKIP_APT:-0}" != 1 ]; then
 	install_service_block
@@ -320,13 +328,7 @@ if [ "$(bench_lstat_kind "$db_file")" = missing ]; then
 	bench_place_file "$REPO_ROOT/install/sql/openrepeater.db" "$db_file"
 fi
 bench_chmod 660 "$db_file"
-if getent group www-data >/dev/null 2>&1 && [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
-	bench_chown "root:www-data" "$db_file"
-	bench_chown "root:www-data" "$(p /var/lib/openrepeater/db)"
-else
-	bench_chown "root:$(id -gn)" "$db_file"
-	bench_chown "root:$(id -gn)" "$(p /var/lib/openrepeater/db)"
-fi
+bench_chown "root:${web_group}" "$db_file"
 # Sticky and group-writable only after the database inode is root-owned.
 # www-data can create SQLite journals and cannot replace that inode.
 bench_chmod 1770 "$(p /var/lib/openrepeater/db)"

@@ -176,7 +176,7 @@ Privileged mutation is allowed only for a direct child of a trust anchor: a real
 | `/etc/openrepeater` | root | `755` | root | Yes, it is an anchor |
 | `/etc/openrepeater/bench-mode` | root | `644` | root | Yes, parent is an anchor |
 | `/var/lib/openrepeater` | root | `755` | root | Yes |
-| `/var/lib/openrepeater/bench-preview` | root | `755` | root | The directory inode only. Contents are not chowned |
+| `/var/lib/openrepeater/bench-preview` | root | `1770` | root, plus new files by `www-data` | Directory inode only, after it is a real child of an anchor. `www-data` creates and replaces its own preview files. Root does not chown those files. A failed write returns false |
 | `/var/lib/openrepeater/db` | root | `1770` | root, plus new files by `www-data` | Tighten to `755` before touching the database file, then restore `1770` |
 | `/var/lib/openrepeater/db/openrepeater.db` | root | `660` | root and the `www-data` group | Only when it is a regular file and the directory is an anchor |
 | `/var/www/openrepeater` | `www-data` after publish | `755` | owner of the new inode | Replace the directory from `/var/www`. Do not walk a previous tree |

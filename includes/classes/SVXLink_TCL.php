@@ -21,9 +21,11 @@ class SVXLink_TCL {
 	###############################################
 
 	public function alias_SimplexLogic($new_namespace) {
-		$orig_file = file_get_contents("/usr/share/svxlink/events.d/SimplexLogic.tcl");
-		$new_file = str_replace("SimplexLogic", $new_namespace, $orig_file);
-		return $new_file;
+		$orig_file = @file_get_contents("/usr/share/svxlink/events.d/SimplexLogic.tcl");
+		if (!is_string($orig_file)) {
+			return false;
+		}
+		return str_replace("SimplexLogic", $new_namespace, $orig_file);
 	}
 
 
@@ -33,13 +35,19 @@ class SVXLink_TCL {
 	###############################################
 
 	public function alias_RepeaterLogic($new_namespace) {
-		$orig_file = file_get_contents("/usr/share/svxlink/events.d/RepeaterLogic.tcl");
+		$orig_file = @file_get_contents("/usr/share/svxlink/events.d/RepeaterLogic.tcl");
+		if (!is_string($orig_file)) {
+			return false;
+		}
 		$new_file = str_replace("RepeaterLogic", $new_namespace, $orig_file);
 
 		# Replace default tones at end of roger beep
 		$search_beep = '/playTone 400 900 50[\s\S]+?playSilence 500\R/';
 		$replace_beep = '';
 		$new_file = preg_replace( $search_beep, $replace_beep, $new_file );
+		if (!is_string($new_file)) {
+			return false;
+		}
 
 		return $new_file;
 	}

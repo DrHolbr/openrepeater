@@ -41,19 +41,6 @@ $classSVXLinkGPIO = new SVXLink_GPIO($gpio);
 /* --- BENCH: do not publish configs or restart the radio --- */
 
 $benchGuard = BenchGuard::detect();
-if ($benchGuard->isBench()) {
-	if (isset($_POST["return_url"])) {
-		$url = strtok($_POST["return_url"], '?');
-	} else if (isset($_SESSION["new_repeater_settings"])) {
-		session_destroy();
-		$url = '../login.php';
-	} else {
-		$url = '../dashboard.php';
-	}
-	$join = (strpos($url, '?') === false) ? '?' : '&';
-	header('Location: '.$url.$join.'bench_blocked=1');
-	exit;
-}
 
 /* ---------------------------------------------------------- */
 /* --- LOGIC SETTINGS --- */
@@ -184,7 +171,12 @@ switch ($settings['orp_Mode']) {
 	
 		// WRITE CONFIGURATION & TCL FILES
 		$classSVXLink->write_config($advanced['svxlink_config'], 'svxlink.conf', 'text'); // Overridden svxlink.confg
-		unlink('/etc/openrepeater/svxlink/local-events.d/CustomLogic.tcl'); // Delete custom TCL overrides if they exist
+		if (!$benchGuard->isBench()) {
+			$customLogic = '/etc/openrepeater/svxlink/local-events.d/CustomLogic.tcl';
+			if (is_file($customLogic) && !is_link($customLogic)) {
+				unlink($customLogic);
+			}
+		}
 		$classSVXLink->write_config($advanced['gpio_config'], 'gpio.conf', 'text'); // Overridden GPIO config
         break;
 
@@ -194,8 +186,31 @@ switch ($settings['orp_Mode']) {
 /* ---------------------------------------------------------- */
 /* FINISH UP */
 
-/* CLEAR SETTINGS UPDATE FLAG TO CLEAR BANNER AT TOP OF PAGE */
-$classDB->set_update_flag(false);
+$publishFailed = $classSVXLink->publishFailed();
+$onBench = $benchGuard->isBench();
+
+if (!$publishFailed) {
+	$classDB->set_update_flag(false);
+}
+
+if ($publishFailed || $onBench) {
+	if ($publishFailed) {
+		$notice = 'preview_failed=1';
+	} else {
+		$notice = 'bench_preview_ok=1';
+	}
+	if (isset($_POST["return_url"])) {
+		$url = strtok($_POST["return_url"], '?');
+	} else if (isset($_SESSION["new_repeater_settings"])) {
+		session_destroy();
+		$url = '../login.php';
+	} else {
+		$url = '../dashboard.php';
+	}
+	$join = (strpos($url, '?') === false) ? '?' : '&';
+	header('Location: '.$url.$join.$notice);
+	exit;
+}
 
 ########
 # Redundant GPIO teardown/setup to work around SVXLink issue

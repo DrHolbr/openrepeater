@@ -358,10 +358,18 @@ bench_chown() {
 	if [ -n "${ORP_CHOWN_LOG:-}" ]; then
 		printf '%s %s %s\n' "" "$spec" "$path" >> "$ORP_CHOWN_LOG"
 	fi
-	if [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ]; then
+	if [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ] && ! bench_apply_real_ownership; then
 		return 0
 	fi
 	chown -h "$spec" "$path"
+}
+
+# Real chown during an offline fixture run is allowed only for the cloud
+# harness. On hostname orp-test the harness is refused, so this cannot retarget
+# ownership of the bench.
+bench_apply_real_ownership() {
+	[ "${ORP_INSTALL_APPLY_OWNERSHIP:-0}" = 1 ] || return 1
+	bench_test_harness_allowed
 }
 
 bench_chmod() {

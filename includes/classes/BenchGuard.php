@@ -140,7 +140,7 @@ class BenchGuard {
 			return false;
 		}
 		$tmp = $dir . '/.' . basename($path) . '.' . getmypid() . '.tmp';
-		if (file_put_contents($tmp, $data) === false) {
+		if (@file_put_contents($tmp, $data) === false) {
 			return false;
 		}
 		if (is_link($path)) {
