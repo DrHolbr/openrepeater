@@ -88,6 +88,7 @@ var jsAudioOutputOptions='<?php echo $phpAudioOutputOptions; ?>';
 					<option value="simplex"<?php if ($settings['orp_Mode'] == 'simplex') { echo ' selected'; } ?>>Simplex Node</option>
 				</select>
 				<label class="control-label" for="orp_Mode">Logic Mode for Port(s)</label>
+				<p id="logicStatus">Stored for the next publish. Repeater uses RepeaterLogic. Simplex uses SimplexLogic. PTT_TYPE stays NONE. No GPIO line is configured.</p>
 			</form>
 
 

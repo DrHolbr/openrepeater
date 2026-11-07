@@ -79,15 +79,17 @@ include('includes/header.php');
 			</div><!--/row-->
 			</form>
 
+			<p id="courtesyStatus">Stored only. Not applied. This runtime keeps the installed Logic.tcl send_rgr_sound.</p>
 			<div id="disabled" style="display: none;"> <!-- Expand Setting -->
-				<div class="alert alert-error"><strong>Courtesy Tone Disabled:</strong> No courtesy tone will be played when the carrier is dropped. This may be preferred for a &quot;Quite&quot; machine or for testing. Otherwise, please select a different mode above.</div>
+				<div class="alert alert-error"><strong>Stored, not applied.</strong> Disabling the courtesy tone does not change the installed send_rgr_sound.</div>
 			</div>
 			
 			<div id="beep" style="display: none;"> <!-- Expand Setting -->
-				<div class="alert alert-success"><strong>Basic Beep:</strong> You have selected a basic beep for your courtesy tone. For more advance tones, please choose the custom mode from the menu above.</div>
+				<div class="alert alert-error"><strong>Stored, not applied.</strong> The basic beep is not what Logic.tcl plays.</div>
 			</div>
 			
 			<div id="custom" style="display: none;"> <!-- Expand Setting -->
+				<div class="alert alert-error"><strong>Unsupported.</strong> A custom courtesy file is not a SvxLink 26.05 setting. It is not published and it is not played.</div>
 
 			<div class="row-fluid sortable">
 

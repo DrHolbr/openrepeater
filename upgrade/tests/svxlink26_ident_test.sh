@@ -41,6 +41,7 @@ chmod 644 "$mode"
 cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 sqlite3 "$db" "UPDATE settings SET value='FIXTURE' WHERE keyID='callSign';"
 apply_ident_profile "$db"
+sqlite3 "$db" "UPDATE settings SET value='repeater' WHERE keyID='orp_Mode';"
 export ORP_BENCH_TEST_HARNESS=1
 export ORP_BENCH_HOSTNAME_FILE="$host"
 export ORP_OPERATING_MODE_FILE="$mode"
@@ -57,6 +58,8 @@ grep -q '^SHORT_CW_ID_ENABLE=1$' "$cfg"
 grep -q '^SHORT_VOICE_ID_ENABLE=0$' "$cfg"
 grep -q '^CW_WPM=20$' "$cfg"
 grep -q '^CW_PITCH=600$' "$cfg"
+grep -q '^LOGICS=RepeaterLogic$' "$cfg"
+grep -q '^TYPE=Repeater$' "$cfg"
 grep -q '^PTT_TYPE=NONE$' "$cfg"
 if grep -q '^ID_Morse_Amplitude=\|^CW_AMP=' "$cfg"; then
 	echo "FAIL: stored Morse amplitude was copied into the runtime" >&2

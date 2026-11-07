@@ -178,16 +178,45 @@ code=$(post_settings -o "$tmp/id.body" -w '%{http_code}' \
 [ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Short_IntervalMin';")" = "7" ]
 export ORP_ROOT="$live"
 export ORP_OPERATING_MODE_FILE="$funct"
-"$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null
+pub=$(ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish)
 cfg="$live/etc/svxlink/svxlink.conf"
+printf '%s\n' "$pub" | grep -q '^logic=Simplex$'
+printf '%s\n' "$pub" | grep -q '^courtesy=not-applied$'
 grep -q '^PTT_TYPE=NONE$' "$cfg"
 grep -q '^SHORT_IDENT_INTERVAL=7$' "$cfg"
-grep -q '^LOGICS=RepeaterLogic$' "$cfg"
-if grep -q 'ONLINE_CMD\|gpio498\|PTT_PIN' "$cfg"; then
-	echo "FAIL: stored DTMF pin or port numbers entered the no-PTT runtime" >&2
+grep -q '^LOGICS=SimplexLogic$' "$cfg"
+grep -q '^TYPE=Simplex$' "$cfg"
+grep -q '^EVENT_HANDLER=/usr/local/share/svxlink/events.tcl$' "$cfg"
+if grep -q 'ONLINE_CMD\|gpio498\|PTT_PIN\|playTone\|playFile\|send_rgr_sound' "$cfg"; then
+	echo "FAIL: stored DTMF pin, courtesy, or port numbers entered the no-PTT runtime" >&2
 	exit 1
 fi
-echo "ok: simplex, DTMF pin, and port numbers stay in the database; the root runtime stays RepeaterLogic with PTT_TYPE=NONE"
+echo "ok: stored simplex is published as SimplexLogic with PTT_TYPE=NONE and the installed event handler"
+code=$(post_settings -o "$tmp/repeater.body" -w '%{http_code}' \
+	--data-urlencode 'orp_Mode=repeater' \
+	"$base/functions/ajax_db_update.php")
+[ "$code" = "200" ]
+grep -q 'RepeaterLogic' "$tmp/repeater.body"
+ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null
+grep -q '^LOGICS=RepeaterLogic$' "$cfg"
+grep -q '^TYPE=Repeater$' "$cfg"
+grep -q '^CALLSIGN=TEST$' "$cfg"
+grep -q '^PTT_TYPE=NONE$' "$cfg"
+repeater_sum=$(sha256sum "$cfg" | awk '{print $1}')
+sqlite3 "$db" "UPDATE settings SET value='advanced' WHERE keyID='orp_Mode';"
+set +e
+ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null 2>"$tmp/badmode.err"
+badmode_rc=$?
+set -e
+if [ "$badmode_rc" = 0 ]; then
+	echo "FAIL: advanced mode was published" >&2
+	exit 1
+fi
+grep -q 'not repeater or simplex' "$tmp/badmode.err"
+[ "$(sha256sum "$cfg" | awk '{print $1}')" = "$repeater_sum" ]
+[ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='orp_Mode';")" = "advanced" ]
+sqlite3 "$db" "UPDATE settings SET value='repeater' WHERE keyID='orp_Mode';"
+echo "ok: an unsupported logic mode leaves the repeater runtime unchanged"
 before_cfg=$(sha256sum "$cfg" | awk '{print $1}')
 code=$(post_settings -o "$tmp/custom.body" -w '%{http_code}' \
 	--data-urlencode 'ID_Short_Mode=custom' \
@@ -224,6 +253,17 @@ code=$(post_settings -o "$tmp/courtesy.body" -w '%{http_code}' \
 	"$base/functions/ajax_db_update.php")
 [ "$code" = "200" ]
 [ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='courtesyMode';")" = "beep" ]
+grep -q 'stored-not-applied' "$tmp/courtesy.body"
+page=$(curl -s -b "$jar" "$base/courtesy_tone.php")
+printf '%s' "$page" | grep -q 'Unsupported'
+printf '%s' "$page" | grep -q 'not applied'
+code=$(post_settings -o "$tmp/courtesy-custom.body" -w '%{http_code}' \
+	--data-urlencode 'courtesyMode=custom' \
+	"$base/functions/ajax_db_update.php")
+[ "$code" = "200" ]
+grep -q '^unsupported:' "$tmp/courtesy-custom.body"
+grep -q 'stored-not-applied' "$tmp/courtesy-custom.body"
+sqlite3 "$db" "UPDATE settings SET value='beep' WHERE keyID='courtesyMode';"
 printf 'not-audio' > "$tmp/note.php"
 code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/audio-bad.body" -w '%{http_code}' \
 	-F 'action=upload_file' -F 'file[]=@'"$tmp/note.php" \
@@ -379,13 +419,24 @@ code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/adv.body" -w '%{ht
 	"$base/advanced.php")
 grep -q 'updated successfully' "$tmp/adv.body"
 [ "$(sqlite3 "$db" "SELECT value FROM advanced WHERE keyID='svxlink_config';")" = "PTT_PIN=gpio498" ]
-ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null
+advanced_before=$(sha256sum "$cfg" | awk '{print $1}')
+set +e
+ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null 2>"$tmp/adv-pub.err"
+advanced_rc=$?
+set -e
+if [ "$advanced_rc" = 0 ]; then
+	echo "FAIL: advanced mode replaced the runtime" >&2
+	exit 1
+fi
+grep -q 'not repeater or simplex' "$tmp/adv-pub.err"
+[ "$(sha256sum "$cfg" | awk '{print $1}')" = "$advanced_before" ]
 if grep -q 'gpio498\|GPIO_OUT_HIGH' "$cfg"; then
 	echo "FAIL: advanced textarea was copied into the root runtime" >&2
 	exit 1
 fi
 grep -q '^PTT_TYPE=NONE$' "$cfg"
-echo "ok: advanced text is stored and is not the published runtime"
+grep -q 'not applied' "$tmp/adv-on.body"
+echo "ok: advanced text is stored and does not replace the runtime"
 settings_after=$(sqlite3 "$db" "SELECT keyID || '=' || value FROM settings WHERE keyID NOT IN ('orp_Mode','txTailValueSec','repeaterDTMF_disable','repeaterDTMF_disable_pin','ID_Short_IntervalMin','ID_Short_Mode','courtesyMode','callSign') ORDER BY keyID;")
 # Restore replaced settings. Re-read the preserved rows from the restored backup snapshot by comparing users and ctcss.
 [ "$(sqlite3 "$db" "SELECT COUNT(*) FROM ctcss;")" = "50" ]

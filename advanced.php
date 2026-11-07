@@ -34,7 +34,7 @@ if (isset($_POST['action'])){
 			$sql = "UPDATE settings SET value='advanced' WHERE keyID='orp_Mode'";
 			$query = $Database->update($sql);	
 
-			$msgText = "Open Repeater has been set to Advanced mode.";
+			$msgText = "Advanced mode is stored and is not applied. The root publisher does not replace the runtime file while orp_Mode is advanced.";
 			$alert = '<div class="alert alert-success"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
 
 

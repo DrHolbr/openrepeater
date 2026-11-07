@@ -50,6 +50,8 @@ if [ "$pub_rc" -ne 0 ]; then
 fi
 printf '%s\n' "$pub" | grep -q 'published'
 printf '%s\n' "$pub" | grep -q 'simulation/dummy-path'
+grep -q '^LOGICS=SimplexLogic$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^TYPE=Simplex$' "$live/etc/svxlink/svxlink.conf"
 grep -q '^PTT_TYPE=NONE$' "$live/etc/svxlink/svxlink.conf"
 grep -q '^CALLSIGN=FIXTURE$' "$live/etc/svxlink/svxlink.conf"
 grep -q '^SHORT_IDENT_INTERVAL=5$' "$live/etc/svxlink/svxlink.conf"

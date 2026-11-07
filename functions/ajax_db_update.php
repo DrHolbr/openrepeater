@@ -7,7 +7,7 @@ $Database = new Database();
 
 $updates = array();
 foreach ($_POST as $key => $value) {
-	if ($key === 'csrf_token') {
+	if ($key === 'csrf_token' || $key === 'action') {
 		continue;
 	}
 	if (!is_string($key) || !is_string($value)) {
@@ -18,6 +18,20 @@ foreach ($_POST as $key => $value) {
 	}
 	if ($key === 'callSign') {
 		$value = strtoupper($value);
+	}
+	if ($key === 'orp_Mode' && $value !== 'repeater' && $value !== 'simplex') {
+		http_response_code(400);
+		header('Content-Type: text/plain; charset=UTF-8');
+		echo "unsupported\n";
+		echo "orp_Mode is not repeater or simplex. Nothing was written.\n";
+		exit;
+	}
+	if ($key === 'courtesyMode' && $value !== 'disabled' && $value !== 'beep' && $value !== 'custom') {
+		http_response_code(400);
+		header('Content-Type: text/plain; charset=UTF-8');
+		echo "unsupported\n";
+		echo "courtesyMode is not disabled, beep, or custom. Nothing was written.\n";
+		exit;
 	}
 	$updates[$key] = $value;
 }
@@ -39,3 +53,14 @@ foreach ($updates as $key => $value) {
 }
 header('Content-Type: text/plain; charset=UTF-8');
 echo "updated\n";
+if (isset($updates['orp_Mode'])) {
+	$logic = $updates['orp_Mode'] === 'simplex' ? 'SimplexLogic' : 'RepeaterLogic';
+	$type = $updates['orp_Mode'] === 'simplex' ? 'Simplex' : 'Repeater';
+	echo "stored-for-publish: LOGICS=${logic} TYPE=${type} PTT_TYPE=NONE. No GPIO line is configured.\n";
+}
+if (isset($updates['courtesyMode']) || isset($updates['courtesy'])) {
+	if (isset($updates['courtesyMode']) && $updates['courtesyMode'] === 'custom') {
+		echo "unsupported: a custom courtesy file is not a SvxLink 26.05 setting and is not published.\n";
+	}
+	echo "stored-not-applied: courtesy stays in the database. The installed Logic.tcl send_rgr_sound is what runs.\n";
+}

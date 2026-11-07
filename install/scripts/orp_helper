@@ -520,7 +520,35 @@ function config_module_dir() {
 	path=$(native_path /usr/local/lib/svxlink)
 	[ -d "$path" ] && [ ! -L "$path" ] || return 1
 	config_real_file "${path}/RepeaterLogic.so" || return 1
+	config_real_file "${path}/SimplexLogic.so" || return 1
 	printf '%s' /usr/local/lib/svxlink
+}
+
+# repeater and simplex are the two logic cores installed under /usr/local/lib/svxlink.
+# Anything else, including advanced, is not a 26.05 logic type and is not published.
+function config_logic_select() {
+	local mode so
+	mode=$(config_db_value orp_Mode) || return 1
+	case "$mode" in
+		repeater)
+			logic_name=RepeaterLogic
+			logic_type=Repeater
+			;;
+		simplex)
+			logic_name=SimplexLogic
+			logic_type=Simplex
+			;;
+		*)
+			echo "refused: orp_Mode is not repeater or simplex. The stored value was not published and the runtime file was not replaced." >&2
+			return 1
+			;;
+	esac
+	so=$(native_path "/usr/local/lib/svxlink/${logic_name}.so")
+	if ! config_real_file "$so"; then
+		echo "refused: ${logic_name}.so is not installed. The runtime file was not replaced." >&2
+		return 1
+	fi
+	return 0
 }
 
 function config_callsign() {
@@ -714,6 +742,7 @@ function config_render() {
 	events=$(config_event_handler) || return 1
 	modules=$(config_module_dir) || return 1
 	config_ident_load || return 1
+	config_logic_select || return 1
 	cw_block=""
 	if [ "$ident_emit_cw" = 1 ]; then
 		cw_block="CW_WPM=${ident_cw_wpm}
@@ -723,12 +752,12 @@ CW_PITCH=${ident_cw_pitch}"
 [GLOBAL]
 MODULE_PATH=${modules}
 LOGIC_CORE_PATH=${modules}
-LOGICS=RepeaterLogic
+LOGICS=${logic_name}
 CFG_DIR=/etc/svxlink/functional-test.d
 TIMESTAMP_FORMAT="%c"
 CARD_SAMPLE_RATE=16000
-[RepeaterLogic]
-TYPE=Repeater
+[${logic_name}]
+TYPE=${logic_type}
 RX=Rx1
 TX=Tx1
 CALLSIGN=${callsign}
@@ -846,7 +875,10 @@ function config_publish {
 	echo "published ${dest}"
 	echo "snapshot=${sum_after}"
 	echo "runtime=simulation/dummy-path PTT_TYPE=NONE loopback-udp"
+	echo "logic=${logic_type}"
 	echo "gpio=not-applied"
+	echo "courtesy=not-applied"
+	echo "courtesy_upstream=Logic.tcl send_rgr_sound"
 	echo "event=$(config_event_handler)"
 	echo "stored wiring was not modified"
 	echo "service was not started"
