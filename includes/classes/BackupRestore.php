@@ -168,135 +168,303 @@ class BackupRestore {
 
 
 	public function restore_backup() {
+		// One SQLite commit is atomic for the four tables. Directory replacement
+		// is a separate rename. The mixer is applied only after both succeed and
+		// is not undone. A crash between those steps is recoverable from the
+		// manifest and stashes, not one atomic commit.
+		if (is_file($this->recovery_manifest())) {
+			return $this->restore_needs_recovery('A previous restore left recovery notes.');
+		}
 		$sql_file = $this->backup_restore_dir . $this->backup_db_file;
 		$rows = $this->Database->load_backup_rows($this->db_tables, $sql_file);
 		if ($rows === false) {
-			return $this->restore_failed();
+			return $this->restore_unchanged();
 		}
-		$prior = $this->Database->capture_table_rows($this->db_tables);
-		if ($prior === false) {
-			return $this->restore_failed();
+		$staged = $this->stage_restore_files();
+		if ($staged === false) {
+			return $this->restore_unchanged();
 		}
-		$stashes = $this->apply_restore_files();
-		if ($stashes === false) {
-			return $this->restore_failed();
+		if (!$this->write_recovery_manifest($staged['moves'])) {
+			$this->remove_private_stages($staged['stages']);
+			return $this->restore_unchanged();
+		}
+		$published = $this->publish_staged_trees($staged['moves']);
+		if ($published['ok'] !== true) {
+			$this->remove_private_stages($staged['stages']);
+			if ($published['rolled_back'] === true) {
+				$this->clear_recovery_manifest();
+				return $this->restore_unchanged();
+			}
+			return $this->restore_needs_recovery('A file tree could not be put back after a failed publish.');
 		}
 		if ($this->Database->replace_backup_tables($this->db_tables, $rows) !== true) {
-			$this->revert_restore_files($stashes);
-			return $this->restore_failed();
+			if ($this->undo_published($published['done']) === true) {
+				$this->remove_private_stages($staged['stages']);
+				$this->clear_recovery_manifest();
+				return $this->restore_unchanged();
+			}
+			return $this->restore_needs_recovery('The database transaction rolled back, but a file tree could not be put back.');
 		}
-		if (!$this->restore_alsa()) {
-			$this->Database->replace_backup_tables($this->db_tables, $prior);
-			$this->revert_restore_files($stashes);
-			return $this->restore_failed();
-		}
-		$this->discard_restore_stashes($stashes);
-		$this->removeDirectory($this->backup_restore_dir);
+		$this->discard_published_stashes($published['done']);
+		$this->remove_private_stages($staged['stages']);
+		$this->clear_recovery_manifest();
 		$this->Database->set_update_flag(true);
+		if (!$this->restore_alsa()) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The backup database and files were restored. The mixer state was not applied and is not part of that restore.'
+			);
+		}
+		$this->removeDirectory($this->backup_restore_dir);
 		return array(
 			'msgType' => 'success',
 			'msgText' => 'Backup was successfully restored.'
 		);
 	}
 
-	private function restore_failed() {
+	private function recovery_manifest() {
+		return $this->backupPath . 'restore-recovery.json';
+	}
+
+	private function restore_unchanged() {
 		return array(
 			'msgType' => 'error',
-			'msgText' => 'The backup was not restored. The previous database rows were left unchanged.'
+			'msgText' => 'The backup was not restored. The previous database rows and files were left unchanged.'
 		);
 	}
 
-	private function apply_restore_files() {
-		$stashes = array();
-		$trees = array(
-			array($this->orp_sounds_dir . 'courtesy_tones', $this->backup_restore_dir . 'courtesy_tones'),
-			array($this->orp_sounds_dir . 'identification', $this->backup_restore_dir . 'identification'),
+	private function restore_needs_recovery($reason) {
+		return array(
+			'msgType' => 'error',
+			'msgText' => 'The backup restore needs recovery. ' . $reason . ' Recovery notes were kept at ' . $this->recovery_manifest() . '. The backup archive was not deleted.'
 		);
-		foreach ($trees as $pair) {
-			if (!is_dir($pair[1])) {
+	}
+
+	private function write_recovery_manifest($moves) {
+		$note = array(
+			'phase' => 'publishing',
+			'crash_atomic' => false,
+			'moves' => $moves,
+		);
+		$encoded = json_encode($note);
+		if (!is_string($encoded)) {
+			return false;
+		}
+		return file_put_contents($this->recovery_manifest(), $encoded) !== false;
+	}
+
+	private function clear_recovery_manifest() {
+		$path = $this->recovery_manifest();
+		if (is_file($path) && !is_link($path)) {
+			unlink($path);
+		}
+	}
+
+	private function stage_restore_files() {
+		$sounds = $this->real_anchor(rtrim($this->orp_sounds_dir, '/'));
+		$modules = $this->real_anchor(rtrim($this->Modules->modules_path, '/'));
+		$restore = $this->real_anchor(rtrim($this->backup_restore_dir, '/'));
+		if ($sounds === false || $modules === false || $restore === false) {
+			return false;
+		}
+		$stageId = bin2hex(random_bytes(6));
+		$soundsStage = $sounds . '/.orp-stage-' . $stageId;
+		$modulesStage = $modules . '/.orp-stage-' . $stageId;
+		$stages = array();
+		$moves = array();
+		foreach (array('courtesy_tones', 'identification') as $name) {
+			$incoming = $restore . '/' . $name;
+			if (!file_exists($incoming)) {
 				continue;
 			}
-			$stash = $this->replace_tree($pair[0], $pair[1]);
-			if ($stash === false) {
-				$this->revert_restore_files($stashes);
+			$live = $this->anchored_child($sounds, $name);
+			if ($live === false || !$this->stage_one_tree($incoming, $soundsStage, $name, $stages)) {
+				$this->remove_private_stages($stages);
 				return false;
 			}
-			$stashes[] = $stash;
+			$moves[] = array('live' => $live, 'staged' => $soundsStage . '/' . $name, 'links' => null);
 		}
-		$restore_module_path = $this->backup_restore_dir . 'modules/';
-		if (is_dir($restore_module_path)) {
+		$moduleRoot = $restore . '/modules';
+		if (is_dir($moduleRoot) && !is_link($moduleRoot)) {
 			$existing = $this->Modules->get_non_core_modules_path();
 			if (is_array($existing)) {
 				foreach ($existing as $mod_name => $mod_path) {
-					if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $mod_name)) {
-						$this->revert_restore_files($stashes);
+					$live = $this->anchored_child($modules, $mod_name);
+					if ($live === false) {
+						$this->remove_private_stages($stages);
 						return false;
 					}
-					$held = $this->hold_tree($mod_path);
-					if ($held === false) {
-						$this->revert_restore_files($stashes);
-						return false;
-					}
-					$stashes[] = $held;
+					$moves[] = array('live' => $live, 'staged' => null, 'links' => null);
 				}
 			}
-			$incoming = glob($restore_module_path . '*', GLOB_ONLYDIR);
+			$incoming = glob($moduleRoot . '/*', GLOB_ONLYDIR);
 			if ($incoming === false) {
-				$this->revert_restore_files($stashes);
+				$this->remove_private_stages($stages);
 				return false;
 			}
 			foreach ($incoming as $mod_path) {
 				$mod_name = basename($mod_path);
-				if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $mod_name)) {
-					$this->revert_restore_files($stashes);
+				$live = $this->anchored_child($modules, $mod_name);
+				if ($live === false || is_link($mod_path) || !$this->stage_one_tree($mod_path, $modulesStage, $mod_name, $stages)) {
+					$this->remove_private_stages($stages);
 					return false;
 				}
-				$dest = $this->Modules->modules_path . $mod_name;
-				$copied = $this->replace_tree($dest, $mod_path);
-				if ($copied === false) {
-					$this->revert_restore_files($stashes);
-					return false;
-				}
-				$stashes[] = $copied;
-				$linked = $this->Modules->link_module_files($mod_name);
-				if ($linked === false) {
-					$this->revert_restore_files($stashes);
-					return false;
-				}
-				$stashes[] = array('links' => $linked);
+				$moves[] = array('live' => $live, 'staged' => $modulesStage . '/' . $mod_name, 'links' => $mod_name);
 			}
 		}
-		return $stashes;
+		return array('moves' => $moves, 'stages' => $stages);
 	}
 
-	private function replace_tree($live, $incoming) {
-		if ($this->tree_has_link($incoming)) {
+	private function stage_one_tree($incoming, $stageRoot, $name, &$stages) {
+		if (!is_dir($incoming) || is_link($incoming) || $this->tree_has_link($incoming)) {
 			return false;
 		}
-		$held = $this->hold_tree($live);
-		if ($held === false) {
+		if (!in_array($stageRoot, $stages, true)) {
+			if (!mkdir($stageRoot, 0700) || is_link($stageRoot)) {
+				return false;
+			}
+			$stages[] = $stageRoot;
+		}
+		$dest = $stageRoot . '/' . $name;
+		exec('cp -a ' . escapeshellarg($incoming) . ' ' . escapeshellarg($dest), $unused, $rc);
+		if ($rc !== 0 || !is_dir($dest) || is_link($dest) || $this->tree_has_link($dest)) {
 			return false;
 		}
-		if (!$this->copy_tree($incoming, $live)) {
-			$this->restore_held($held);
-			return false;
-		}
-		$held['created'] = $live;
-		return $held;
+		return true;
 	}
 
-	private function hold_tree($live) {
-		if (!file_exists($live)) {
-			return array('live' => $live, 'stash' => null, 'created' => null);
+	private function publish_staged_trees($moves) {
+		$done = array();
+		foreach ($moves as $move) {
+			$stash = null;
+			if (file_exists($move['live'])) {
+				if (is_link($move['live'])) {
+					return array('ok' => false, 'rolled_back' => $this->undo_published($done), 'done' => $done);
+				}
+				$stash = dirname($move['live']) . '/.orp-stash-' . bin2hex(random_bytes(6));
+				if (!rename($move['live'], $stash)) {
+					return array('ok' => false, 'rolled_back' => $this->undo_published($done), 'done' => $done);
+				}
+				if (getenv('ORP_RESTORE_FAULT') === 'publish-collision' && count($done) === 0) {
+					mkdir($move['live'], 0755);
+					file_put_contents($move['live'] . '/collision', 'occupied');
+				}
+			}
+			if (is_string($move['staged'])) {
+				if (!rename($move['staged'], $move['live'])) {
+					$rolled = $this->undo_published($done) && $this->restore_unmoved($move['live'], $stash);
+					return array('ok' => false, 'rolled_back' => $rolled, 'done' => $done);
+				}
+			}
+			$links = null;
+			if (is_string($move['links'])) {
+				$links = $this->Modules->link_module_files($move['links']);
+				if ($links === false) {
+					$done[] = array('live' => $move['live'], 'stash' => $stash, 'links' => null);
+					return array('ok' => false, 'rolled_back' => $this->undo_published($done), 'done' => $done);
+				}
+			}
+			$done[] = array('live' => $move['live'], 'stash' => $stash, 'links' => $links);
 		}
+		return array('ok' => true, 'rolled_back' => true, 'done' => $done);
+	}
+
+	private function restore_unmoved($live, $stash) {
+		if (!is_string($stash) || !file_exists($stash)) {
+			return !file_exists($live);
+		}
+		if (file_exists($live)) {
+			return false;
+		}
+		return rename($stash, $live);
+	}
+
+	private function undo_published($done) {
+		if (!is_array($done)) {
+			return false;
+		}
+		for ($i = count($done) - 1; $i >= 0; $i--) {
+			$item = $done[$i];
+			if (isset($item['links']) && is_array($item['links'])) {
+				$this->Modules->undo_module_links($item['links']);
+			}
+			if (file_exists($item['live'])) {
+				$discard = $item['live'] . '.orp-discard-' . bin2hex(random_bytes(4));
+				if (!rename($item['live'], $discard)) {
+					return false;
+				}
+				if (is_dir($discard) && !is_link($discard)) {
+					exec('rm -R ' . escapeshellarg($discard), $unused, $rc);
+				}
+			}
+			if (is_string($item['stash']) && file_exists($item['stash'])) {
+				if (!rename($item['stash'], $item['live'])) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	private function discard_published_stashes($done) {
+		if (!is_array($done)) {
+			return;
+		}
+		foreach ($done as $item) {
+			if (isset($item['stash']) && is_string($item['stash']) && file_exists($item['stash']) && !is_link($item['stash'])) {
+				exec('rm -R ' . escapeshellarg($item['stash']), $unused, $rc);
+			}
+		}
+	}
+
+	private function remove_private_stages($stages) {
+		if (!is_array($stages)) {
+			return;
+		}
+		foreach ($stages as $stage) {
+			if (is_string($stage) && is_dir($stage) && !is_link($stage)) {
+				exec('rm -R ' . escapeshellarg($stage), $unused, $rc);
+			}
+		}
+	}
+
+	private function real_anchor($path) {
+		if (!is_string($path) || $path === '' || $path[0] !== '/' || strpos($path, '..') !== false) {
+			return false;
+		}
+		$path = rtrim($path, '/');
+		$built = '';
+		foreach (explode('/', $path) as $part) {
+			if ($part === '') {
+				continue;
+			}
+			$built .= '/' . $part;
+			if (is_link($built) || !is_dir($built)) {
+				return false;
+			}
+		}
+		$real = realpath($path);
+		if ($real === false || $real !== $path) {
+			return false;
+		}
+		return $real;
+	}
+
+	private function anchored_child($anchor, $name) {
+		if (!is_string($name) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,64}$/', $name)) {
+			return false;
+		}
+		$live = $anchor . '/' . $name;
 		if (is_link($live)) {
 			return false;
 		}
-		$stash = dirname($live) . '/.orp-stash-' . bin2hex(random_bytes(6));
-		if (!rename($live, $stash)) {
-			return false;
+		if (file_exists($live)) {
+			$real = realpath($live);
+			if ($real !== $live) {
+				return false;
+			}
 		}
-		return array('live' => $live, 'stash' => $stash, 'created' => null);
+		return $live;
 	}
 
 	private function tree_has_link($path) {
@@ -321,52 +489,10 @@ class BackupRestore {
 		return false;
 	}
 
-	private function copy_tree($src, $dest) {
-		if (!is_dir($src) || is_link($src) || is_link(dirname($dest))) {
+	private function restore_alsa() {
+		if (getenv('ORP_RESTORE_FAULT') === 'alsa-fail') {
 			return false;
 		}
-		exec('cp -a ' . escapeshellarg($src) . ' ' . escapeshellarg($dest), $unused, $rc);
-		return $rc === 0 && is_dir($dest) && !is_link($dest);
-	}
-
-	private function revert_restore_files($stashes) {
-		if (!is_array($stashes)) {
-			return;
-		}
-		for ($i = count($stashes) - 1; $i >= 0; $i--) {
-			$item = $stashes[$i];
-			if (isset($item['links']) && is_array($item['links'])) {
-				$this->Modules->undo_module_links($item['links']);
-				continue;
-			}
-			$this->restore_held($item);
-		}
-	}
-
-	private function restore_held($held) {
-		if (!is_array($held) || !isset($held['live'])) {
-			return;
-		}
-		if (isset($held['created']) && is_string($held['created']) && file_exists($held['created']) && !is_link($held['created'])) {
-			exec('rm -R ' . escapeshellarg($held['created']), $unused, $rc);
-		}
-		if (isset($held['stash']) && is_string($held['stash']) && file_exists($held['stash'])) {
-			rename($held['stash'], $held['live']);
-		}
-	}
-
-	private function discard_restore_stashes($stashes) {
-		if (!is_array($stashes)) {
-			return;
-		}
-		foreach ($stashes as $item) {
-			if (isset($item['stash']) && is_string($item['stash']) && file_exists($item['stash']) && !is_link($item['stash'])) {
-				exec('rm -R ' . escapeshellarg($item['stash']), $unused, $rc);
-			}
-		}
-	}
-
-	private function restore_alsa() {
 		$state = $this->backup_restore_dir . $this->alsa_state_file;
 		if (!is_file($state) || is_link($state)) {
 			return true;
@@ -374,7 +500,6 @@ class BackupRestore {
 		exec('sudo orp_helper alsa restore ' . escapeshellarg($state), $unused, $rc);
 		return $rc === 0;
 	}
-
 
 
 	###############################################

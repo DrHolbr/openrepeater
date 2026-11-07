@@ -10,6 +10,9 @@ require_once $root . '/includes/classes/Database.php';
 if (isset($argv[2]) && $argv[2] === '--as-web') {
 	exit(web_uid_fixture($argv[3]));
 }
+if (isset($argv[2]) && $argv[2] === '--partial-copy') {
+	exit(partial_copy_fixture($argv[3]));
+}
 
 function fail($message) {
 	fwrite(STDERR, "FAIL: $message\n");
@@ -37,6 +40,30 @@ function snap($path) {
 	}
 	$db->close();
 	return $out;
+}
+function partial_copy_fixture($layout) {
+	global $root;
+	$_SERVER['DOCUMENT_ROOT'] = $root;
+	$_SERVER['HTTP_HOST'] = '127.0.0.1';
+	putenv('ORP_DB_PATH=' . $layout . '/app.db');
+	putenv('ORP_FLAG_STORE=sqlite');
+	putenv('ORP_BENCH_TEST_HARNESS=1');
+	putenv('ORP_BENCH_MARKER=' . $layout . '/no-marker');
+	putenv('ORP_BENCH_HOSTNAME_FILE=' . $layout . '/hostname');
+	putenv('ORP_SOUNDS_PATH=' . $layout . '/sounds');
+	putenv('ORP_BACKUP_PATH=' . $layout . '/backup');
+	putenv('ORP_MODULES_PATH=' . $layout . '/modules');
+	require_once $root . '/includes/classes/BenchGuard.php';
+	require_once $root . '/includes/classes/Modules.php';
+	require_once $root . '/includes/classes/BackupRestore.php';
+	$restore = new BackupRestore();
+	$result = $restore->restore_backup();
+	$keep = $layout . '/sounds/courtesy_tones/keep.wav';
+	echo 'msg=' . (isset($result['msgText']) ? $result['msgText'] : '') . "\n";
+	echo 'live_keep=' . (is_file($keep) ? file_get_contents($keep) : 'MISSING') . "\n";
+	$stashes = glob($layout . '/sounds/.orp-stash-*');
+	echo 'stash_count=' . (is_array($stashes) ? count($stashes) : 0) . "\n";
+	return 0;
 }
 function web_uid_fixture($layout) {
 	$dbPath = $layout . '/db/openrepeater.db';
@@ -345,6 +372,146 @@ if ($stashes !== array() && $stashes !== false) {
 	fail('a locked restore left a courtesy stash behind');
 }
 echo "ok: a locked restore rolls courtesy files back and leaves database rows unchanged\n";
+
+$partial = sys_get_temp_dir() . '/orp-partial-copy-' . getmypid();
+foreach (array($partial . '/sounds/courtesy_tones', $partial . '/backup/restore/courtesy_tones', $partial . '/modules') as $dir) {
+	if (!mkdir($dir, 0777, true)) {
+		fail('could not build the partial-copy fixture');
+	}
+}
+copy($copy, $partial . '/app.db');
+chmod($partial . '/app.db', 0666);
+file_put_contents($partial . '/hostname', "cloud\n");
+file_put_contents($partial . '/sounds/courtesy_tones/keep.wav', 'keep');
+file_put_contents($partial . '/backup/restore/courtesy_tones/new.wav', 'new');
+file_put_contents($partial . '/backup/restore/courtesy_tones/secret.wav', 'secret');
+copy($dump, $partial . '/backup/restore/backup.sql');
+exec('sudo -n chown -R www-data:www-data ' . escapeshellarg($partial) . ' && sudo -n chown root:root ' . escapeshellarg($partial . '/backup/restore/courtesy_tones/secret.wav') . ' && sudo -n chmod 000 ' . escapeshellarg($partial . '/backup/restore/courtesy_tones/secret.wav'), $unused, $partialSetup);
+if ($partialSetup !== 0) {
+	fail('could not make the unreadable incoming file');
+}
+$partialOut = array();
+$partialRc = 1;
+exec('sudo -n setpriv --reuid=33 --regid=33 --clear-groups --inh-caps=-all -- php ' . escapeshellarg(__FILE__) . ' ' . escapeshellarg($root) . ' --partial-copy ' . escapeshellarg($partial), $partialOut, $partialRc);
+$partialText = implode("\n", $partialOut);
+if ($partialRc !== 0 || strpos($partialText, 'live_keep=keep') === false || strpos($partialText, 'stash_count=0') === false || strpos($partialText, 'left unchanged') === false) {
+	fwrite(STDERR, $partialText . "\n");
+	fail('a partial copy changed the live courtesy tree');
+}
+echo "ok: a partial copy is discarded from the private stage and the live tree stays in place\n";
+
+$escape = sys_get_temp_dir() . '/orp-ancestor-' . getmypid();
+mkdir($escape . '/outside/audio/courtesy_tones', 0755, true);
+mkdir($escape . '/backup/restore/courtesy_tones', 0755, true);
+mkdir($escape . '/modules', 0755, true);
+file_put_contents($escape . '/outside/audio/courtesy_tones/secret.wav', 'secret');
+file_put_contents($escape . '/backup/restore/courtesy_tones/new.wav', 'new');
+copy($dump, $escape . '/backup/restore/backup.sql');
+copy($copy, $escape . '/app.db');
+symlink($escape . '/outside', $escape . '/via');
+file_put_contents($escape . '/hostname', "cloud\n");
+putenv('ORP_DB_PATH=' . $escape . '/app.db');
+putenv('ORP_SOUNDS_PATH=' . $escape . '/via/audio');
+putenv('ORP_BACKUP_PATH=' . $escape . '/backup');
+putenv('ORP_MODULES_PATH=' . $escape . '/modules');
+$escapeRestore = new BackupRestore();
+$escapeResult = $escapeRestore->restore_backup();
+$escapeMsg = isset($escapeResult['msgText']) ? $escapeResult['msgText'] : '';
+if ($escapeResult['msgType'] !== 'error' || strpos($escapeMsg, 'successfully restored') !== false || file_get_contents($escape . '/outside/audio/courtesy_tones/secret.wav') !== 'secret' || is_file($escape . '/outside/audio/courtesy_tones/new.wav')) {
+	fail('an ancestor symlink let the restore replace an outside tree');
+}
+echo "ok: an ancestor symlink is not a trusted sounds anchor\n";
+
+$childLink = sys_get_temp_dir() . '/orp-child-link-' . getmypid();
+mkdir($childLink . '/sounds', 0755, true);
+mkdir($childLink . '/outside', 0755, true);
+mkdir($childLink . '/backup/restore/courtesy_tones', 0755, true);
+mkdir($childLink . '/modules', 0755, true);
+file_put_contents($childLink . '/outside/secret.wav', 'secret');
+symlink($childLink . '/outside', $childLink . '/sounds/courtesy_tones');
+file_put_contents($childLink . '/backup/restore/courtesy_tones/new.wav', 'new');
+copy($dump, $childLink . '/backup/restore/backup.sql');
+copy($copy, $childLink . '/app.db');
+file_put_contents($childLink . '/hostname', "cloud\n");
+putenv('ORP_DB_PATH=' . $childLink . '/app.db');
+putenv('ORP_SOUNDS_PATH=' . $childLink . '/sounds');
+putenv('ORP_BACKUP_PATH=' . $childLink . '/backup');
+putenv('ORP_MODULES_PATH=' . $childLink . '/modules');
+$childRestore = new BackupRestore();
+$childResult = $childRestore->restore_backup();
+if ($childResult['msgType'] !== 'error' || file_get_contents($childLink . '/outside/secret.wav') !== 'secret' || is_file($childLink . '/outside/new.wav')) {
+	fail('a courtesy symlink let the restore write outside the sounds anchor');
+}
+echo "ok: a symlinked courtesy directory is not replaced\n";
+
+$mixer = sys_get_temp_dir() . '/orp-mixer-' . getmypid();
+mkdir($mixer . '/sounds/courtesy_tones', 0755, true);
+mkdir($mixer . '/backup/restore/courtesy_tones', 0755, true);
+mkdir($mixer . '/modules', 0755, true);
+file_put_contents($mixer . '/sounds/courtesy_tones/keep.wav', 'keep');
+file_put_contents($mixer . '/backup/restore/courtesy_tones/new.wav', 'new');
+file_put_contents($mixer . '/backup/restore/alsamixer.state', "mixer\n");
+copy($dump, $mixer . '/backup/restore/backup.sql');
+copy($copy, $mixer . '/app.db');
+file_put_contents($mixer . '/hostname', "cloud\n");
+putenv('ORP_DB_PATH=' . $mixer . '/app.db');
+putenv('ORP_SOUNDS_PATH=' . $mixer . '/sounds');
+putenv('ORP_BACKUP_PATH=' . $mixer . '/backup');
+putenv('ORP_MODULES_PATH=' . $mixer . '/modules');
+putenv('ORP_RESTORE_FAULT=alsa-fail');
+$beforeMixer = snap($mixer . '/app.db');
+$mixerDb = new Database();
+if ($mixerDb->update_existing_settings(array('callSign' => 'BEFOREMIX')) !== true) {
+	fail('could not mark the database before the mixer failure');
+}
+$mixerRestore = new BackupRestore();
+$mixerResult = $mixerRestore->restore_backup();
+$mixerMsg = isset($mixerResult['msgText']) ? $mixerResult['msgText'] : '';
+putenv('ORP_RESTORE_FAULT');
+if (strpos($mixerMsg, 'left unchanged') !== false || strpos($mixerMsg, 'mixer state was not applied') === false || snap($mixer . '/app.db')['settings']['callSign'] !== $beforeMixer['settings']['callSign'] || file_get_contents($mixer . '/sounds/courtesy_tones/new.wav') !== 'new') {
+	fwrite(STDERR, $mixerMsg . "\n");
+	fail('a mixer failure was reported as an unchanged restore or rolled the database back');
+}
+echo "ok: a mixer failure leaves the restored rows in place and does not claim they were unchanged\n";
+
+$collision = sys_get_temp_dir() . '/orp-collision-' . getmypid();
+mkdir($collision . '/sounds/courtesy_tones', 0755, true);
+mkdir($collision . '/backup/restore/courtesy_tones', 0755, true);
+mkdir($collision . '/modules', 0755, true);
+file_put_contents($collision . '/sounds/courtesy_tones/keep.wav', 'keep');
+file_put_contents($collision . '/backup/restore/courtesy_tones/new.wav', 'new');
+copy($dump, $collision . '/backup/restore/backup.sql');
+copy($copy, $collision . '/app.db');
+file_put_contents($collision . '/hostname', "cloud\n");
+putenv('ORP_DB_PATH=' . $collision . '/app.db');
+putenv('ORP_SOUNDS_PATH=' . $collision . '/sounds');
+putenv('ORP_BACKUP_PATH=' . $collision . '/backup');
+putenv('ORP_MODULES_PATH=' . $collision . '/modules');
+putenv('ORP_RESTORE_FAULT=publish-collision');
+$collisionRestore = new BackupRestore();
+$collisionResult = $collisionRestore->restore_backup();
+$collisionMsg = isset($collisionResult['msgText']) ? $collisionResult['msgText'] : '';
+putenv('ORP_RESTORE_FAULT');
+$collisionStash = glob($collision . '/sounds/.orp-stash-*');
+$stashKeep = false;
+if (is_array($collisionStash)) {
+	foreach ($collisionStash as $stash) {
+		if (is_file($stash . '/keep.wav') && file_get_contents($stash . '/keep.wav') === 'keep') {
+			$stashKeep = true;
+		}
+	}
+}
+if (strpos($collisionMsg, 'needs recovery') === false || strpos($collisionMsg, 'left unchanged') !== false || !$stashKeep || !is_file($collision . '/backup/restore-recovery.json')) {
+	fwrite(STDERR, $collisionMsg . "\n");
+	fail('a populated publish collision claimed the original tree was restored');
+}
+$again = new BackupRestore();
+$againResult = $again->restore_backup();
+$againMsg = isset($againResult['msgText']) ? $againResult['msgText'] : '';
+if (strpos($againMsg, 'needs recovery') === false || !$stashKeep) {
+	fail('a second restore ignored the recovery notes');
+}
+echo "ok: a populated destination is reported as recovery required and the original tree is kept in the stash\n";
 
 $layout = sys_get_temp_dir() . '/orp-sticky-' . getmypid();
 $stickyDb = $layout . '/db/openrepeater.db';
