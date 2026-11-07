@@ -8,6 +8,10 @@ class Database {
     private $db_loc;
 
 
+	public function databasePath() {
+		return $this->db_loc;
+	}
+
 	public function __construct() {
 		$override = getenv('ORP_DB_PATH');
 		if (is_string($override) && $override !== '') {
@@ -146,6 +150,89 @@ class Database {
 	// ENSURE SETTING EXISTS - Insert a default value only if the key is missing.
 	// Used so settings added in newer ORP versions are seeded into databases
 	// from older installs without overwriting any value the user has set.
+	public function has_setting($key) {
+		if (!is_string($key) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}$/', $key)) {
+			return false;
+		}
+		$db = new SQLite3($this->db_loc);
+		$stmt = $db->prepare('SELECT 1 FROM settings WHERE keyID = :key');
+		$stmt->bindValue(':key', $key, SQLITE3_TEXT);
+		$result = $stmt->execute();
+		$exists = $result !== false && $result->fetchArray() !== false;
+		$db->close();
+		return $exists;
+	}
+
+	public function update_existing_setting($key, $value) {
+		if (!is_string($key) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}$/', $key)) {
+			return false;
+		}
+		if (!is_string($value) || strlen($value) > 4000 || strpos($value, "\0") !== false) {
+			return false;
+		}
+		$db = new SQLite3($this->db_loc);
+		$check = $db->prepare('SELECT 1 FROM settings WHERE keyID = :key');
+		$check->bindValue(':key', $key, SQLITE3_TEXT);
+		$found = $check->execute();
+		$exists = $found !== false && $found->fetchArray() !== false;
+		if (!$exists) {
+			$db->close();
+			return false;
+		}
+		$stmt = $db->prepare('UPDATE settings SET value = :value WHERE keyID = :key');
+		$stmt->bindValue(':value', $value, SQLITE3_TEXT);
+		$stmt->bindValue(':key', $key, SQLITE3_TEXT);
+		$stmt->execute();
+		$db->close();
+		$this->set_update_flag(true);
+		return true;
+	}
+
+	public function replace_port_form($rows) {
+		if (!is_array($rows) || $rows === array()) {
+			return false;
+		}
+		$db = new SQLite3($this->db_loc);
+		$db->exec('BEGIN');
+		$db->exec('DELETE FROM ports');
+		$db->exec("DELETE FROM gpio_pins WHERE type = 'Port'");
+		$portStmt = $db->prepare('INSERT INTO ports (portNum, portLabel, rxMode, rxGPIO, txGPIO, rxAudioDev, txAudioDev, rxGPIO_active, txGPIO_active) VALUES (:portNum, :portLabel, :rxMode, :rxGPIO, :txGPIO, :rxAudioDev, :txAudioDev, :rxGPIO_active, :txGPIO_active)');
+		$gpioStmt = $db->prepare('INSERT INTO gpio_pins (gpio_num, direction, active, description, type) VALUES (:gpio_num, :direction, :active, :description, :type)');
+		$n = 1;
+		foreach ($rows as $row) {
+			$portStmt->bindValue(':portNum', $n, SQLITE3_INTEGER);
+			$portStmt->bindValue(':portLabel', $row['portLabel'], SQLITE3_TEXT);
+			$portStmt->bindValue(':rxMode', $row['rxMode'], SQLITE3_TEXT);
+			$portStmt->bindValue(':rxGPIO', $row['rxGPIO'], SQLITE3_TEXT);
+			$portStmt->bindValue(':txGPIO', $row['txGPIO'], SQLITE3_TEXT);
+			$portStmt->bindValue(':rxAudioDev', $row['rxAudioDev'], SQLITE3_TEXT);
+			$portStmt->bindValue(':txAudioDev', $row['txAudioDev'], SQLITE3_TEXT);
+			$portStmt->bindValue(':rxGPIO_active', $row['rxGPIO_active'], SQLITE3_TEXT);
+			$portStmt->bindValue(':txGPIO_active', $row['txGPIO_active'], SQLITE3_TEXT);
+			$portStmt->execute();
+			$portStmt->reset();
+			$gpioStmt->bindValue(':gpio_num', $row['rxGPIO'], SQLITE3_TEXT);
+			$gpioStmt->bindValue(':direction', 'in', SQLITE3_TEXT);
+			$gpioStmt->bindValue(':active', $row['rxGPIO_active'], SQLITE3_TEXT);
+			$gpioStmt->bindValue(':description', 'PORT ' . $n . ' RX: ' . $row['portLabel'], SQLITE3_TEXT);
+			$gpioStmt->bindValue(':type', 'Port', SQLITE3_TEXT);
+			$gpioStmt->execute();
+			$gpioStmt->reset();
+			$gpioStmt->bindValue(':gpio_num', $row['txGPIO'], SQLITE3_TEXT);
+			$gpioStmt->bindValue(':direction', 'out', SQLITE3_TEXT);
+			$gpioStmt->bindValue(':active', $row['txGPIO_active'], SQLITE3_TEXT);
+			$gpioStmt->bindValue(':description', 'PORT ' . $n . ' TX: ' . $row['portLabel'], SQLITE3_TEXT);
+			$gpioStmt->bindValue(':type', 'Port', SQLITE3_TEXT);
+			$gpioStmt->execute();
+			$gpioStmt->reset();
+			$n++;
+		}
+		$db->exec('COMMIT');
+		$db->close();
+		$this->set_update_flag(true);
+		return true;
+	}
+
 	public function ensure_setting($keyID, $defaultValue) {
 		$db = new SQLite3($this->db_loc) or die('Unable to open database');
 		$stmt = $db->prepare('INSERT OR IGNORE INTO settings (keyID, value) VALUES (:keyID, :value)');

@@ -24,7 +24,19 @@ The full native tclsh run of `svxlink26_ident_test.tcl` against `/usr/local/shar
 
 Accounts, all 34 settings, the ports row, both GPIO rows, and the CTCSS rows were identical before and after. The database file hash changed from `daa1ce8b2132210591a78597b1a0f336b077b9a62fbeb9bf26951df39a28f2fd` to `ae65ca06082f85aeb1091ba66ca7e7f4604889997efb1efefffc0fb957b29c3c` because one `moduleEnabled` value and the `system_flags` row identities differed. No module or settings POST from the test is recorded. The difference is unattributed and was not restored. The binary stayed `d814861a156bdf35a30d9ecc95365452c8cc51685854695bf68b037d62f6a687`. The final config SHA256 is `465cac40d5703f7a9f80ef29ce275eb3e48b3645827938cbe01ca4f8ffb5c5e2`.
 
-The log page on this install still requested `/log`. The Range response was HTTP 200 `text/html`, chunked, 586 bytes, with `Content-Length` and `Content-Range` absent. Anonymous `/log` was also HTTP 200 HTML. That reproduces the `Invalid integer null` path. It is not a plaintext log and it is not evidence that log bytes were anonymous. `5bff6b4` is the unread stream fix and is not installed. `/var/log/svxlink` was readable by `www-data` and was not chmodded.
+The log page on the `97077d5` install still requested `/log`. The Range response was HTTP 200 `text/html`, chunked, 586 bytes, with `Content-Length` and `Content-Range` absent. Anonymous `/log` was also HTTP 200 HTML. That reproduced `Invalid integer null`. It was not a plaintext log.
+
+## Native 5bff6b4 log stream, measured on orp-test
+
+Installed `5bff6b455a41971303047a15c86e903d115c2afa` on November 6, 2026, about 10:14–10:20 PM EST. `41f3703` was not part of that install. The user was told to reload `http://192.168.155.216/log.php`. No browser was driven.
+
+Authenticated `GET` and `HEAD` of `functions/log_stream.php` with `Range: bytes=-1225` returned 206 `text/plain`. `Content-Range` was `bytes 12640-13864/13865` and `Content-Length` was `1225`. The body was the 1225-byte suffix of `/var/log/svxlink`. `HEAD` had the same numbers and an empty body. `?file=/etc/passwd` did not change the suffix. No cookie and a random session were 401. A missing or wrong CSRF token, and a foreign or cross-scheme Origin, were 403. `POST` was 405 with `Allow: GET, HEAD`. A null range, a repeated range, a zero suffix, and an out-of-bounds range were 416 with `Content-Range: bytes */13865` and `Content-Length: 0`. A request without `Range` was 200 and matched the whole file. Gzip, deflate, and brotli did not turn the response into a chunked body without a length. The live log bytes were not changed. The log file stayed a regular `svxlink:svxlink` mode `0644` file. Empty, missing, and unreadable HTTP cases were not run against the live file.
+
+The deployed client requests `functions/log_stream.php`, sends the CSRF header, and uses `jQuery.text()`. The pinned Node stub passed populated, empty, missing, null-header, and forbidden cases. That is not a GUI test. The one-millisecond poll was left as it is.
+
+Before, after install, and after the tests, the database file was byte-identical, SHA256 `ae65ca06082f85aeb1091ba66ca7e7f4604889997efb1efefffc0fb957b29c3c`. The earlier unattributed `moduleEnabled` and `system_flags` difference was not restored. The binary stayed `d814861a156bdf35a30d9ecc95365452c8cc51685854695bf68b037d62f6a687`. The config stayed `465cac40d5703f7a9f80ef29ce275eb3e48b3645827938cbe01ca4f8ffb5c5e2`. Nine pages returned 200 with a CSRF meta tag. Seventy-two assets returned 200. Fifty-eight PHP files linted clean. nginx and PHP 8.4.27 matched. svxlink was left inactive, unmasked, and disabled. `remotetrx` and `svxreflector` stayed inactive and masked. English clips were still absent. Heather was not installed.
+
+The native Tcl failure remains for the next review: after four periodic checks, `repeater_down IDLE did not spell FIXTURE` because the trace is `playMsg` `phonetic_f` through `phonetic_e`, then `repeater` and `playSilence 250`. `41f3703` changes the harness expectation. It is not installed. A speech install is still a separate review.
 
 ## Authenticated mutation boundary
 
@@ -56,7 +68,7 @@ The log page on this install still requested `/log`. The Range response was HTTP
 | `identification.php` | `page-render-passed` on `adda19c`. `97077d5` did not save these controls; the already-stored profile was published | POST `svxlink_update.php`, POST `ajax_db_update.php` | `ID_Short_Mode`, `ID_Short_IntervalMin`, `ID_Short_IdentOnlyAfterTX`, `ID_Short_AppendMorse`, `ID_Long_Mode`, `ID_Long_IntervalMin`, `ID_Long_AppendTime`, `ID_Long_AppendTone`, `ID_Long_AppendMorse`, `ID_Morse_Suffix`, `ID_Morse_WPM`, `ID_Morse_Pitch`, voice upload | Periodic CW was observed on the process. The Save controls were not posted in that window. End-of-communication identification is unverified. Speech files are absent. |
 | `courtesy_tone.php` | `page-render-passed` on `adda19c`: complete document, `courtesyMode`, upload form, empty-library message | POST `svxlink_update.php`, two POST `ajax_db_update.php` | Upload was not submitted | `not-accepted` as audio behavior. |
 | `dtmf.php` | HTTP 200 | POST `svxlink_update.php`, POST `ajax_db_update.php` | bench restart, close | `read-only-inventoried`. The DTMF disable code was not sent. |
-| `log.php` | HTTP 200 shell on `97077d5`. `GET /log` with `Range: bytes=-1225` was 200 `text/html` chunked, 586 bytes, both length headers null | POST `svxlink_update.php`; GET `functions/log_stream.php` on `5bff6b4` | Active Repeater Log, `logtail.js` | Native bug reproduced on `97077d5`. `5bff6b4` is `software-proven` for the fixed stream and is not installed. Anonymous `/log` on the installed tree is HTML, not log bytes. |
+| `log.php` | Native `5bff6b4`: authenticated Range `bytes=-1225` is 206 `text/plain`, `Content-Length: 1225`, `Content-Range: bytes 12640-13864/13865` | GET/HEAD `functions/log_stream.php` | Active Repeater Log | Installed and measured. 401, 403, 405, and 416 were measured. The browser was not driven. Empty, missing, and unreadable files were not applied to the live log. |
 | `backup.php`, password change, logout | Not exercised | Menu links only |  | Not run. |
 | `wizard/index.php` | Not part of this authenticated nine-page GET. Earlier cloud test posts Save and Finish on a copy database | Wizard posts | Save Configuration, Finish & Logout | `software-proven` for the Memcached-free save path. Not rerun against the station database. |
 
@@ -79,29 +91,55 @@ Each row is the HTTP POST of that `board_id` with a session and CSRF token, benc
 | 4 ICS Pi Repeater 2X 2.1 prototype | 1 | 26 in low, BCM 26 | 498 out low, offset 2, GPA2 | `alsa:plughw:0\|1` / same |
 | 4 | 2 | 23 in low, BCM 23 | 499 out low, offset 3, GPA3 | `alsa:plughw:0\|0` / same |
 
-`orp_Mode`, Update Ports, and Advanced Details were not submitted. None of these loads ran on the station database. No pin was driven.
+`orp_Mode`, Update Ports, and Advanced Details were not part of the native installs. On a copied database they now have the results in the form matrix below. None of these loads ran on the station database. No pin was driven.
+
+Numbers 0–27 are BCM header candidates only. The map is `GpioMap::headerMap()` in `includes/classes/GpioMap.php`: the stored number is the BCM number and the gpiochip0 line, and the physical pin is the 40-pin header pin. That is not a `gpioinfo` reading and it is not a claim the line is wired.
+
+498 and 499 are not BCM numbers. `includes/board_definitions.php` stores them for the ICS 2X presets. The ICS PI-REPEATER-2X manual, section "Hardware GPIO Pin number assignments", names 498 as GPA2 and 499 as GPA3. `docs/GPIO-MAP.md` records the same table. The conditional offset is the stored number minus 496, and only if the old kernel gpio base was 496. orp-test has no MCP23017, so the chip is absent and activation is not applied.
 
 ## Every named control
 
 | Control | Where | Status |
 | --- | --- | --- |
 | Login username, password | `login.php` | `software-proven` session creation. Not a new account. |
-| Change Password | `login.php` | Not run. The station password was not changed. |
+| Change Password | `login.php` | Cloud test changes only a throwaway account. The station password was not changed. |
 | Rebuild & Restart | header modal | Native `97077d5` published through the tokenized rebuild while masked, then started only svxlink for the bounded run. A stale page is not that POST. |
-| Dashboard Restart, Shutdown | `dashboard.php` | Not clicked. Bench helper still refuses host restart and stop. |
+| Dashboard Restart, Shutdown | `dashboard.php` | Not clicked on the Pi. Cloud `POST` is 403 and does not call the helper. A real host reboot stays a later native step. |
 | GPIO table, POST | `gpio.php` | Page is read-only. POST is 405. No line was requested. `gpioinfo` was not captured in the 97077d5 window. |
-| `callSign`, tails, timeout, DTMF disable, tones, CTCSS thresholds, TTS fields, Test Voice | `settings.php` | Second GET does not replace an existing threshold. Save and Test Voice were not submitted. The 97077d5 settings rows were unchanged. |
-| `orp_Mode` | `ports.php` | Not submitted. |
-| Port label, GPIO, audio, direction, polarity, Update Ports | `ports.php` | Not submitted. Load Preset is the separate table above. |
+| `callSign`, tails, timeout, DTMF disable, tones, CTCSS thresholds, TTS fields, Test Voice | `settings.php` | Native settings rows were unchanged on `5bff6b4`. Cloud form posts are in the matrix below and are not deployed. |
+| `orp_Mode` | `ports.php` | Cloud post stores `simplex`. The root runtime stays `RepeaterLogic`. Not deployed. |
+| Port label, GPIO, audio, direction, polarity, Update Ports | `ports.php` | Cloud post keeps 26/498 and 23/499 and a RemoteRelay row. Not deployed. |
 | Load Preset for boards 0–4 | `ports.php` | `software-proven` on a copy. Exact rows above. Not the station database. Not driven. |
-| Advanced Details | `ports.php` | Modal only. No write. |
-| Upload & Install, Delete module, Find Modules | `modules.php` | Form actions point at `modules.php`. Upload and delete were not submitted. Find Modules is an external link. One live `moduleEnabled` value differs across the 97077d5 window and was left as found. |
-| Short and long identification fields, Morse suffix, WPM, pitch | `identification.php` | Not saved during the native window. The stored profile was published and the periodic CW lines were logged. End-of-communication ID is unverified. |
-| Identification voice upload | `identification.php` | Not submitted. Speech pack is not installed. |
-| `courtesyMode`, tone upload | `courtesy_tone.php` | Rendered. Not submitted. |
-| DTMF page close / rebuild | `dtmf.php` | Not submitted. |
-| Active Repeater Log | `log.php` | Native `/log` Range is chunked HTML. Stream fix is `5bff6b4`, not installed. |
-| Create, upload, restore, delete backup | `backup.php` | Not run. |
-| Advanced config textareas, standard mode, advanced mode | `advanced.php` | Not submitted. |
+| Advanced Details | `ports.php` | The same Update Ports post stores VOX and active level. Not a separate write. Not deployed. |
+| Upload & Install, Delete module, Find Modules | `modules.php` | Cloud upload stays disabled and does not run PHP or Tcl. Help cannot be deleted. Find Modules is an external link. The live module difference was preserved on `5bff6b4`. Not deployed. |
+| Short and long identification fields, Morse suffix, WPM, pitch | `identification.php` | Cloud interval 7 is published. Custom mode is stored and refused. End-of-communication ID is unverified. Not deployed. |
+| Identification voice upload | `identification.php` | A script upload is refused. Speech pack is not installed. Not deployed. |
+| `courtesyMode`, tone upload | `courtesy_tone.php` | `beep` is stored. A path-like upload is refused or not converted. Not deployed. |
+| DTMF page | `dtmf.php` | No inputs. The pin is saved from General Settings and is not in the no-PTT file. Not deployed. |
+| Active Repeater Log | `log.php` | Installed `5bff6b4`. The 1225-byte suffix and the denial matrix were measured. Reload `log.php` for the new client. No browser was driven. |
+| Create, upload, restore, delete backup | `backup.php` | Cloud create, restore, and delete stay in the backup directory. Not deployed. |
+| Advanced config textareas, standard mode, advanced mode | `advanced.php` | Text is stored. Publish stays `PTT_TYPE=NONE` and does not copy `gpio498`. Not deployed. |
 | Wizard agree, call sign, board, port, Save, Finish | `wizard/index.php` | `software-proven` on a copy for the Memcached-free save and the Finish POST form. Not the station database. |
 | Heather installer | `upgrade/install_heather_sounds.py` | Pin reviewed in cloud fixtures. Not installed. Playback unverified. Next review is the installer pin on the Pi, not a speech claim. |
+
+## Form matrix on a copied database
+
+Command: `bash upgrade/tests/control_roundtrip_test.sh`. It is also in `bash upgrade/tests/run.sh`. The database is a copy of `install/sql/openrepeater.db`. Deployed SHA for the log milestone is `5bff6b455a41971303047a15c86e903d115c2afa`. These form results are not on that install.
+
+| Control | Expected | Handler | Evidence | Deployed SHA | Remaining gate |
+| --- | --- | --- | --- | --- | --- |
+| `orp_Mode=simplex` | Stored value changes. Root runtime stays the no-PTT repeater snapshot. | `POST functions/ajax_db_update.php` | Stored `simplex`. Published file has `LOGICS=RepeaterLogic` and `PTT_TYPE=NONE`. | not deployed | Native page was not posted. The root renderer does not switch to Simplex. |
+| Update Ports and Advanced Details | Label, COS/VOX, polarity, and audio persist. A `../` label is refused and the previous row stays. A `RemoteRelay` GPIO row stays. | `POST functions/port_db_update.php` | Port 1 is `ROUNDTRIP vox 26 498`. Port 2 is `23/499`. GPIO 20 remains `RemoteRelay`. | not deployed | Not run on the station database. No pin driven. |
+| Settings Save | Existing keys update. An unknown or quoted key is 400 and does not add a row. | `POST functions/ajax_db_update.php` | `txTailValueSec=4`. Call sign stays `TEST`. | not deployed | Native settings were not posted. |
+| Test Voice | Preview does not write settings. A missing engine returns an error, not a silent 200. | `POST functions/tts_preview.php` | JSON `Synthesis failed`. Call sign unchanged. | not deployed | No browser playback. |
+| ID interval | A 1–10 minute Morse interval is published. | `ajax_db_update.php`, then `orp_helper config publish` | `SHORT_IDENT_INTERVAL=7`. | not deployed | Not the Pi process. |
+| Custom ID | Stored and refused by publish. The previous runtime file is unchanged. | same | Mode stays `custom`. Config SHA256 unchanged. | not deployed | Uploaded clip is not a 26.05 identification. End of a communication is unverified. |
+| Voice and courtesy upload | Script names and slash names are not library files. | `identification.php`, `courtesy_tone.php` | `.php` refused. Slash name refused by `plainFileName`. No output file. | not deployed | A real WAV conversion needs `sox` on the Pi. Speech pack is absent. |
+| `courtesyMode=beep` | Stored. Not copied into the root snapshot. | `ajax_db_update.php` | Value `beep`. Runtime has no new courtesy procedure. | not deployed | The legacy courtesy Tcl builder is not the root publisher. |
+| DTMF submit | The reference page has no inputs. The pin is a settings field and stays out of the no-PTT file. | `settings.php` to `ajax_db_update.php` | Pin `2468` stored. No `ONLINE_CMD` in the snapshot. | not deployed | Not a transmitter disable test. |
+| Module upload and delete | Zip members with `..` or symlinks are refused. The module row is disabled. `default_settings.php` is not executed. Tcl is linked only in the bench preview. Help cannot be deleted. | `modules.php` | `ProbeMod` enabled `0`, svxlink id `3`, Help key `1` remains. Canary file absent. No `/usr/local` or `/usr/share` link. | not deployed | A real module must be reviewed before activation. The root publisher does not run the uploaded Tcl. |
+| Backup create, restore, delete | Archive stays in the backup directory. Restore returns the copied settings and does not change the admin password. `../` is not deleted. | `backup.php` | Call sign returns to `TEST`. Admin hash unchanged. Outside canary remains. | not deployed | Not the station backup directory. |
+| Advanced textareas | Text is stored. Publish does not copy it. | `advanced.php` | Stored `PTT_PIN=gpio498`. Published file stays `PTT_TYPE=NONE` without `gpio498`. | not deployed | Advanced mode is not the functional runtime. |
+| Change Password | Only the logged-in throwaway account changes. | `login.php` `setPassword` | Throwaway can log in with the new password. Admin hash unchanged. | not deployed | Station password was not changed. |
+| Host restart and shutdown | Stay blocked in bench mode. The helper is not called. | `ajax_system.php` | 403 `bench mode blocks system restart` and `system stop`. Stub log empty. | `5bff6b4` still blocks these | A real host reboot needs a separate native step. It is not enabled here. |
+| Active Repeater Log | Decimal range and length. Denial matrix. | `functions/log_stream.php` | Native 206, length 1225, range `12640-13864/13865`. 401, 403, 405, 416 measured. | `5bff6b4` | Browser was not driven. Reload `log.php`. |

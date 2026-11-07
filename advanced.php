@@ -50,12 +50,21 @@ if (isset($_POST['action'])){
 
 
 	} else if ($_POST['action'] == "update_advanced") {
-		foreach($_POST as $key=>$value){  
-			if ($key != "action") {
-				$sql = "INSERT OR REPLACE INTO advanced (keyID, value) VALUES ('$key', '$value');";
-				$query = $Database->insert($sql);
+		$advancedDb = new SQLite3($Database->databasePath());
+		$stmt = $advancedDb->prepare('INSERT OR REPLACE INTO advanced (keyID, value) VALUES (:key, :value)');
+		foreach($_POST as $key=>$value){
+			if ($key === 'action' || $key === 'csrf_token' || !is_string($key) || !is_string($value)) {
+				continue;
 			}
+			if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}$/', $key)) {
+				continue;
+			}
+			$stmt->bindValue(':key', $key, SQLITE3_TEXT);
+			$stmt->bindValue(':value', $value, SQLITE3_TEXT);
+			$stmt->execute();
+			$stmt->reset();
 		}
+		$advancedDb->close();
 		
 		$msgText = "The settings have been updated successfully!";
 		$alert = '<div class="alert alert-success"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';

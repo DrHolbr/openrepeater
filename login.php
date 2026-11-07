@@ -55,12 +55,10 @@ if (isset($_POST['action'])){
 		$usr = $_SESSION['username'];
 		$resetQuery = "SELECT username, salt FROM users WHERE username = '$usr';";
  		$resetData = $Database->select_single($resetQuery);
-		if (!$resetData['salt']){
+		if (!$resetData || empty($resetData['salt'])){
 			header('location: login.php?action=setPassword');
+			die();
 		}
-
-		$resetHash = hash('sha256', $salt . hash('sha256', $password1));
-		$hash = hash('sha256', $password1);
 
 		function createSalt(){
 			$string = md5(uniqid(rand(), true));
@@ -68,7 +66,7 @@ if (isset($_POST['action'])){
 		}
 
 		$salt = createSalt();
-		$hash = hash('sha256', $salt . $hash);
+		$hash = hash('sha256', $salt . hash('sha256', $password1));
 
 		$updateSQL = "UPDATE users SET password='$hash', salt='$salt' WHERE username='$usr'";
 		$Database->update($updateSQL);

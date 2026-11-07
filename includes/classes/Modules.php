@@ -19,7 +19,13 @@ class Modules {
 
 	public function __construct() {
 		$this->Database = new Database();
-		$this->modules_path = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/modules/';
+		$modulesOverride = getenv('ORP_MODULES_PATH');
+		if (is_string($modulesOverride) && $modulesOverride !== '' && $modulesOverride[0] === '/'
+			&& strpos($modulesOverride, '..') === false && is_dir($modulesOverride) && !is_link($modulesOverride)) {
+			$this->modules_path = rtrim($modulesOverride, '/') . '/';
+		} else {
+			$this->modules_path = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/modules/';
+		}
 		$this->includes_path = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/';
 		$this->modulesUploadTempDir = $this->modules_path . 'tempModuleDir/';
 		$guard = BenchGuard::detect();
@@ -299,11 +305,16 @@ class Modules {
 			}
 
 			// Clean up any Mac OS trash in user zip file if it exists
-			exec('zip -d '.$selected_archive.' "__MACOSX*"');
+			exec('zip -d ' . escapeshellarg($selected_archive) . ' "__MACOSX*"');
 
 			$zip = new ZipArchive;
 			$res = $zip->open($selected_archive);
 			if ($res === TRUE) {
+				if (!$this->zipMembersAreFiles($zip)) {
+					$zip->close();
+					unlink($selected_archive);
+					return false;
+				}
 				$zip->extractTo($this->modulesUploadTempDir);
 				$zip->close();
 				unlink($selected_archive);
@@ -401,15 +412,8 @@ class Modules {
 		$module_key = $module['moduleKey'];
 		$module_options = $module['moduleOptions'];
 
-		if ($module_options == NULL || $module_options == '') {
-			$default_settings_file = $this->modules_path . $svxlink_name . '/default_settings.php';
-			if (file_exists($default_settings_file)) {
-				include($default_settings_file);
-				$default_settings['moduleKey'] = $module_key;
-				$this->save_module_settings($default_settings, 'install');
-			}
-			
-		}
+		// An uploaded default_settings.php is not included. The file can sit in
+		// the module directory, but this request does not execute it.
 
 	}
 
@@ -442,6 +446,10 @@ class Modules {
 
 		if ( isset($mod_ini_array['Module_Info']['mod_name']) ) {
 			$svxlink_name = trim($mod_ini_array['Module_Info']['mod_name']);
+			if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $svxlink_name) || in_array($svxlink_name, $this->core_modules, true)) {
+				exec('rm ' . escapeshellarg($tempModulePath) . ' -R');
+				return false;
+			}
 			$new_module_path = $this->modules_path . $svxlink_name;
 		} else {
 			exec('rm ' . $tempModulePath. ' -R');
@@ -889,6 +897,21 @@ class Modules {
 	###############################################
 	# Read Directory and Generate Paths to Files
 	###############################################
+
+	private function zipMembersAreFiles($zip) {
+		for ($i = 0; $i < $zip->numFiles; $i++) {
+			$name = $zip->getNameIndex($i);
+			if (!is_string($name) || $name === '' || $name[0] === '/' || strpos($name, '\\') !== false || strpos($name, '..') !== false) {
+				return false;
+			}
+			$stat = $zip->statIndex($i);
+			$attr = is_array($stat) && isset($stat['external_attributes']) ? (int) $stat['external_attributes'] : 0;
+			if ((($attr >> 16) & 0170000) === 0120000) {
+				return false;
+			}
+		}
+		return true;
+	}
 
 	private function read_dir($path) {
 	

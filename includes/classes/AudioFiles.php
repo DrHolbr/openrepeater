@@ -318,13 +318,27 @@ class AudioFiles {
 		for($i=0; $i<count($fileNameArray['name']); $i++) {
 			//Get the temp file path
 			$tmpFile1 = $fileNameArray['tmp_name'][$i];
-			$tmpFile2 = $this->temp_dir . str_replace(" ","_",$fileNameArray['name'][$i]);
+			$plainName = $this->plainFileName($fileNameArray['name'][$i]);
+			if ($plainName === null) {
+				return $this->refusal('The audio name is not a plain file name. Nothing was written.');
+			}
+			$tmpFile2 = tempnam($this->temp_dir, 'orp-audio-');
+			if ($tmpFile2 === false) {
+				return $this->refusal('The audio library is not available. Nothing was written.');
+			}
 			
-			$temp_ext = explode(".", $fileNameArray['name'][$i]);
-			$extension = end($temp_ext);
-			$filename_no_ext = pathinfo($fileNameArray['name'][$i], PATHINFO_FILENAME);
+			$temp_ext = explode(".", $plainName);
+			$extension = strtolower((string) end($temp_ext));
+			$filename_no_ext = pathinfo($plainName, PATHINFO_FILENAME);
+			if (!preg_match('/^[A-Za-z0-9._ -]+$/', $filename_no_ext)) {
+				return $this->refusal('The audio name is not a plain file name. Nothing was written.');
+			}
 
 			$soxOutFile = $final_file_dir . str_replace(" ","_",$filename_no_ext) . ".wav";
+			$parent = realpath($final_file_dir);
+			if ($parent === false || strpos($soxOutFile, $parent . '/') !== 0) {
+				return $this->refusal('The audio name is not a plain file name. Nothing was written.');
+			}
 			
 
 			# Check File Size isn't too large

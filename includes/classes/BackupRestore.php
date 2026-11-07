@@ -28,6 +28,16 @@ class BackupRestore {
 	public function __construct() {
 		$this->Database = new Database();
 		$this->Modules = new Modules();
+		$backupOverride = getenv('ORP_BACKUP_PATH');
+		if (is_string($backupOverride) && $backupOverride !== '' && $backupOverride[0] === '/'
+			&& strpos($backupOverride, '..') === false && is_dir($backupOverride) && !is_link($backupOverride)) {
+			$this->backupPath = rtrim($backupOverride, '/') . '/';
+		}
+		$soundsOverride = getenv('ORP_SOUNDS_PATH');
+		if (is_string($soundsOverride) && $soundsOverride !== '' && $soundsOverride[0] === '/'
+			&& strpos($soundsOverride, '..') === false && is_dir($soundsOverride) && !is_link($soundsOverride)) {
+			$this->orp_sounds_dir = rtrim($soundsOverride, '/') . '/';
+		}
 
 		$this->dateString = date('Y/m/d H:i:s');
 
@@ -97,6 +107,9 @@ class BackupRestore {
 	###############################################
 
 	public function pre_restore_validation($selected_restore_file) {
+		if (!is_string($selected_restore_file) || !preg_match('/^[A-Za-z0-9._-]+\.orp$/', $selected_restore_file)) {
+			exit('Unable to locate file for restoration');
+		}
 		$data = [];
 		$errorLevel = 0;
 
@@ -350,7 +363,14 @@ class BackupRestore {
 			$temp_ext = explode(".", $fileNameArray['name'][$i]);
 			$extension = end($temp_ext);
 
-			$currFile = $this->backupPath . str_replace(" ","_",$fileNameArray['name'][$i]);
+			$storedName = str_replace(' ', '_', $fileNameArray['name'][$i]);
+			if (!is_string($storedName) || !preg_match('/^[A-Za-z0-9._-]+\.orp$/', $storedName)) {
+				return array(
+					'msgType' => 'error',
+					'msgText' => 'The backup name is not a plain file name. Nothing was written.'
+				);
+			}
+			$currFile = $this->backupPath . $storedName;
 			
 
 			# Check File Size isn't too large
@@ -527,6 +547,12 @@ class BackupRestore {
 	###############################################
 
 	public function deleteBackup($file) {
+		if (!is_string($file) || !preg_match('/^[A-Za-z0-9._-]+\.orp$/', $file)) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The backup name is not a plain file name. Nothing was deleted.'
+			);
+		}
 	    unlink($this->backupPath . $file);
 
 		if (!file_exists($this->backupPath . $file)) {
