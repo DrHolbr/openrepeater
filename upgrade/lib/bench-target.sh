@@ -361,7 +361,8 @@ bench_chown() {
 	if [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ] && ! bench_apply_real_ownership; then
 		return 0
 	fi
-	chown -h "$spec" "$path"
+	bench_attr_pause "$path"
+	bench_fd_apply chown "$spec" "$path"
 }
 
 # Real chown during an offline fixture run is allowed only for the cloud
@@ -370,6 +371,96 @@ bench_chown() {
 bench_apply_real_ownership() {
 	[ "${ORP_INSTALL_APPLY_OWNERSHIP:-0}" = 1 ] || return 1
 	bench_test_harness_allowed
+}
+
+# Pause after the path check and before the file-descriptor operation so a
+# test can replace the name. The operation below does not use that name.
+bench_attr_pause() {
+	local path=$1
+	local pause=${ORP_ATTR_PAUSE_FILE:-}
+	local want=${ORP_ATTR_PAUSE_PATH:-}
+	[ -n "$pause" ] || return 0
+	if [ -n "$want" ] && [ "$path" != "$want" ]; then
+		return 0
+	fi
+	: > "${pause}.ready"
+	while [ -e "$pause" ]; do
+		sleep 0.05
+	done
+}
+
+# Open each component with O_NOFOLLOW. chmod and chown use the resulting
+# descriptor, so a name swapped for a symlink is not followed.
+bench_fd_apply() {
+	local op=$1
+	local spec=$2
+	local path=$3
+	python3 - "$op" "$spec" "$path" <<'PY'
+import grp
+import os
+import pwd
+import sys
+
+op, spec, path = sys.argv[1], sys.argv[2], sys.argv[3]
+if not path.startswith("/") or "\0" in path or "//" in path:
+    sys.stderr.write("refused: unsafe path %s\n" % path)
+    sys.exit(1)
+parts = [part for part in path.split("/") if part]
+if not parts or any(part in (".", "..") for part in parts):
+    sys.stderr.write("refused: unsafe path %s\n" % path)
+    sys.exit(1)
+dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+leaf_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+parent = os.open("/", dir_flags)
+try:
+    for part in parts[:-1]:
+        nxt = os.open(part, dir_flags, dir_fd=parent)
+        os.close(parent)
+        parent = nxt
+    leaf = parts[-1]
+    if op == "mkdir":
+        os.mkdir(leaf, int(spec, 8), dir_fd=parent)
+    else:
+        opened = os.open(leaf, leaf_flags, dir_fd=parent)
+        try:
+            if op == "chmod":
+                os.fchmod(opened, int(spec, 8))
+            elif op == "chown":
+                user, group = spec.split(":", 1)
+                try:
+                    uid = int(user)
+                except ValueError:
+                    uid = pwd.getpwnam(user).pw_uid
+                try:
+                    gid = int(group)
+                except ValueError:
+                    gid = grp.getgrnam(group).gr_gid
+                os.fchown(opened, uid, gid)
+            else:
+                sys.stderr.write("refused: unknown operation %s\n" % op)
+                sys.exit(1)
+        finally:
+            os.close(opened)
+except OSError as exc:
+    sys.stderr.write("refused: no-follow %s %s: %s\n" % (op, path, exc.strerror))
+    sys.exit(1)
+finally:
+    os.close(parent)
+PY
+}
+
+bench_mkdir_nofollow() {
+	local path=$1
+	bench_require_real_components "$path" || return 1
+	if [ "$(bench_lstat_kind "$path")" = symlink ]; then
+		echo "refused: not mkdir through symbolic link $path" >&2
+		return 1
+	fi
+	if [ "$(bench_lstat_kind "$path")" != missing ]; then
+		return 0
+	fi
+	bench_attr_pause "$path"
+	bench_fd_apply mkdir 0755 "$path"
 }
 
 bench_chmod() {
@@ -384,7 +475,8 @@ bench_chmod() {
 		echo "refused: not chmodding missing path $path" >&2
 		return 1
 	fi
-	chmod "$mode" "$path"
+	bench_attr_pause "$path"
+	bench_fd_apply chmod "$mode" "$path"
 }
 
 bench_anchor_dir() {
@@ -433,13 +525,13 @@ bench_anchor_dir() {
 				;;
 			missing)
 				mkdir "$acc"
-				chmod 755 "$acc"
+				bench_fd_apply chmod 755 "$acc"
 				;;
 			dir)
 				if ! bench_assert_anchor "$acc"; then
-					chmod 755 "$acc"
+					bench_fd_apply chmod 755 "$acc"
 					if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
-						chown -h "$(bench_installer_uid):$(id -g)" "$acc"
+						bench_fd_apply chown "$(bench_installer_uid):$(id -g)" "$acc"
 					fi
 					if ! bench_assert_anchor "$acc"; then
 						echo "refused: $acc is still writable by someone other than the installer" >&2

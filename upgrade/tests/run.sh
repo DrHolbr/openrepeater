@@ -29,6 +29,7 @@ echo "ok: php -l"
 
 php "$ROOT_DIR/upgrade/tests/php_safety_test.php"
 bash "$ROOT_DIR/upgrade/tests/install_and_helper_test.sh"
+bash "$ROOT_DIR/upgrade/tests/anchor_chmod_race_test.sh"
 bash "$ROOT_DIR/upgrade/tests/login_session_test.sh"
 bash "$ROOT_DIR/upgrade/tests/auth_boundary_test.sh"
 bash "$ROOT_DIR/upgrade/tests/wizard_save_test.sh"

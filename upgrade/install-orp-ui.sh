@@ -335,7 +335,7 @@ install_web_anchor() {
 		fi
 		mv "$held" "$dest"
 	elif [ "$(bench_lstat_kind "$dest")" = missing ]; then
-		mkdir "$dest"
+		bench_mkdir_nofollow "$dest" || exit 6
 	fi
 	bench_chmod 1770 "$dest"
 	bench_chown "root:${web_group}" "$dest"
@@ -348,7 +348,7 @@ install_web_child() {
 			exit 6
 			;;
 		missing)
-			mkdir "$dest"
+			bench_mkdir_nofollow "$dest" || exit 6
 			;;
 		dir)
 			;;
