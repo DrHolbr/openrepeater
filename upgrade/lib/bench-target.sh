@@ -228,10 +228,15 @@ bench_render_nginx() {
 
 bench_test_harness_allowed() {
 	[ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ] || return 1
-	local real
-	real=$(tr -d '[:space:]' < /etc/hostname 2>/dev/null || true)
-	[ "$real" = "orp-test" ] && return 1
-	[ -f /etc/openrepeater/bench-mode ] && return 1
+	# Fixture installs must name an isolated root. This does not read the
+	# installed hostname, operating-mode token, or bench marker.
+	[ -n "${ORP_ROOT:-}" ] || return 1
+	case "${ORP_ROOT}" in
+		/|/.|/etc|/etc/*|/usr|/usr/*|/var/www|/var/www/*|/var/lib/openrepeater|/var/lib/openrepeater/*)
+			return 1
+			;;
+	esac
+	[ -d "${ORP_ROOT}" ] || return 1
 	return 0
 }
 

@@ -30,17 +30,28 @@ function display_help {
 }
 
 function bench_test_harness {
-	[ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ] || return 1
-	local real
-	real=$(tr -d '[:space:]' < /etc/hostname 2>/dev/null || true)
-	[ "$real" = "orp-test" ] && return 1
-	[ -f /etc/openrepeater/bench-mode ] && return 1
+	[ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]
+}
+
+function harness_path_allowed() {
+	case "$1" in
+		/etc|/etc/*|/usr|/usr/*|/var/www|/var/www/*|/var/lib/openrepeater|/var/lib/openrepeater/*)
+			return 1
+			;;
+	esac
+	case "$1" in
+		*..*) return 1 ;;
+	esac
 	return 0
 }
 
 function bench_marker_path {
-	if bench_test_harness && [ -n "${ORP_BENCH_MARKER:-}" ]; then
-		printf '%s' "$ORP_BENCH_MARKER"
+	if bench_test_harness; then
+		if [ -n "${ORP_BENCH_MARKER:-}" ] && harness_path_allowed "$ORP_BENCH_MARKER"; then
+			printf '%s' "$ORP_BENCH_MARKER"
+		else
+			printf '%s' "${TMPDIR:-/tmp}/orp-no-such-bench-marker"
+		fi
 	else
 		printf '%s' /etc/openrepeater/bench-mode
 	fi
@@ -48,8 +59,13 @@ function bench_marker_path {
 
 function bench_hostname {
 	local file=/etc/hostname
-	if bench_test_harness && [ -n "${ORP_BENCH_HOSTNAME_FILE:-}" ]; then
-		file=$ORP_BENCH_HOSTNAME_FILE
+	if bench_test_harness; then
+		if [ -n "${ORP_BENCH_HOSTNAME_FILE:-}" ] && harness_path_allowed "$ORP_BENCH_HOSTNAME_FILE"; then
+			file=$ORP_BENCH_HOSTNAME_FILE
+		else
+			printf '%s' ""
+			return
+		fi
 	fi
 	if [ -f "$file" ]; then
 		tr -d '[:space:]' < "$file"
@@ -57,8 +73,12 @@ function bench_hostname {
 }
 
 function operating_mode_file {
-	if bench_test_harness && [ -n "${ORP_OPERATING_MODE_FILE:-}" ]; then
-		printf '%s' "$ORP_OPERATING_MODE_FILE"
+	if bench_test_harness; then
+		if [ -n "${ORP_OPERATING_MODE_FILE:-}" ] && harness_path_allowed "$ORP_OPERATING_MODE_FILE"; then
+			printf '%s' "$ORP_OPERATING_MODE_FILE"
+		else
+			printf '%s' "${TMPDIR:-/tmp}/orp-no-such-operating-mode"
+		fi
 	else
 		printf '%s' /etc/openrepeater/operating-mode
 	fi

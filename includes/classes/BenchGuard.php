@@ -23,24 +23,34 @@ class BenchGuard {
 		if (getenv('ORP_BENCH_TEST_HARNESS') !== '1') {
 			return false;
 		}
-		$host = @file_get_contents('/etc/hostname');
-		if (is_string($host) && trim($host) === 'orp-test') {
+		// The web server never honors the harness, even on this host.
+		// A CLI or local test server does, and then it must not read the
+		// installed operating-mode token, marker, or hostname.
+		return PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg' || PHP_SAPI === 'cli-server';
+	}
+
+	public static function harnessPathAllowed($path) {
+		if (!is_string($path) || $path === '' || $path[0] !== '/' || strpos($path, "\0") !== false || strpos($path, '..') !== false) {
 			return false;
 		}
-		if (is_file(self::DEFAULT_MARKER)) {
-			return false;
+		$blocked = array('/etc/', '/usr/', '/var/www/', '/var/lib/openrepeater/');
+		foreach ($blocked as $prefix) {
+			if (strpos($path, $prefix) === 0 || $path === rtrim($prefix, '/')) {
+				return false;
+			}
 		}
 		return true;
 	}
 
 	public static function detect() {
-		$env = getenv('ORP_BENCH_MARKER');
-		if (self::testHarnessActive() && is_string($env) && $env !== '') {
-			$path = $env;
-		} else {
-			$path = self::DEFAULT_MARKER;
+		if (self::testHarnessActive()) {
+			$env = getenv('ORP_BENCH_MARKER');
+			if (is_string($env) && $env !== '' && self::harnessPathAllowed($env)) {
+				return new self($env);
+			}
+			return new self(rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-bench-marker');
 		}
-		return new self($path);
+		return new self(self::DEFAULT_MARKER);
 	}
 
 	public function markerPath() {
@@ -48,9 +58,12 @@ class BenchGuard {
 	}
 
 	public function modeFilePath() {
-		$env = getenv('ORP_OPERATING_MODE_FILE');
-		if (self::testHarnessActive() && is_string($env) && $env !== '') {
-			return $env;
+		if (self::testHarnessActive()) {
+			$env = getenv('ORP_OPERATING_MODE_FILE');
+			if (is_string($env) && $env !== '' && self::harnessPathAllowed($env)) {
+				return $env;
+			}
+			return rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-operating-mode';
 		}
 		return self::DEFAULT_MODE_FILE;
 	}
@@ -105,10 +118,17 @@ class BenchGuard {
 	}
 
 	public function hostname() {
-		$file = '/etc/hostname';
-		$override = getenv('ORP_BENCH_HOSTNAME_FILE');
-		if (self::testHarnessActive() && is_string($override) && $override !== '') {
+		if (self::testHarnessActive()) {
+			$override = getenv('ORP_BENCH_HOSTNAME_FILE');
+			if (!is_string($override) || $override === '' || !self::harnessPathAllowed($override)) {
+				return '';
+			}
 			$file = $override;
+		} else {
+			$file = '/etc/hostname';
+		}
+		if (self::testHarnessActive() && is_link($file)) {
+			return '';
 		}
 		if (!is_file($file)) {
 			return '';

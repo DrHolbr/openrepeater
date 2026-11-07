@@ -4,6 +4,9 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$ROOT_DIR"
+# Tests name their own mode file, marker, hostname, and root. They do not
+# read the installed operating-mode token or the live svxlink config.
+export ORP_BENCH_TEST_HARNESS=1
 
 if ! command -v php >/dev/null 2>&1; then
 	echo "php is required" >&2

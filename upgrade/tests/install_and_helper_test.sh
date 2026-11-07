@@ -326,6 +326,33 @@ else
 	bad "first install did not write bench operating mode"
 fi
 printf 'functional-test\n' > "$mode"
+for dir in \
+	"$good/var/www/openrepeater/sounds" \
+	"$good/var/www/openrepeater/sounds/courtesy_tones" \
+	"$good/var/www/openrepeater/sounds/identification" \
+	"$good/var/www/openrepeater/backup" \
+	"$good/var/www/openrepeater/backup/restore"
+do
+	if [ -d "$dir" ] && [ ! -L "$dir" ]; then
+		ok "restore anchor exists and is not a symlink: ${dir#"$good"}"
+	else
+		bad "restore anchor missing or is a symlink: $dir"
+	fi
+done
+if grep -q "/var/www/openrepeater/sounds/" "$ROOT_DIR/includes/classes/BackupRestore.php" \
+	&& grep -q "/var/www/openrepeater/backup/" "$ROOT_DIR/includes/classes/BackupRestore.php" \
+	&& grep -q "/var/www/openrepeater/sounds" "$INSTALL" \
+	&& grep -q "/var/www/openrepeater/backup" "$INSTALL"
+then
+	ok "installer anchors match the BackupRestore defaults"
+else
+	bad "installer anchors do not match BackupRestore"
+fi
+printf 'user-clip\n' > "$good/var/www/openrepeater/sounds/courtesy_tones/keep.wav"
+printf 'user-backup\n' > "$good/var/www/openrepeater/backup/user.orp"
+mkdir -p "$good/usr/local/share/svxlink/sounds/en_US"
+printf 'heather-canary\n' > "$good/usr/local/share/svxlink/sounds/en_US/heather.wav"
+heather_before=$(checksum "$good/usr/local/share/svxlink/sounds/en_US/heather.wav")
 before=$(checksum "$db")
 ORP_INSTALL_OFFLINE=1 ORP_ROOT="$good" ORP_SYSTEMCTL="$bin/systemctl" ORP_SYSTEMCTL_LOG="$log" \
 	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
@@ -350,6 +377,58 @@ if [ -f "$good/etc/openrepeater/bench-mode" ] && [ "$(stat -c %a "$good/etc/open
 	ok "second install keeps the bench marker"
 else
 	bad "second install removed the bench marker"
+fi
+if [ "$(cat "$good/var/www/openrepeater/sounds/courtesy_tones/keep.wav")" = "user-clip" ] \
+	&& [ "$(cat "$good/var/www/openrepeater/backup/user.orp")" = "user-backup" ] \
+	&& [ "$(checksum "$good/usr/local/share/svxlink/sounds/en_US/heather.wav")" = "$heather_before" ] \
+	&& [ ! -L "$good/var/www/openrepeater/sounds" ] \
+	&& [ ! -L "$good/var/www/openrepeater/backup" ]
+then
+	ok "second install preserves user audio and backup files and does not touch Heather"
+else
+	bad "second install changed user audio, backups, or Heather"
+fi
+
+linkroot="$tmp/sounds-link"
+seed_identity "$linkroot"
+mkdir -p "$linkroot/var/www/openrepeater" "$linkroot/outside"
+printf 'secret\n' > "$linkroot/outside/secret"
+ln -s "$linkroot/outside" "$linkroot/var/www/openrepeater/sounds"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$linkroot" ORP_SYSTEMCTL="$bin/systemctl" ORP_SYSTEMCTL_LOG="$log" \
+	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	"$INSTALL" >"$tmp/sounds-link.out" 2>"$tmp/sounds-link.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && [ "$(cat "$linkroot/outside/secret")" = "secret" ] \
+	&& [ ! -e "$linkroot/outside/courtesy_tones" ] \
+	&& [ "$(cat "$linkroot/usr/local/share/svxlink/keep")" = "share" ]
+then
+	ok "a sounds symlink is refused and the outside tree is not used"
+else
+	bad "sounds symlink rc=$rc"
+	cat "$tmp/sounds-link.err" >&2 || true
+fi
+
+ancestor="$tmp/ancestor-link"
+seed_identity "$ancestor"
+mkdir -p "$ancestor/outside/www"
+rm -rf "$ancestor/var/www"
+ln -s "$ancestor/outside/www" "$ancestor/var/www"
+printf 'secret\n' > "$ancestor/outside/secret"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$ancestor" ORP_SYSTEMCTL="$bin/systemctl" ORP_SYSTEMCTL_LOG="$log" \
+	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	"$INSTALL" >"$tmp/ancestor-link.out" 2>"$tmp/ancestor-link.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && [ "$(cat "$ancestor/outside/secret")" = "secret" ] \
+	&& [ ! -d "$ancestor/outside/www/openrepeater/sounds" ]
+then
+	ok "an ancestor symlink on the web path is refused"
+else
+	bad "ancestor symlink rc=$rc"
+	cat "$tmp/ancestor-link.err" >&2 || true
 fi
 
 failroot="$tmp/nginx-fail"

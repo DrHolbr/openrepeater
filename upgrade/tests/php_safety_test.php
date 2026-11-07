@@ -102,8 +102,9 @@ check(is_string($written) && $written !== '', 'bench preview svxlink.conf was wr
 check(strpos($written, "\nPTT_PIN=") === false && strpos($written, "\nPTT_TYPE=") === false, 'bench preview has no active PTT lines');
 check(strpos($written, 'BENCH DISARMED') !== false, 'bench preview marks disarmed transmitter lines');
 check(strpos($written, "\nSQL_DET=GPIO") === false, 'bench preview does not leave SQL_DET=GPIO active');
-check(!file_exists('/etc/svxlink/svxlink.conf'), 'bench write did not create /etc/svxlink/svxlink.conf');
-check(!file_exists('/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl'), 'bench write did not create a bootstrap ORP event file');
+check($svx->configDestination('svxlink.conf') === $preview . '/svxlink.conf', 'bench write target stays the isolated preview');
+check(is_file($preview . '/svxlink.conf') && !is_link($preview . '/svxlink.conf'), 'bench write is a regular file in the isolated preview');
+check(BenchGuard::detect()->modeFilePath() !== BenchGuard::DEFAULT_MODE_FILE, 'the harness does not read the installed operating-mode file');
 
 file_put_contents($preview . '/ORP_keep.tcl', "keep\n");
 $svx->delete_custom_evnets();

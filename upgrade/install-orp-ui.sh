@@ -266,7 +266,28 @@ fi
 bench_trace stage-www
 stage=$(p /var/lib/openrepeater/stage)
 web=$(p /var/www/openrepeater)
+sounds=$(p /var/www/openrepeater/sounds)
+backup_anchor=$(p /var/www/openrepeater/backup)
+hold=$(p "/var/lib/openrepeater/ui-preserve.${STAMP}")
 bench_anchor_dir "$(p /var/www)"
+for anchor in "$sounds" "$backup_anchor"; do
+	case "$(bench_lstat_kind "$anchor")" in
+		symlink)
+			echo "refused: $anchor is a symbolic link" >&2
+			exit 6
+			;;
+	esac
+	bench_require_real_components "$anchor" || exit 6
+done
+if [ "$(bench_lstat_kind "$sounds")" = dir ] || [ "$(bench_lstat_kind "$backup_anchor")" = dir ]; then
+	bench_anchor_dir "$hold"
+fi
+if [ "$(bench_lstat_kind "$sounds")" = dir ]; then
+	mv "$sounds" "$hold/sounds"
+fi
+if [ "$(bench_lstat_kind "$backup_anchor")" = dir ]; then
+	mv "$backup_anchor" "$hold/backup"
+fi
 case "$(bench_lstat_kind "$web")" in
 	symlink)
 		echo "refused: web root is a symbolic link" >&2
@@ -295,6 +316,55 @@ if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
 	find -P "$web" -xdev ! -type l -exec chown -h www-data:www-data {} +
 fi
 bench_chown www-data:www-data "$web"
+install_web_anchor() {
+	local name=$1
+	local dest="$web/$name"
+	local held="$hold/$name"
+	case "$(bench_lstat_kind "$dest")" in
+		symlink)
+			echo "refused: $dest is a symbolic link" >&2
+			exit 6
+			;;
+	esac
+	if [ "$(bench_lstat_kind "$held")" = dir ]; then
+		if [ "$(bench_lstat_kind "$dest")" = dir ]; then
+			mv "$dest" "$hold/${name}.packaged"
+		elif [ "$(bench_lstat_kind "$dest")" != missing ]; then
+			echo "refused: $dest is occupied and the preserved $name tree was not restored" >&2
+			exit 6
+		fi
+		mv "$held" "$dest"
+	elif [ "$(bench_lstat_kind "$dest")" = missing ]; then
+		mkdir "$dest"
+	fi
+	bench_chmod 1770 "$dest"
+	bench_chown "root:${web_group}" "$dest"
+}
+install_web_child() {
+	local dest=$1
+	case "$(bench_lstat_kind "$dest")" in
+		symlink)
+			echo "refused: $dest is a symbolic link" >&2
+			exit 6
+			;;
+		missing)
+			mkdir "$dest"
+			;;
+		dir)
+			;;
+		*)
+			echo "refused: $dest is not a directory" >&2
+			exit 6
+			;;
+	esac
+	bench_chmod 0755 "$dest"
+	bench_chown "${web_group}:${web_group}" "$dest"
+}
+install_web_anchor sounds
+install_web_anchor backup
+install_web_child "$web/sounds/courtesy_tones"
+install_web_child "$web/sounds/identification"
+install_web_child "$web/backup/restore"
 
 bench_anchor_dir "$(p /etc/nginx/sites-available)"
 bench_anchor_dir "$(p /etc/nginx/sites-enabled)"
