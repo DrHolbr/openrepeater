@@ -440,7 +440,14 @@ class SVXLink {
 	public function configDestination($filename) {
 		$guard = BenchGuard::detect();
 		if ($guard->isBench()) {
-			return rtrim($guard->previewDir(), '/') . '/' . $filename;
+			if (basename($filename) !== $filename) {
+				return null;
+			}
+			$dir = $guard->previewDir();
+			if (!BenchGuard::previewAllowed($dir) || is_link($dir)) {
+				return null;
+			}
+			return rtrim($dir, '/') . '/' . $filename;
 		}
 		if ($filename === 'svxlink.conf' || $filename === 'gpio.conf') {
 			return '/etc/svxlink/' . $filename;
@@ -499,9 +506,15 @@ class SVXLink {
 			return;
 		}
 		$filepath = dirname($full_file_path);
+		if (is_link($filepath) || is_link($full_file_path)) {
+			return;
+		}
 		
 		// If Directory Doesn't Exist, create it.
 		if (!is_dir($filepath)) { mkdir($filepath, 0750, true); }
+		if (is_link($filepath) || is_link($full_file_path)) {
+			return;
+		}
 
 		// Write the File.
 		file_put_contents( $full_file_path, $file_output );
@@ -519,7 +532,7 @@ class SVXLink {
 			return;
 		}
 		$dir = dirname($sample);
-		if (!is_dir($dir)) {
+		if (!is_dir($dir) || is_link($dir)) {
 			return;
 		}
 		$files = glob($dir . '/ORP_*');

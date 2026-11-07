@@ -41,11 +41,19 @@ check($svx->configDestination('ORP_RepeaterLogic_Port1.tcl') === '/usr/share/svx
 
 $preview = sys_get_temp_dir() . '/orp-preview-' . getmypid();
 $marker = sys_get_temp_dir() . '/orp-bench-' . getmypid();
-file_put_contents($marker, "host=orp-test\nradio=blocked\npreview={$preview}\n");
+file_put_contents($marker, "host=orp-test\nradio=blocked\npreview=/etc/svxlink\npreview=/usr/local/share/svxlink\n");
 putenv('ORP_BENCH_MARKER=' . $marker);
+putenv('ORP_BENCH_PREVIEW=' . $preview);
 $on = BenchGuard::detect();
 check($on->isBench() === true, 'marker file enables bench mode');
-check($on->previewDir() === $preview, 'preview directory is read from the marker');
+check($on->previewDir() === $preview, 'an allowed test preview is used');
+putenv('ORP_BENCH_PREVIEW=/etc/svxlink');
+check(BenchGuard::detect()->previewDir() === BenchGuard::DEFAULT_PREVIEW, 'preview=/etc/svxlink is rejected');
+putenv('ORP_BENCH_PREVIEW=/var/lib/openrepeater/bench-preview/../../etc');
+check(BenchGuard::detect()->previewDir() === BenchGuard::DEFAULT_PREVIEW, 'preview paths with .. are rejected');
+check(BenchGuard::previewAllowed('/usr/local/share/svxlink') === false, 'bootstrap share tree is not a preview');
+putenv('ORP_BENCH_PREVIEW=' . $preview);
+check($on->commandAllowed('alsa', 'backup') === false, 'bench blocks alsa backup');
 check($on->mixerUpdatesAllowed() === false, 'bench mode does not allow mixer updates');
 foreach (array(
 	array('svxlink', 'start'),
@@ -235,6 +243,27 @@ check($modulesOff->svxlinkEventsPath() === '/usr/share/svxlink/events.d/', 'with
 $autoload = file_get_contents($root . '/includes/autoloadClasses.php');
 check(strpos($autoload, 'function __autoload') === false, 'PHP 8 autoload no longer defines __autoload');
 check(strpos($autoload, 'spl_autoload_register') !== false, 'autoload uses spl_autoload_register');
+
+$hostFile = sys_get_temp_dir() . '/orp-hostname-' . getmypid();
+file_put_contents($hostFile, "orp-test\n");
+putenv('ORP_BENCH_HOSTNAME_FILE=' . $hostFile);
+putenv('ORP_BENCH_MARKER=' . $missing);
+check(BenchGuard::detect()->isBench() === true, 'hostname orp-test stays in bench mode when the marker is gone');
+putenv('ORP_BENCH_HOSTNAME_FILE=/no/such-orp-hostname');
+check(BenchGuard::detect()->isBench() === false, 'a non-bench host without a marker is not forced into bench mode');
+
+$link = sys_get_temp_dir() . '/orp-preview-link-' . getmypid();
+$linkTarget = sys_get_temp_dir() . '/orp-link-target-' . getmypid();
+mkdir($linkTarget);
+symlink($linkTarget, $link);
+file_put_contents($linkTarget . '/sentinel', 'keep');
+putenv('ORP_BENCH_MARKER=' . $marker);
+putenv('ORP_BENCH_PREVIEW=' . $link);
+$linked = new SVXLink(array(), array(), array());
+check($linked->configDestination('svxlink.conf') === null, 'a symlinked preview directory is not a publish target');
+$linked->write_config("PTT_PIN=gpio498\n", 'svxlink.conf', 'text');
+check(file_get_contents($linkTarget . '/sentinel') === 'keep', 'symlink preview did not change the target');
+check(!file_exists($linkTarget . '/svxlink.conf'), 'symlink preview did not receive svxlink.conf');
 
 if ($failures > 0) {
 	fwrite(STDERR, "$failures failure(s)\n");

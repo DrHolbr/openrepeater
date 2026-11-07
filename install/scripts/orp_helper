@@ -37,8 +37,35 @@ function bench_marker_path {
 	fi
 }
 
+function bench_hostname {
+	local file=${ORP_BENCH_HOSTNAME_FILE:-/etc/hostname}
+	if [ -f "$file" ]; then
+		tr -d '[:space:]' < "$file"
+	fi
+}
+
 function bench_mode_on {
+	# orp-test stays blocked even if the marker file is removed.
+	if [ "$(bench_hostname)" = "orp-test" ]; then
+		return 0
+	fi
 	[ -f "$(bench_marker_path)" ]
+}
+
+function alsa_state_allowed {
+	case "$1" in
+		/var/www/openrepeater/backup/build/alsamixer.state|/var/www/openrepeater/backup/restore/alsamixer.state)
+			if [ -L "$1" ]; then
+				echo "refused: alsa state path is a symlink"
+				return 1
+			fi
+			return 0
+			;;
+		*)
+			echo "refused: alsa path is outside the backup directory"
+			return 1
+			;;
+	esac
 }
 
 function bench_refuses {
@@ -157,7 +184,19 @@ function set_mixer {
 }
 
 function alsamixer_backup {
-	alsactl --file "$1" store
+	if bench_refuses "alsa backup"; then
+		return 1
+	fi
+	if ! alsa_state_allowed "$1"; then
+		return 1
+	fi
+	if ! alsactl --file "$1" store; then
+		echo "refused: alsactl store failed"
+		return 1
+	fi
+	if ! alsa_state_allowed "$1"; then
+		return 1
+	fi
 	chown www-data:www-data "$1"
 }
 

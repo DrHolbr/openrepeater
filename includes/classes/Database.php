@@ -76,7 +76,10 @@ class Database {
 	// SELECT SINGLE - Return single 
 	public function select_single($sql) {
 		$db = new SQLite3($this->db_loc) or die('Unable to open database');
-		$results = $db->querySingle($sql, true) or die('Unable to select single record from database');
+		$results = $db->querySingle($sql, true);
+		if ($results === false || $results === null) {
+			return array();
+		}
 		return $results;
 	}
 

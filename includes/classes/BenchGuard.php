@@ -33,28 +33,50 @@ class BenchGuard {
 	}
 
 	public function isBench() {
+		// The bench hostname is root-owned. Deleting the marker must not
+		// turn publishing and radio commands back on for orp-test.
+		if ($this->hostname() === 'orp-test') {
+			return true;
+		}
 		return is_file($this->markerPath);
 	}
 
-	public function previewDir() {
-		$fallback = self::DEFAULT_PREVIEW;
-		if (!$this->isBench()) {
-			return $fallback;
+	public function hostname() {
+		$file = getenv('ORP_BENCH_HOSTNAME_FILE');
+		if (!is_string($file) || $file === '') {
+			$file = '/etc/hostname';
 		}
-		$raw = @file($this->markerPath, FILE_IGNORE_NEW_LINES);
+		if (!is_file($file)) {
+			return '';
+		}
+		$raw = file_get_contents($file);
 		if ($raw === false) {
-			return $fallback;
+			return '';
 		}
-		foreach ($raw as $line) {
-			$line = trim($line);
-			if (strpos($line, 'preview=') === 0) {
-				$dir = trim(substr($line, strlen('preview=')));
-				if ($dir !== '' && strpos($dir, "\0") === false) {
-					return $dir;
-				}
-			}
+		return trim($raw);
+	}
+
+	public static function previewAllowed($dir) {
+		if (!is_string($dir) || $dir === '' || $dir[0] !== '/') {
+			return false;
 		}
-		return $fallback;
+		if (strpos($dir, "\0") !== false || strpos($dir, '..') !== false) {
+			return false;
+		}
+		if ($dir === self::DEFAULT_PREVIEW) {
+			return true;
+		}
+		$temp = rtrim(sys_get_temp_dir(), '/') . '/orp-preview-';
+		return strpos($dir, $temp) === 0;
+	}
+
+	public function previewDir() {
+		// The marker file is not a path authority. A preview= line is ignored.
+		$env = getenv('ORP_BENCH_PREVIEW');
+		if (is_string($env) && self::previewAllowed($env)) {
+			return $env;
+		}
+		return self::DEFAULT_PREVIEW;
 	}
 
 	public function mixerUpdatesAllowed() {
@@ -76,7 +98,7 @@ class BenchGuard {
 			'svxreflector' => array('start', 'restart', 'enable'),
 			'system' => array('restart', 'stop'),
 			'set_mixer' => array('set_mixer'),
-			'alsa' => array('restore'),
+			'alsa' => array('restore', 'backup'),
 		);
 		if ($service === 'set_mixer') {
 			return false;

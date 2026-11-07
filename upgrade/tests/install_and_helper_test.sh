@@ -149,8 +149,11 @@ fi
 good="$tmp/good"
 seed_identity "$good"
 : > "$log"
+: > "$tmp/good.trace"
+: > "$tmp/chown.log"
 set +e
 ORP_INSTALL_OFFLINE=1 ORP_ROOT="$good" ORP_SYSTEMCTL="$bin/systemctl" ORP_SYSTEMCTL_LOG="$log" \
+	ORP_INSTALL_TRACE="$tmp/good.trace" ORP_CHOWN_LOG="$tmp/chown.log" \
 	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
 	"$INSTALL" >"$tmp/good.out" 2>"$tmp/good.err"
 rc=$?
@@ -208,6 +211,43 @@ if grep -q 'radio=blocked' "$good/etc/openrepeater/bench-mode" && grep -q 'gpio=
 else
 	bad "bench-mode marker"
 fi
+if [ "$(stat -c %a "$good/etc/openrepeater/bench-mode")" = "644" ] && [ "$(stat -c %a "$good/etc/openrepeater")" = "755" ]; then
+	ok "bench marker and its directory are not group or world writable"
+else
+	bad "bench marker mode marker=$(stat -c %a "$good/etc/openrepeater/bench-mode") dir=$(stat -c %a "$good/etc/openrepeater")"
+fi
+if grep -E -q "root:root ${good}/etc/openrepeater/bench-mode$" "$tmp/chown.log" \
+	&& grep -E -q "root:root ${good}/etc/openrepeater$" "$tmp/chown.log" \
+	&& ! grep 'www-data' "$tmp/chown.log" | grep -F "$good/etc/openrepeater"
+then
+	ok "bench policy is recorded as root-owned, not www-data"
+else
+	bad "chown log"
+	cat "$tmp/chown.log" >&2 || true
+fi
+marker_line=$(grep -n '^marker$' "$tmp/good.trace" | head -n 1 | cut -d: -f1)
+stage_line=$(grep -n '^stage-www$' "$tmp/good.trace" | head -n 1 | cut -d: -f1)
+test_line=$(grep -n '^nginx-test$' "$tmp/good.trace" | head -n 1 | cut -d: -f1)
+enable_line=$(grep -n '^nginx-enable$' "$tmp/good.trace" | head -n 1 | cut -d: -f1)
+if [ -n "$marker_line" ] && [ -n "$stage_line" ] && [ -n "$test_line" ] && [ -n "$enable_line" ] \
+	&& [ "$marker_line" -lt "$stage_line" ] && [ "$stage_line" -lt "$test_line" ] && [ "$test_line" -lt "$enable_line" ]
+then
+	ok "marker is written before the web tree and nginx starts only after its config test"
+else
+	bad "install trace order"
+	cat "$tmp/good.trace" >&2 || true
+fi
+sudoers="$good/etc/sudoers.d/openrepeater"
+if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoers" \
+	&& ! grep -E -q 'alsa|svxlink start|gpio_up|set_mixer' "$sudoers" \
+	&& grep -q 'orp_helper svxlink status' "$sudoers" \
+	&& grep -q 'orp_helper info os' "$sudoers"
+then
+	ok "sudoers is a closed read-only helper list"
+else
+	bad "sudoers contract"
+	cat "$sudoers" >&2 || true
+fi
 
 if grep -q 'bench_refuses' "$good/usr/sbin/orp_helper"; then
 	ok "installed helper contains the bench refusal"
@@ -231,6 +271,40 @@ if [ "$before" = "$after" ]; then
 	ok "second install does not replace the database"
 else
 	bad "database was replaced on the second install"
+fi
+if [ -f "$good/etc/openrepeater/bench-mode" ] && [ "$(stat -c %a "$good/etc/openrepeater/bench-mode")" = "644" ]; then
+	ok "second install keeps the bench marker"
+else
+	bad "second install removed the bench marker"
+fi
+
+failroot="$tmp/nginx-fail"
+seed_identity "$failroot"
+: > "$tmp/nginx-fail.log"
+: > "$tmp/nginx-fail.trace"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$tmp/nginx-fail.sh"
+chmod 755 "$tmp/nginx-fail.sh"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$failroot" ORP_SYSTEMCTL="$bin/systemctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/nginx-fail.log" ORP_INSTALL_TRACE="$tmp/nginx-fail.trace" \
+	ORP_NGINX_TEST="$tmp/nginx-fail.sh" ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/nginx-fail.out" 2>"$tmp/nginx-fail.err"
+rc=$?
+set -e
+if [ "$rc" -eq 5 ] && [ -f "$failroot/etc/openrepeater/bench-mode" ] \
+	&& [ ! -e "$failroot/etc/nginx/sites-enabled/openrepeater" ] \
+	&& grep -q '^marker$' "$tmp/nginx-fail.trace" \
+	&& ! grep -q '^nginx-enable$' "$tmp/nginx-fail.trace" \
+	&& ! grep -E -q 'enable --now nginx|unmask|svxlink start' "$tmp/nginx-fail.log"
+then
+	ok "nginx test failure leaves the marker, does not enable nginx, and does not unmask radio"
+else
+	bad "nginx failure path rc=$rc"
+	cat "$tmp/nginx-fail.err" >&2 || true
+	echo '--- trace ---' >&2
+	cat "$tmp/nginx-fail.trace" >&2 || true
+	echo '--- systemctl ---' >&2
+	cat "$tmp/nginx-fail.log" >&2 || true
 fi
 
 if grep -E -q '^(enable --now php8\.4-fpm|enable --now nginx)$' "$log" \
@@ -284,6 +358,15 @@ export PATH="$rec:$PATH"
 export HELPER_LOG="$hlog"
 export SVXLINK_GPIO_UP_BIN="$rec/gpio-up"
 export SVXLINK_GPIO_DOWN_BIN="$rec/gpio-up"
+printf 'cloud\n' > "$tmp/hostname-other"
+printf 'orp-test\n' > "$tmp/hostname-orp"
+export ORP_BENCH_HOSTNAME_FILE="$tmp/hostname-other"
+cat > "$rec/chown" <<'EOF'
+#!/bin/bash
+echo "chown $*" >> "${HELPER_LOG:?}"
+exit 0
+EOF
+chmod 755 "$rec/chown"
 
 run_helper() {
 	local marker=$1
@@ -347,6 +430,58 @@ if grep -q 'service svxlink start' "$hlog" && ! printf '%s' "$out" | grep -q 're
 	ok "without the marker, svxlink start still calls service"
 else
 	bad "legacy svxlink start was blocked"
+	cat "$hlog" >&2 || true
+fi
+
+: > "$hlog"
+result=$(ORP_BENCH_HOSTNAME_FILE="$tmp/hostname-orp" run_helper /no/such/bench-mode svxlink start)
+rc=$(printf '%s\n' "$result" | head -n 1)
+out=$(printf '%s\n' "$result" | tail -n +2)
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && ! grep -q 'service svxlink start' "$hlog"; then
+	ok "hostname orp-test blocks svxlink start even when the marker is absent"
+else
+	bad "hostname bench gate rc=$rc"
+	cat "$hlog" >&2 || true
+fi
+
+: > "$hlog"
+result=$(run_helper /no/such/bench-mode alsa backup /etc/passwd)
+rc=$(printf '%s\n' "$result" | head -n 1)
+out=$(printf '%s\n' "$result" | tail -n +2)
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && ! grep -E -q 'alsactl|chown' "$hlog"; then
+	ok "alsa backup rejects a path outside the backup directory without chown"
+else
+	bad "alsa path guard"
+	printf '%s\n' "$out" >&2
+	cat "$hlog" >&2 || true
+fi
+
+printf '%s\n' '#!/bin/bash' 'echo "alsactl $*" >> "${HELPER_LOG:?}"' 'exit 1' > "$rec/alsactl"
+chmod 755 "$rec/alsactl"
+: > "$hlog"
+result=$(run_helper /no/such/bench-mode alsa backup /var/www/openrepeater/backup/build/alsamixer.state)
+rc=$(printf '%s\n' "$result" | head -n 1)
+out=$(printf '%s\n' "$result" | tail -n +2)
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'alsactl store failed' \
+	&& grep -q 'alsactl --file /var/www/openrepeater/backup/build/alsamixer.state store' "$hlog" \
+	&& ! grep -q '^chown ' "$hlog"
+then
+	ok "alsactl failure does not chown the state file"
+else
+	bad "alsactl failure still changed ownership"
+	printf '%s\n' "$out" >&2
+	cat "$hlog" >&2 || true
+fi
+
+: > "$hlog"
+result=$(run_helper "$marker" alsa backup /var/www/openrepeater/backup/build/alsamixer.state)
+rc=$(printf '%s\n' "$result" | head -n 1)
+out=$(printf '%s\n' "$result" | tail -n +2)
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && ! grep -E -q 'alsactl|chown' "$hlog"; then
+	ok "bench mode refuses alsa backup before alsactl or chown"
+else
+	bad "bench alsa backup"
+	printf '%s\n' "$out" >&2
 	cat "$hlog" >&2 || true
 fi
 

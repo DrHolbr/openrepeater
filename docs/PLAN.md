@@ -1,6 +1,6 @@
 # Stage 2 plan: bench UI on Debian Trixie
 
-**Status: implemented on this branch, not deployed.** Parent runs the installer on `orp-test` only after the bootstrap completion marker exists and after this branch is reviewed. Nothing here was executed on the Pi. Production is untouched. This change does not merge.
+**Status: review fixes on this branch, not deployed.** Head `0dd447a` was blocked before any install. The parent later reported the bootstrap completed at 7:39:03 PM EST with SvxLink 26.05.2 and the radio units still masked. This revision was not copied to the Pi and is not native UI proof. Production is untouched. This change does not merge.
 
 The user goal is to make the existing OpenRepeater web UI usable on the bench Raspberry Pi 3B+ (Raspberry Pi OS / Debian Trixie arm64, PHP 8.x, nginx, SvxLink 26.05.2) without transmitting and without disturbing the image that is already building.
 
@@ -9,7 +9,7 @@ The user goal is to make the existing OpenRepeater web UI usable on the bench Ra
 Keep this UI (the stage-1 Option A) and do not start the SvxLink 26 event-handler rewrite. The smallest change that makes the pages load, and that cannot key a radio or clobber the bootstrap, is:
 
 1. PHP 8 fixes on the load path (`__autoload`, empty query results, the extra argument to `select_single`, Memcached missing).
-2. A bench marker that blocks publish, radio start, reboot, mixer changes, and GPIO setup.
+2. A root-owned bench marker. On hostname `orp-test` the block stays on even if that file is removed. Preview paths are fixed; a `preview=` line is not trusted. The helper sudoers entry is an explicit read-only command list, and `alsa backup` cannot chown an arbitrary path.
 3. A read-only GPIO name map. No libgpiod line is assigned and no output is driven.
 4. An installer that refuses to run until the bootstrap says it is finished, then installs nginx and PHP 8 only.
 
@@ -134,17 +134,17 @@ sudo bash upgrade/install-orp-ui.sh
 
 The script is safe to run again. It backs up an existing web root, nginx site, `/etc/openrepeater`, helper, sudoers fragment, and `/var/lib/openrepeater` under `/var/backups/orp-ui/<timestamp>/` before replacing UI files. It does not replace an existing `openrepeater.db`.
 
-Rollback, still without starting the radio:
+Rollback stops the web UI and leaves the bench safety marker in place. Do not delete `/etc/openrepeater/bench-mode`. That file is what keeps publish, reboot, and radio start blocked. It is root-owned; the web user cannot remove it.
 
 ```bash
-# stop only the web stack if you want the UI offline
 sudo systemctl disable --now nginx php8.4-fpm
-# restore a backup directory created by the installer, for example:
 sudo cp -a /var/backups/orp-ui/<timestamp>/var/www/openrepeater /var/www/openrepeater
 sudo cp -a /var/backups/orp-ui/<timestamp>/etc/nginx/sites-available/openrepeater /etc/nginx/sites-available/openrepeater
-sudo rm -f /etc/nginx/sites-enabled/openrepeater /etc/openrepeater/bench-mode
+sudo rm -f /etc/nginx/sites-enabled/openrepeater
+# keep /etc/openrepeater/bench-mode
 # do not unmask svxlink, remotetrx, or svxreflector
 # do not delete /var/lib/orp-test or /usr/local/bin/svxlink
+test -f /etc/openrepeater/bench-mode && echo "bench marker still present"
 ```
 
 Confirm afterward:
@@ -162,6 +162,13 @@ Expected enablement is `masked` and activity is `inactive`. If a unit is not mas
 - This branch, then `upgrade/install-orp-ui.sh` (it copies the rest of the tree).
 - `docs/PLAN.md` and `docs/GPIO-MAP.md` for the gate and the pin names.
 - Do not fetch a second copy of SvxLink, do not copy `/usr/local` off the Pi, and do not copy private module trees into this checkout.
+
+## Review fixes after 0dd447a
+
+1. `/etc/openrepeater` and `bench-mode` stay root-owned and mode `755` / `644`. The web tree is the only tree given to `www-data`. `preview=` in the marker is ignored. The only preview paths accepted are `/var/lib/openrepeater/bench-preview` and a test directory under the system temp dir named `orp-preview-*`. A symlink is not a publish target. Hostname `orp-test` stays in bench mode if the marker file is removed.
+2. sudoers names each read-only helper command. It does not allow the helper with arbitrary arguments, `alsa`, `set_mixer`, or `svxlink start`. `alsa backup` accepts only the two fixed state-file paths, refuses symlinks, and does not `chown` when `alsactl` fails. Bench mode returns before either command.
+3. Login selects `userID` (SQLite keeps the case in the query). A wrong password and an unknown user both redirect to `incorrectLogin` and do not open `gpio.php`. A matching password sets `userID` and can open the GPIO page and the dashboard.
+4. The marker is written before the web tree. Package installs use `policy-rc.d` so apt does not start nginx. `nginx -t` runs while nginx is stopped. A failed test removes the site symlink, does not enable nginx, and leaves the marker. Rollback in this document no longer deletes `bench-mode`.
 
 ## What was not verified
 
