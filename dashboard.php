@@ -104,6 +104,7 @@ $classSystem = new System();
 				      <div class="modal-body">
 						<h4>Are You Sure You Want to Do This?</h4>
 						<p>By shutting down the entire controller system you will not be able to initiate a system restart unless you are physically present at the controller to do so. Proceed with caution.</p>
+						<p>Sending or blocking the shutdown command does not show whether a transmitter has unkeyed.</p>
 				      </div>
 				      <div class="modal-footer">
 							<button class="btn btn-default" data-dismiss="modal">Cancel</button>

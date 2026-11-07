@@ -263,6 +263,13 @@ else
 	bad "database missing"
 fi
 printf 'preserve\n' >> "$db"
+mode="$good/etc/openrepeater/operating-mode"
+if [ "$(tr -d '[:space:]' < "$mode")" = "bench" ]; then
+	ok "first install writes bench operating mode"
+else
+	bad "first install did not write bench operating mode"
+fi
+printf 'functional-test\n' > "$mode"
 before=$(checksum "$db")
 ORP_INSTALL_OFFLINE=1 ORP_ROOT="$good" ORP_SYSTEMCTL="$bin/systemctl" ORP_SYSTEMCTL_LOG="$log" \
 	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
@@ -272,6 +279,11 @@ if [ "$before" = "$after" ]; then
 	ok "second install does not replace the database"
 else
 	bad "database was replaced on the second install"
+fi
+if [ "$(tr -d '[:space:]' < "$mode")" = "functional-test" ]; then
+	ok "second install does not replace functional-test mode"
+else
+	bad "second install replaced the operating mode"
 fi
 if [ -f "$good/etc/openrepeater/bench-mode" ] && [ "$(stat -c %a "$good/etc/openrepeater/bench-mode")" = "644" ]; then
 	ok "second install keeps the bench marker"

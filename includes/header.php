@@ -99,8 +99,10 @@ $benchGuard = BenchGuard::detect();
 
 	<div class="server_bar_wrap"<?php if ($updateFlage == false) { echo ' style="display: none;"'; } ?>>
 	<div class="server_bar">
-		<?php if ($benchGuard->isBench()) { ?>
-		<span>Bench mode: configuration rebuild will not publish files or restart the radio.</span>
+		<?php if ($benchGuard->operatingMode() === 'functional-test') { ?>
+		<span>Functional test: rebuild stays in the preview directory. It does not start svxlink, unmask a unit, or drive a GPIO line. A refused or accepted helper command is not evidence the transmitter is unkeyed.</span>
+		<?php } elseif ($benchGuard->isBench()) { ?>
+		<span>Bench mode: configuration rebuild will not publish files or restart the radio. A refused shutdown command is not evidence the transmitter is unkeyed.</span>
 		<?php } else { ?>
 		<span>Repeater Configuration Files Rebuild & Restart Required: </span>
 

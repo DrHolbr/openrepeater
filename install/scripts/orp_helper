@@ -56,8 +56,43 @@ function bench_hostname {
 	fi
 }
 
+function operating_mode_file {
+	if bench_test_harness && [ -n "${ORP_OPERATING_MODE_FILE:-}" ]; then
+		printf '%s' "$ORP_OPERATING_MODE_FILE"
+	else
+		printf '%s' /etc/openrepeater/operating-mode
+	fi
+}
+
+function operating_mode_token {
+	local file perm owner token
+	file=$(operating_mode_file)
+	[ -f "$file" ] || return 0
+	[ -L "$file" ] && return 0
+	perm=$(stat -c %a "$file")
+	# Reject group or other write. stat %a is decimal, so use the permission bits.
+	if find "$file" -perm /022 | grep -q .; then
+		return 0
+	fi
+	if ! bench_test_harness; then
+		owner=$(stat -c %u "$file")
+		[ "$owner" = 0 ] || return 0
+	fi
+	token=$(tr -d '[:space:]' < "$file")
+	case "$token" in
+		bench|functional-test) printf '%s' "$token" ;;
+	esac
+}
+
 function bench_mode_on {
-	# orp-test stays blocked even if the marker file is removed.
+	# functional-test changes the label only. It still refuses radio start,
+	# GPIO drive, reboot, and unmask. A missing or untrusted mode file does
+	# not turn hostname orp-test back into legacy operation.
+	local token
+	token=$(operating_mode_token)
+	if [ "$token" = "functional-test" ] || [ "$token" = "bench" ]; then
+		return 0
+	fi
 	if [ "$(bench_hostname)" = "orp-test" ]; then
 		return 0
 	fi

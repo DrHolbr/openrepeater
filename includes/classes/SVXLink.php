@@ -436,11 +436,11 @@ class SVXLink {
 		return $this->publishFailed;
 	}
 
-	// Periodic identification gaps for an active communication, in seconds.
-	// This is the schedule written into the configuration. It is not a claim
-	// that the controller transmitted, and it does not model an end-of-
-	// communication event. 47 CFR 97.119(a) also requires identification at
-	// the end of each communication; that invocation is not executed here.
+	// Multiply a configured minute count by 60. This is arithmetic on the
+	// integer written into SHORT_IDENT_INTERVAL. SvxLink 26.05 Logic.tcl
+	// decides when to call send_short_ident on a minute tick, with a 120
+	// second minimum between short identifications. This method does not
+	// run that event handler and is not timing evidence.
 	public static function activeCommunicationIdGaps($intervalMinutes, $communicationSeconds) {
 		$step = (int)$intervalMinutes * 60;
 		if ($step < 60 || $communicationSeconds < 1) {
@@ -472,18 +472,10 @@ class SVXLink {
 		$shortCovers = $shortOn && $this->intervalWithinTenMinutes(isset($settings['ID_Short_IntervalMin']) ? $settings['ID_Short_IntervalMin'] : '');
 		$longCovers = $longOn && $this->intervalWithinTenMinutes(isset($settings['ID_Long_IntervalMin']) ? $settings['ID_Long_IntervalMin'] : '');
 		if ($shortOn && !$shortCovers) {
-			$problems[] = 'The short identification interval is not a whole number of minutes from 1 through 10. 47 CFR 97.119(a) requires identification at least every 10 minutes during a communication. The stored interval was not changed.';
+			$problems[] = 'The short identification interval is not a whole number of minutes from 1 through 10. SvxLink 26.05 will load a longer SHORT_IDENT_INTERVAL. This publish rule refuses it because 47 CFR 97.119(a) requires identification at least every 10 minutes during a communication. The stored interval was not changed.';
 		}
 		if (!$shortCovers && $longOn && !$longCovers) {
-			$problems[] = 'The only enabled identification interval is longer than 10 minutes. 47 CFR 97.119(a) requires identification at least every 10 minutes during a communication. The stored interval was not changed.';
-		}
-		if (!$shortOn && !$longOn) {
-			// already recorded
-		} elseif (!$shortCovers && !$longCovers && ($shortOn || $longOn)) {
-			// recorded above when the enabled mode has a bad interval
-		}
-		if ((isset($settings['ID_Short_IdentOnlyAfterTX']) ? $settings['ID_Short_IdentOnlyAfterTX'] : 'False') === 'True') {
-			$problems[] = 'Identify-only-after-transmit defers identification until after a transmission. A communication can continue longer than 10 minutes, so that schedule is not published. 47 CFR 97.119(a). The stored setting was not changed.';
+			$problems[] = 'The only enabled identification interval is longer than 10 minutes. SvxLink 26.05 will load that LONG_IDENT_INTERVAL. This publish rule refuses it because 47 CFR 97.119(a) requires identification at least every 10 minutes during a communication. The stored interval was not changed.';
 		}
 		if ($this->repeaterPathUsesMorse() && !$this->morseSpeedAllowed()) {
 			$problems[] = 'Automatic Morse identification is faster than 20 words per minute. 47 CFR 97.119(b)(1) limits an automatic CW identification device to 20 WPM. The stored speed was not changed.';
@@ -511,10 +503,11 @@ class SVXLink {
 		$settings = $this->settingsArray;
 		$shortMode = isset($settings['ID_Short_Mode']) ? (string)$settings['ID_Short_Mode'] : '';
 		$longMode = isset($settings['ID_Long_Mode']) ? (string)$settings['ID_Long_Mode'] : '';
+		$afterTx = (isset($settings['ID_Short_IdentOnlyAfterTX']) && $settings['ID_Short_IdentOnlyAfterTX'] === 'True') ? '1' : '0';
 		$keys = array(
 			'SHORT_IDENT_INTERVAL' => '0',
 			'LONG_IDENT_INTERVAL' => '0',
-			'IDENT_ONLY_AFTER_TX' => '0'
+			'IDENT_ONLY_AFTER_TX' => $afterTx
 		);
 		if ($this->identModeEmits($shortMode) && $this->intervalWithinTenMinutes(isset($settings['ID_Short_IntervalMin']) ? $settings['ID_Short_IntervalMin'] : '')) {
 			$keys['SHORT_IDENT_INTERVAL'] = (string)(int)$settings['ID_Short_IntervalMin'];

@@ -145,10 +145,7 @@ if (strpos($ini, "TIMEOUT=180") !== false) {
 }
 $gaps = SVXLink::activeCommunicationIdGaps(5, 20 * 60);
 if ($gaps !== array(300, 300, 300, 300)) {
-	fail("a 20 minute communication at 5 minutes did not schedule 300 second gaps");
-}
-foreach ($gaps as $gap) {
-	if ($gap > 600) fail("an active-communication gap exceeded 600 seconds");
+	fail("config arithmetic for a 5 minute integer did not return four 300 second products");
 }
 $tcl = (new SVXLink_TCL($settings))->logic_override();
 if (strpos($tcl, "CW::setWpm 20") === false || strpos($tcl, "CW::play \$mycall") === false || strpos($tcl, "CW::setWpm 25") !== false) {
@@ -178,13 +175,22 @@ if ($late->write_config($late->build_logic_repeater("ORP_RepeaterLogic_Port1", 1
 if (file_exists($argv[7] . "/late.conf")) fail("late.conf was written");
 $settings["callSign"] = "FIXTURE";
 $settings["ID_Short_IntervalMin"] = "5";
+$settings["ID_Short_Mode"] = "morse";
+$settings["ID_Morse_WPM"] = "20";
+$settings["ID_Long_Mode"] = "disabled";
 $settings["ID_Short_IdentOnlyAfterTX"] = "True";
 $defer = new SVXLink($settings, array(), array());
-$defer->build_logic_repeater("ORP_RepeaterLogic_Port1", 1);
-if ($defer->write_config($defer->build_logic_repeater("ORP_RepeaterLogic_Port1", 1), "defer.conf", "ini") !== false) {
-	fail("identify-only-after-transmit was published");
+if ($defer->identificationProblems() !== array()) {
+	fail("identify-only-after-transmit was treated as a publish error: " . implode("; ", $defer->identificationProblems()));
 }
-echo "ok: generated schedule keeps the stored call sign, 5 minute gaps, and refuses 11 minutes or deferred ID\n";
+if ($defer->write_config($defer->build_logic_repeater("ORP_RepeaterLogic_Port1", 1), "defer.conf", "ini") !== true) {
+	fail("SvxLink IDENT_ONLY_AFTER_TX=1 was refused");
+}
+$deferIni = file_get_contents($argv[7] . "/defer.conf");
+if (strpos($deferIni, "IDENT_ONLY_AFTER_TX=1") === false || strpos($deferIni, "SHORT_IDENT_INTERVAL=5") === false || strpos($deferIni, "CALLSIGN=FIXTURE") === false) {
+	fail("published ident-only-after-tx config did not keep minutes and the stored call sign");
+}
+echo "ok: config integer is not SvxLink event timing; IDENT_ONLY_AFTER_TX=1 is published in minutes\n";
 ' "$ROOT_DIR" "$audio" "$tmp" "$db" "$marker" "$hostfile" "$preview"
 
 export ORP_DB_PATH="$db"
@@ -265,7 +271,34 @@ foreach ($expect as $key => $value) {
 	}
 }
 ' "$db"
-echo "ok: settings page keeps the fixture call sign and tones and fills only missing thresholds"
+echo "ok: settings GET inserted missing CTCSS default rows and left call sign and tones unchanged"
+php -r '
+$db = new SQLite3($argv[1]);
+$stmt = $db->prepare("UPDATE settings SET value = :value WHERE keyID = \"rxCtcssOpenThresh\"");
+$stmt->bindValue(":value", "22", SQLITE3_TEXT);
+$stmt->execute();
+' "$db"
+curl -s -b "$jar" -o "$tmp/settings-again.html" "http://127.0.0.1:${port}/settings.php"
+grep -q 'value="22"' "$tmp/settings-again.html"
+php -r '
+$db = new SQLite3($argv[1]);
+$expect = array(
+	"callSign" => "FIXTURE",
+	"rxTone" => "100.0",
+	"txTone" => "88.5",
+	"rxCtcssOpenThresh" => "22",
+	"rxCtcssCloseThresh" => "5",
+	"txCtcssLevel" => "9",
+);
+foreach ($expect as $key => $value) {
+	$got = $db->querySingle("SELECT value FROM settings WHERE keyID=\"".$key."\"");
+	if ($got !== $value) {
+		fwrite(STDERR, "FAIL: second settings GET changed {$key} to " . var_export($got, true) . "\n");
+		exit(1);
+	}
+}
+' "$db"
+echo "ok: second settings GET is idempotent and preserves an existing CTCSS threshold"
 
 curl -s -b "$jar" -o "$tmp/modules.html" "http://127.0.0.1:${port}/modules.php"
 assert_complete modules "$tmp/modules.html" 'action="/modules.php"'

@@ -107,6 +107,7 @@ $tts_status = TTS::status_summary();
 
 							<legend>CTCSS Settings</legend>
 							<p>These are settings experimental. It is recommend that you leave these set to none and set your CTCSS tones in your radios.<br></p>
+							<p>Opening this page inserts rxCtcssOpenThresh=10, rxCtcssCloseThresh=5, and txCtcssLevel=9 only when that row is missing. A second open does not change an existing value. Call sign, RX tone, and TX tone are not written by that insert.</p>
 
 							  <div class="control-group">
 								<label class="control-label" for="rxTone">RX Tone (Hz)</label>

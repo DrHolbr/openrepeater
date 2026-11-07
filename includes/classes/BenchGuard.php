@@ -11,6 +11,7 @@ class BenchGuard {
 
 	const DEFAULT_MARKER = '/etc/openrepeater/bench-mode';
 	const DEFAULT_PREVIEW = '/var/lib/openrepeater/bench-preview';
+	const DEFAULT_MODE_FILE = '/etc/openrepeater/operating-mode';
 
 	private $markerPath;
 
@@ -46,13 +47,61 @@ class BenchGuard {
 		return $this->markerPath;
 	}
 
-	public function isBench() {
-		// The bench hostname is root-owned. Deleting the marker must not
-		// turn publishing and radio commands back on for orp-test.
-		if ($this->hostname() === 'orp-test') {
-			return true;
+	public function modeFilePath() {
+		$env = getenv('ORP_OPERATING_MODE_FILE');
+		if (self::testHarnessActive() && is_string($env) && $env !== '') {
+			return $env;
 		}
-		return is_file($this->markerPath);
+		return self::DEFAULT_MODE_FILE;
+	}
+
+	// A usable token is exactly bench or functional-test. A missing file is
+	// not a token. A symlink, a group-writable file, or a world-writable file
+	// is not a token. Outside the harness the file must be owned by root.
+	public function modeToken() {
+		$path = $this->modeFilePath();
+		clearstatcache(true, $path);
+		if (!is_file($path) || is_link($path)) {
+			return '';
+		}
+		$perms = fileperms($path);
+		if ($perms === false || ($perms & 0022) !== 0) {
+			return '';
+		}
+		if (!self::testHarnessActive()) {
+			$owner = fileowner($path);
+			if ($owner !== 0) {
+				return '';
+			}
+		}
+		$raw = file_get_contents($path);
+		if (!is_string($raw)) {
+			return '';
+		}
+		$token = trim($raw);
+		if ($token === 'bench' || $token === 'functional-test') {
+			return $token;
+		}
+		return '';
+	}
+
+	public function operatingMode() {
+		$token = $this->modeToken();
+		if ($token === 'functional-test') {
+			return 'functional-test';
+		}
+		if ($token === 'bench' || $this->hostname() === 'orp-test' || (is_file($this->markerPath) && !is_link($this->markerPath))) {
+			return 'bench';
+		}
+		return 'legacy';
+	}
+
+	public function isBench() {
+		// functional-test is still not legacy operation. Radio start, GPIO
+		// drive, and live publish stay blocked. Deleting the marker does not
+		// leave hostname orp-test. Only a trusted functional-test token
+		// changes the label, and it does not unmask a service.
+		return $this->operatingMode() !== 'legacy';
 	}
 
 	public function hostname() {
@@ -164,7 +213,7 @@ class BenchGuard {
 		if ($option === 'unmask') {
 			return false;
 		}
-		if (!$this->isBench()) {
+		if ($this->operatingMode() === 'legacy') {
 			return true;
 		}
 		$blocked = array(

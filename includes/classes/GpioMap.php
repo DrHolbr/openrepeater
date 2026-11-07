@@ -26,6 +26,8 @@ class GpioMap {
 				'class' => 'unresolved',
 				'bcm' => null,
 				'physical_pin' => null,
+				'chip_candidate' => null,
+				'line_offset_candidate' => null,
 			);
 		}
 		$n = (int) $digits;
@@ -35,12 +37,21 @@ class GpioMap {
 				'class' => 'bcm_header_candidate',
 				'bcm' => $n,
 				'physical_pin' => $map[$n],
+				// On the Pi 3B+ SoC, gpiochip0 is pinctrl-bcm2835 and its line
+				// offset equals the BCM number. This is not a reading from
+				// the running Pi and it is not a command to drive the line.
+				'chip_candidate' => 'gpiochip0',
+				'line_offset_candidate' => $n,
 			);
 		}
 		return array(
 			'class' => 'unresolved_sysfs_number',
 			'bcm' => null,
 			'physical_pin' => null,
+			// 496-507 are not line indexes on the 8-line raspberrypi-exp-gpio
+			// chip, and they are not gpiochip0 offsets. They stay unsupported.
+			'chip_candidate' => null,
+			'line_offset_candidate' => null,
 		);
 	}
 
@@ -67,6 +78,9 @@ class GpioMap {
 			'physical_pin' => $class['physical_pin'],
 			'libgpiod_chip' => null,
 			'libgpiod_offset' => null,
+			'chip_candidate' => $class['chip_candidate'],
+			'line_offset_candidate' => $class['line_offset_candidate'],
+			'output_supported' => false,
 			'drivable' => false,
 			'note' => $note,
 		);

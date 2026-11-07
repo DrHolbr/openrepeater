@@ -180,11 +180,22 @@ preview=/var/lib/openrepeater/bench-preview
 EOF
 bench_place_file "$marker_body" "$(p /etc/openrepeater/bench-mode)"
 rm -f "$marker_body"
+mode_file=$(p /etc/openrepeater/operating-mode)
+if [ "$(bench_lstat_kind "$mode_file")" = missing ]; then
+	mode_body=$(mktemp)
+	printf '%s\n' 'bench' > "$mode_body"
+	bench_place_file "$mode_body" "$mode_file"
+	rm -f "$mode_body"
+fi
 bench_chmod 755 "$(p /etc/openrepeater)"
 bench_chmod 755 "$(p /var/lib/openrepeater)"
 bench_chmod 755 "$(p /var/lib/openrepeater/bench-preview)"
 bench_chmod 755 "$(p /var/lib/openrepeater/db)"
 bench_chmod 644 "$(p /etc/openrepeater/bench-mode)"
+if [ -f "$(p /etc/openrepeater/operating-mode)" ] && [ ! -L "$(p /etc/openrepeater/operating-mode)" ]; then
+	bench_chmod 644 "$(p /etc/openrepeater/operating-mode)"
+	bench_chown root:root "$(p /etc/openrepeater/operating-mode)"
+fi
 bench_chown root:root "$(p /etc/openrepeater)"
 bench_chown root:root "$(p /etc/openrepeater/bench-mode)"
 bench_chown root:root "$(p /var/lib/openrepeater)"
@@ -342,6 +353,10 @@ bench_chmod 1770 "$(p /var/lib/openrepeater/db)"
 # Re-assert the marker after file publish. It stays root-owned and not web-writable.
 bench_chmod 755 "$(p /etc/openrepeater)"
 bench_chmod 644 "$(p /etc/openrepeater/bench-mode)"
+if [ -f "$(p /etc/openrepeater/operating-mode)" ] && [ ! -L "$(p /etc/openrepeater/operating-mode)" ]; then
+	bench_chmod 644 "$(p /etc/openrepeater/operating-mode)"
+	bench_chown root:root "$(p /etc/openrepeater/operating-mode)"
+fi
 bench_chown root:root "$(p /etc/openrepeater)"
 bench_chown root:root "$(p /etc/openrepeater/bench-mode)"
 
