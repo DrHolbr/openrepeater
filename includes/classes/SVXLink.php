@@ -13,6 +13,7 @@ class SVXLink {
 	private $links = array();
 	private $orpFileHeader;
 	private $publishFailed = false;
+	private $identificationGate = false;
     private $web_path = '/var/www/openrepeater/';	
 
 	public function __construct($settingsArray, $portsArray, $modulesArray) {
@@ -218,6 +219,7 @@ class SVXLink {
 	###############################################
 
 	public function build_logic_repeater($logicName,$curPort) {
+		$this->identificationGate = true;
 		$this->logics[] = $logicName; // Add this logic to list for Globals Section
 
 		$logic_array[$logicName] = [
@@ -228,46 +230,11 @@ class SVXLink {
 
 		$logic_array[$logicName] += $this->build_module_list();
 
+		$this->identificationGate = true;
 		$logic_array[$logicName] += [
-			'CALLSIGN' => $this->settingsArray['callSign']
+			'CALLSIGN' => trim((string)(isset($this->settingsArray['callSign']) ? $this->settingsArray['callSign'] : ''))
 		];
-
-		# Short ID
-		if ($this->settingsArray['ID_Short_Mode'] == 'disabled') {
-			$logic_array[$logicName] += [
-				'#SHORT_IDENT_INTERVAL' => '0'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'SHORT_IDENT_INTERVAL' => $this->settingsArray['ID_Short_IntervalMin']
-			];			
-		}
-
-		# Identify Only After TX
-		# When enabled (and short ID is active), the node only identifies if there has
-		# been a recent transmission, rather than every time SHORT_IDENT_INTERVAL
-		# expires. 0 = off, 1 = on. Does not affect LONG_IDENT_INTERVAL.
-		if (($this->settingsArray['ID_Short_IdentOnlyAfterTX'] ?? 'False') == 'True' && $this->settingsArray['ID_Short_Mode'] != 'disabled') {
-			$logic_array[$logicName] += [
-				'IDENT_ONLY_AFTER_TX' => '1'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'IDENT_ONLY_AFTER_TX' => '0'
-			];
-		}
-
-		#Long ID
-		if ($this->settingsArray['ID_Long_Mode'] == 'disabled') {
-			$logic_array[$logicName] += [
-				'#LONG_IDENT_INTERVAL' => '0'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'LONG_IDENT_INTERVAL' => $this->settingsArray['ID_Long_IntervalMin']
-			];			
-		}
-
+		$logic_array[$logicName] += $this->identificationIntervalKeys();
 
 		$logic_array[$logicName] += [
 			'EVENT_HANDLER' => '/usr/share/svxlink/events.tcl',
@@ -311,6 +278,7 @@ class SVXLink {
 	###############################################
 
 	public function build_logic_simplex($logicName,$curPort,$modules=false) {
+		$this->identificationGate = true;
 		$this->logics[] = $logicName; // Add this logic to list for Globals Section
 
 		$logic_array[$logicName] = [
@@ -323,45 +291,11 @@ class SVXLink {
 			$logic_array[$logicName] += $this->build_module_list();
 		}
 
+		$this->identificationGate = true;
 		$logic_array[$logicName] += [
-			'CALLSIGN' => $this->settingsArray['callSign']
+			'CALLSIGN' => trim((string)(isset($this->settingsArray['callSign']) ? $this->settingsArray['callSign'] : ''))
 		];
-
-		# Short ID
-		if ($this->settingsArray['ID_Short_Mode'] == 'disabled') {
-			$logic_array[$logicName] += [
-				'#SHORT_IDENT_INTERVAL' => '0'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'SHORT_IDENT_INTERVAL' => $this->settingsArray['ID_Short_IntervalMin']
-			];			
-		}
-
-		# Identify Only After TX
-		# When enabled (and short ID is active), the node only identifies if there has
-		# been a recent transmission, rather than every time SHORT_IDENT_INTERVAL
-		# expires. 0 = off, 1 = on. Does not affect LONG_IDENT_INTERVAL.
-		if (($this->settingsArray['ID_Short_IdentOnlyAfterTX'] ?? 'False') == 'True' && $this->settingsArray['ID_Short_Mode'] != 'disabled') {
-			$logic_array[$logicName] += [
-				'IDENT_ONLY_AFTER_TX' => '1'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'IDENT_ONLY_AFTER_TX' => '0'
-			];
-		}
-
-		#Long ID
-		if ($this->settingsArray['ID_Long_Mode'] == 'disabled') {
-			$logic_array[$logicName] += [
-				'#LONG_IDENT_INTERVAL' => '0'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'LONG_IDENT_INTERVAL' => $this->settingsArray['ID_Long_IntervalMin']
-			];			
-		}
+		$logic_array[$logicName] += $this->identificationIntervalKeys();
 
 		$logic_array[$logicName] += [
 			'EVENT_HANDLER' => '/usr/share/svxlink/events.tcl',
@@ -502,12 +436,168 @@ class SVXLink {
 		return $this->publishFailed;
 	}
 
+	// Periodic identification gaps for an active communication, in seconds.
+	// This is the schedule written into the configuration. It is not a claim
+	// that the controller transmitted, and it does not model an end-of-
+	// communication event. 47 CFR 97.119(a) also requires identification at
+	// the end of each communication; that invocation is not executed here.
+	public static function activeCommunicationIdGaps($intervalMinutes, $communicationSeconds) {
+		$step = (int)$intervalMinutes * 60;
+		if ($step < 60 || $communicationSeconds < 1) {
+			return array();
+		}
+		$gaps = array();
+		$elapsed = 0;
+		while ($elapsed + $step <= $communicationSeconds) {
+			$gaps[] = $step;
+			$elapsed += $step;
+		}
+		return $gaps;
+	}
+
+	public function identificationProblems() {
+		$settings = $this->settingsArray;
+		$problems = array();
+		$call = trim((string)(isset($settings['callSign']) ? $settings['callSign'] : ''));
+		if ($call === '') {
+			$problems[] = 'Station call sign is empty. 47 CFR 97.119(a) requires the assigned station call sign. No call sign was substituted.';
+		}
+		$shortMode = isset($settings['ID_Short_Mode']) ? (string)$settings['ID_Short_Mode'] : '';
+		$longMode = isset($settings['ID_Long_Mode']) ? (string)$settings['ID_Long_Mode'] : '';
+		$shortOn = $this->identModeEmits($shortMode);
+		$longOn = $this->identModeEmits($longMode);
+		if (!$shortOn && !$longOn) {
+			$problems[] = 'Short and long identification are both disabled, so no station identification procedure is configured.';
+		}
+		$shortCovers = $shortOn && $this->intervalWithinTenMinutes(isset($settings['ID_Short_IntervalMin']) ? $settings['ID_Short_IntervalMin'] : '');
+		$longCovers = $longOn && $this->intervalWithinTenMinutes(isset($settings['ID_Long_IntervalMin']) ? $settings['ID_Long_IntervalMin'] : '');
+		if ($shortOn && !$shortCovers) {
+			$problems[] = 'The short identification interval is not a whole number of minutes from 1 through 10. 47 CFR 97.119(a) requires identification at least every 10 minutes during a communication. The stored interval was not changed.';
+		}
+		if (!$shortCovers && $longOn && !$longCovers) {
+			$problems[] = 'The only enabled identification interval is longer than 10 minutes. 47 CFR 97.119(a) requires identification at least every 10 minutes during a communication. The stored interval was not changed.';
+		}
+		if (!$shortOn && !$longOn) {
+			// already recorded
+		} elseif (!$shortCovers && !$longCovers && ($shortOn || $longOn)) {
+			// recorded above when the enabled mode has a bad interval
+		}
+		if ((isset($settings['ID_Short_IdentOnlyAfterTX']) ? $settings['ID_Short_IdentOnlyAfterTX'] : 'False') === 'True') {
+			$problems[] = 'Identify-only-after-transmit defers identification until after a transmission. A communication can continue longer than 10 minutes, so that schedule is not published. 47 CFR 97.119(a). The stored setting was not changed.';
+		}
+		if ($this->repeaterPathUsesMorse() && !$this->morseSpeedAllowed()) {
+			$problems[] = 'Automatic Morse identification is faster than 20 words per minute. 47 CFR 97.119(b)(1) limits an automatic CW identification device to 20 WPM. The stored speed was not changed.';
+		}
+		if ($this->customIdentNeedsCallsignProof()) {
+			$problems[] = 'A custom identification clip is selected and automatic Morse backup is faster than 20 WPM, so the assigned call sign is not known to be in the identification. 47 CFR 97.119(a) and (b)(1). The stored clip and speed were not changed.';
+		}
+		return $problems;
+	}
+
+	public function coveringIdentificationIntervalMinutes() {
+		$settings = $this->settingsArray;
+		$shortMode = isset($settings['ID_Short_Mode']) ? (string)$settings['ID_Short_Mode'] : '';
+		$longMode = isset($settings['ID_Long_Mode']) ? (string)$settings['ID_Long_Mode'] : '';
+		if ($this->identModeEmits($shortMode) && $this->intervalWithinTenMinutes(isset($settings['ID_Short_IntervalMin']) ? $settings['ID_Short_IntervalMin'] : '')) {
+			return (int)$settings['ID_Short_IntervalMin'];
+		}
+		if ($this->identModeEmits($longMode) && $this->intervalWithinTenMinutes(isset($settings['ID_Long_IntervalMin']) ? $settings['ID_Long_IntervalMin'] : '')) {
+			return (int)$settings['ID_Long_IntervalMin'];
+		}
+		return null;
+	}
+
+	private function identificationIntervalKeys() {
+		$settings = $this->settingsArray;
+		$shortMode = isset($settings['ID_Short_Mode']) ? (string)$settings['ID_Short_Mode'] : '';
+		$longMode = isset($settings['ID_Long_Mode']) ? (string)$settings['ID_Long_Mode'] : '';
+		$keys = array(
+			'SHORT_IDENT_INTERVAL' => '0',
+			'LONG_IDENT_INTERVAL' => '0',
+			'IDENT_ONLY_AFTER_TX' => '0'
+		);
+		if ($this->identModeEmits($shortMode) && $this->intervalWithinTenMinutes(isset($settings['ID_Short_IntervalMin']) ? $settings['ID_Short_IntervalMin'] : '')) {
+			$keys['SHORT_IDENT_INTERVAL'] = (string)(int)$settings['ID_Short_IntervalMin'];
+		}
+		if ($this->identModeEmits($longMode) && preg_match('/^[1-9][0-9]*$/', (string)(isset($settings['ID_Long_IntervalMin']) ? $settings['ID_Long_IntervalMin'] : ''))) {
+			$keys['LONG_IDENT_INTERVAL'] = (string)(int)$settings['ID_Long_IntervalMin'];
+		}
+		return $keys;
+	}
+
+	private function identModeEmits($mode) {
+		return $mode === 'morse' || $mode === 'voice' || $mode === 'custom';
+	}
+
+	private function intervalWithinTenMinutes($value) {
+		$text = (string)$value;
+		if (!preg_match('/^[1-9][0-9]*$/', $text)) {
+			return false;
+		}
+		$minutes = (int)$text;
+		return $minutes >= 1 && $minutes <= 10;
+	}
+
+	private function morseSpeedAllowed() {
+		$wpm = (string)(isset($this->settingsArray['ID_Morse_WPM']) ? $this->settingsArray['ID_Morse_WPM'] : '');
+		if (!preg_match('/^[1-9][0-9]*$/', $wpm)) {
+			return false;
+		}
+		$speed = (int)$wpm;
+		return $speed >= 1 && $speed <= 20;
+	}
+
+	private function repeaterPathUsesMorse() {
+		$settings = $this->settingsArray;
+		foreach (array('ID_Short_Mode', 'ID_Long_Mode') as $key) {
+			$mode = isset($settings[$key]) ? (string)$settings[$key] : '';
+			if ($mode === 'morse') {
+				return true;
+			}
+			$appendKey = $key === 'ID_Short_Mode' ? 'ID_Short_AppendMorse' : 'ID_Long_AppendMorse';
+			if (($mode === 'voice' || $mode === 'custom') && (isset($settings[$appendKey]) ? $settings[$appendKey] : '') === 'True') {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private function customIdentNeedsCallsignProof() {
+		if ($this->morseSpeedAllowed()) {
+			return false;
+		}
+		$settings = $this->settingsArray;
+		foreach (array('ID_Short_Mode', 'ID_Long_Mode') as $key) {
+			if ((isset($settings[$key]) ? $settings[$key] : '') === 'custom') {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public function customIdentificationAvailable($settingKey) {
+		$name = isset($this->settingsArray[$settingKey]) ? (string)$this->settingsArray[$settingKey] : '';
+		if ($name === '') {
+			return false;
+		}
+		$audio = new AudioFiles();
+		foreach ($audio->get_audio_files('identification') as $file) {
+			if ($file['fileName'] === $name) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private function publishFailure() {
 		$this->publishFailed = true;
 		return false;
 	}
 
 	public function write_config($data, $filename, $format = 'text') {
+		if ($this->identificationGate && count($this->identificationProblems()) > 0) {
+			return $this->publishFailure();
+		}
 		if ($data === false || $data === null) {
 			return $this->publishFailure();
 		}

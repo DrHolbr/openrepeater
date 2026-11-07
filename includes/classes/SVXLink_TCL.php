@@ -101,28 +101,36 @@ class SVXLink_TCL {
 		
 		    case "morse":
 		    	// Short ID - MORSE
-				$proc_content .= $this->buildMorseID();
+				if ($this->morseSpeedAllowed()) {
+					$proc_content .= $this->buildMorseID();
+				}
 		        break;
 		
 		    case "voice":
 		    	// Short ID - VOICE ID
 				$proc_content .= $this->buildVoiceID();
-				if ($this->settingsArray['ID_Short_AppendMorse'] == 'True') {
+				if ($this->settingsArray['ID_Short_AppendMorse'] == 'True' && $this->morseSpeedAllowed()) {
 					$proc_content .= $this->buildMorseID();
 				}
 		        break;
 		
 		    case "custom":
-		    	// Short ID - CUSTOM ID
-				$proc_content .= $this->buildCustomID($this->settingsArray['ID_Short_CustomFile']);
-				if ($this->settingsArray['ID_Short_AppendMorse'] == 'True') {
+		    	// Short ID - CUSTOM ID. The clip is not proof the assigned
+		    	// call sign is spoken, so legal-speed Morse is also emitted
+		    	// when the publish checks have allowed it.
+				if ($this->settingsHost()->customIdentificationAvailable('ID_Short_CustomFile')) {
+					$proc_content .= $this->buildCustomID($this->settingsArray['ID_Short_CustomFile']);
+				}
+				if ($this->morseSpeedAllowed()) {
 					$proc_content .= $this->buildMorseID();
 				}
 		        break;
 		}
 
 		$proc_content .= "\n\t    } else {\n";
-		$proc_content .= $this->buildMorseID();
+		if ($this->morseSpeedAllowed()) {
+			$proc_content .= $this->buildMorseID();
+		}
 		$proc_content .= "\n\t    }\n";
 
 		$proc_footer = "\n\t}\n";
@@ -161,7 +169,9 @@ class SVXLink_TCL {
 		
 		    case "morse":
 		    	// Long ID - MORSE
-				$proc_content .= $this->buildMorseID();
+				if ($this->morseSpeedAllowed()) {
+					$proc_content .= $this->buildMorseID();
+				}
 		        break;
 		
 		    case "voice":
@@ -173,28 +183,33 @@ class SVXLink_TCL {
 				if ($this->settingsArray['ID_Long_AppendTone'] == 'True') {
 					// FUTURE - Option to announce CTCSS / PL Tone;
 				}
-				if ($this->settingsArray['ID_Long_AppendMorse'] == 'True') {
+				if ($this->settingsArray['ID_Long_AppendMorse'] == 'True' && $this->morseSpeedAllowed()) {
 					$proc_content .= $this->buildMorseID();
-				}		
+				}
 		        break;
 		
 		    case "custom":
-		    	// Long ID - CUSTOM ID
-				$proc_content .= $this->buildCustomID($this->settingsArray['ID_Long_CustomFile']);
+		    	// Long ID - CUSTOM ID. Morse carries the assigned call sign
+		    	// when a custom clip is not itself the call sign.
+				if ($this->settingsHost()->customIdentificationAvailable('ID_Long_CustomFile')) {
+					$proc_content .= $this->buildCustomID($this->settingsArray['ID_Long_CustomFile']);
+				}
 				if ($this->settingsArray['ID_Long_AppendTime'] == 'True') {
 					$proc_content .= $this->buildTime();
 				}
 				if ($this->settingsArray['ID_Long_AppendTone'] == 'True') {
 					// FUTURE - Option to announce CTCSS / PL Tone;
 				}
-				if ($this->settingsArray['ID_Long_AppendMorse'] == 'True') {
+				if ($this->morseSpeedAllowed()) {
 					$proc_content .= $this->buildMorseID();
-				}		
+				}
 		        break;
 		}
 
 		$proc_content .= "\n\t    } else {\n";
-		$proc_content .= $this->buildMorseID();
+		if ($this->morseSpeedAllowed()) {
+			$proc_content .= $this->buildMorseID();
+		}
 		$proc_content .= "\n\t    }\n";
 
 		$proc_footer = "\n\t}\n";
@@ -207,6 +222,19 @@ class SVXLink_TCL {
 	###############################################
 	# Identification Functions
 	###############################################
+
+	private function morseSpeedAllowed() {
+		$wpm = (string)(isset($this->settingsArray['ID_Morse_WPM']) ? $this->settingsArray['ID_Morse_WPM'] : '');
+		if (!preg_match('/^[1-9][0-9]*$/', $wpm)) {
+			return false;
+		}
+		$speed = (int)$wpm;
+		return $speed >= 1 && $speed <= 20;
+	}
+
+	private function settingsHost() {
+		return new SVXLink($this->settingsArray, array(), array());
+	}
 
 	private function buildMorseID() {
 		$morseID = '

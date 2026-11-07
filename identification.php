@@ -50,7 +50,22 @@ include('includes/header.php');
 
 			<?php if (isset($alert)) { echo $alert; } ?>
 
-			<?php if (!$settings['callSign']) { ?><div class="alert alert-error"><button type="button" class="close" data-dismiss="alert">×</button><strong>Oops!</strong> It's going to be a little hard to send identification without a callsign defined. Please <a href="settings.php">set it here</a>.</div><?php } else { ?>
+			<?php
+				$idCheck = new SVXLink($settings, array(), array());
+				$idProblems = $idCheck->identificationProblems();
+			?>
+			<?php if ($idProblems) { ?>
+			<div class="alert alert-error" id="identification_problems">
+				<strong>Identification is not ready to publish.</strong>
+				<ul>
+				<?php foreach ($idProblems as $idProblem) { ?>
+					<li><?php echo htmlspecialchars($idProblem); ?></li>
+				<?php } ?>
+				</ul>
+				<p>Stored call sign, Morse speed, intervals, and tones were not changed.</p>
+			</div>
+			<?php } ?>
+			<?php if (!$settings['callSign']) { ?><div class="alert alert-error"><button type="button" class="close" data-dismiss="alert">×</button><strong>Oops!</strong> It's going to be a little hard to send identification without a callsign defined. Please <a href="settings.php">set it here</a>. No other call sign is filled in.</div><?php } else { ?>
 
 
 			<form class="form-inline" role="form" action="functions/ajax_db_update.php" method="post" id="short_ID_settings">
@@ -290,7 +305,7 @@ include('includes/header.php');
 							<?php echo strtoupper($settings['callSign']); ?><strong>/RPT</strong></label>							
 
 							<hr>
-							<p>Set the speed (WPM) and tone of ALL morse code identification.</p>
+							<p>Set the speed (WPM) and tone of ALL morse code identification. Automatic Morse identification faster than 20 WPM is not published (47 CFR 97.119(b)(1)). Phone identification uses the English speech files for the station call sign (47 CFR 97.119(b)(2)).</p>
 
 							<select name="ID_Morse_WPM">
 								<option value="10" <?php if ($settings['ID_Morse_WPM'] == '10') { echo "selected"; } ?>>10 WPM</option>

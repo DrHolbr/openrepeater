@@ -83,7 +83,7 @@ $ModulesClass = new Modules();
 			</div><!--/row-->
 
 			<!-- Modal - UPLOAD DIALOG -->
-			<form action="<?php htmlspecialchars($_SERVER["PHP_SELF"]); ?>" method="post" enctype="multipart/form-data">
+			<form action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]); ?>" method="post" enctype="multipart/form-data">
 			<div class="modal fade" id="uploadFile" tabindex="-1" role="dialog" aria-labelledby="myModalLabel" aria-hidden="true">
 			  <div class="modal-dialog">
 			    <div class="modal-content">
@@ -106,7 +106,7 @@ $ModulesClass = new Modules();
 
 
 			<!-- Modal - DELETE DIALOG -->
-			<form action="<?php htmlspecialchars($_SERVER["PHP_SELF"]); ?>" method="post">
+			<form action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]); ?>" method="post">
 			<div class="modal fade" id="deleteModule" tabindex="-1" role="dialog" aria-labelledby="myModalLabel" aria-hidden="true">
 			  <div class="modal-dialog">
 			    <div class="modal-content">

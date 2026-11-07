@@ -18,6 +18,12 @@ $customJS = "page-settings.js"; // "file1.js, file2.js, ... "
 // include_once("includes/get_ctcss.php");
 
 include('includes/header.php');
+// Insert only when the row is missing. An existing call sign, tone, or
+// threshold is left as stored.
+$Database->ensure_setting('rxCtcssOpenThresh', '10');
+$Database->ensure_setting('rxCtcssCloseThresh', '5');
+$Database->ensure_setting('txCtcssLevel', '9');
+$settings = $Database->get_settings();
 $ctcss = $Database->get_ctcss();
 
 // TTS settings (bootstraps tts_* rows if missing)
@@ -131,7 +137,7 @@ $tts_status = TTS::status_summary();
 							  <div class="control-group" id="ctcss_rx_thresholds">
 								<label class="control-label" for="rxCtcssOpenThresh">RX CTCSS Open Threshold</label>
 								<div class="controls">
-								  <input type="number" id="rxCtcssOpenThresh" name="rxCtcssOpenThresh" min="1" max="50" value="<?php echo $settings['rxCtcssOpenThresh'] ? $settings['rxCtcssOpenThresh'] : '10'; ?>">
+								  <input type="number" id="rxCtcssOpenThresh" name="rxCtcssOpenThresh" min="1" max="50" value="<?php echo htmlspecialchars((isset($settings['rxCtcssOpenThresh']) && $settings['rxCtcssOpenThresh'] !== '') ? $settings['rxCtcssOpenThresh'] : '10'); ?>">
 								  <span class="help-inline">Sensitivity to open squelch on CTCSS (1–50). Higher = more sensitive. Default: 10.</span>
 								</div>
 							  </div>
@@ -139,7 +145,7 @@ $tts_status = TTS::status_summary();
 							  <div class="control-group" id="ctcss_rx_close_threshold">
 								<label class="control-label" for="rxCtcssCloseThresh">RX CTCSS Close Threshold</label>
 								<div class="controls">
-								  <input type="number" id="rxCtcssCloseThresh" name="rxCtcssCloseThresh" min="1" max="50" value="<?php echo $settings['rxCtcssCloseThresh'] ? $settings['rxCtcssCloseThresh'] : '5'; ?>">
+								  <input type="number" id="rxCtcssCloseThresh" name="rxCtcssCloseThresh" min="1" max="50" value="<?php echo htmlspecialchars((isset($settings['rxCtcssCloseThresh']) && $settings['rxCtcssCloseThresh'] !== '') ? $settings['rxCtcssCloseThresh'] : '5'); ?>">
 								  <span class="help-inline">Sensitivity to close squelch when CTCSS lost (1–50). Higher = more sensitive. Default: 5.</span>
 								</div>
 							  </div>
@@ -173,7 +179,7 @@ $tts_status = TTS::status_summary();
 								  <div class="control-group" id="ctcss_level_section">
 									<label class="control-label" for="txCtcssLevel">TX CTCSS Level</label>
 									<div class="controls">
-									  <input type="number" id="txCtcssLevel" name="txCtcssLevel" min="1" max="20" value="<?php echo $settings['txCtcssLevel'] ? $settings['txCtcssLevel'] : '9'; ?>">
+									  <input type="number" id="txCtcssLevel" name="txCtcssLevel" min="1" max="20" value="<?php echo htmlspecialchars((isset($settings['txCtcssLevel']) && $settings['txCtcssLevel'] !== '') ? $settings['txCtcssLevel'] : '9'); ?>">
 									  <span class="help-inline">Level of the TX CTCSS tone relative to audio (1&ndash;20). Lower = quieter tone. Default: 9.</span>
 									</div>
 								  </div>
