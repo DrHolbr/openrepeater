@@ -113,11 +113,7 @@ class Modules {
 		##########
 
 		$serializedSettings = serialize($settings_array);
-		$sql = "UPDATE modules SET moduleOptions = '$serializedSettings' WHERE moduleKey = '$moduleID';";
-		$insert_result = $this->Database->insert($sql);
-
-		if ($insert_result) { 
-			$this->Database->set_update_flag(true);
+		if ($this->Database->write_module_options($moduleID, $serializedSettings) === true) {
 			return array(
 				'msgType' => 'success',
 				'msgText' => 'Successfully saved module settings.'
@@ -145,10 +141,13 @@ class Modules {
 		# REWRITE PENDING
 		# Currently Redirects to Database Class
 		# Plan to pull logic form those classes once everything points here
-		$this->Database->active_module($id);
-
-		$this->initialize_module($svxlink_name);		
-		$this->Database->set_update_flag(true);
+		if ($this->Database->set_module_enabled($id, 1) !== true) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The module was not activated. The previous row was left unchanged.'
+			);
+		}
+		$this->initialize_module($svxlink_name);
 
 		return array(
 			'msgType' => 'success',
@@ -166,8 +165,12 @@ class Modules {
 		# REWRITE PENDING
 		# Currently Redirects to Database Class
 		# Plan to pull logic form those classes once everything points here
-		$this->Database->deactive_module($id);
-		$this->Database->set_update_flag(true);
+		if ($this->Database->set_module_enabled($id, 0) !== true) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The module was not deactivated. The previous row was left unchanged.'
+			);
+		}
 
 		return array(
 			'msgType' => 'success',
@@ -349,6 +352,13 @@ class Modules {
 	public function initialize_module($svxlink_name, $enabled = 0) {
 		$svxlink_name = trim($svxlink_name);
 
+		if ($this->Database->exists('modules','svxlinkName',$svxlink_name) == false) {
+			$nextId = $this->find_next_svxlink_id();
+			if ($this->Database->insert_module_row($svxlink_name, $enabled, $nextId) !== true) {
+				return false;
+			}
+		}
+
 		// Preceed only if module is not listed as a core module
 		if ( !in_array($svxlink_name, $this->core_modules) ) {
 
@@ -397,14 +407,6 @@ class Modules {
 		}
 
 
-		### Created DB record in modules table, if it doesn't exist, and set as deactive ###
-
-		if ($this->Database->exists('modules','svxlinkName',$svxlink_name) == false) { 
-			$sql = 'INSERT INTO "modules" ("moduleKey","moduleEnabled","svxlinkName","svxlinkID") VALUES (NULL,'.$enabled.',\''.$svxlink_name.'\',\''.$this->find_next_svxlink_id().'\')';
-			$insert_result = $this->Database->insert($sql);
-		}
-
-	
 		### If no options are set in DB, check for default settings file and load if one exists ###
 
 		$sql = 'SELECT * FROM "modules" WHERE "svxlinkName" = \''.$svxlink_name.'\';';
@@ -414,6 +416,7 @@ class Modules {
 
 		// An uploaded default_settings.php is not included. The file can sit in
 		// the module directory, but this request does not execute it.
+		return true;
 
 	}
 
@@ -475,7 +478,15 @@ class Modules {
 		}
 		
 		# Initiate Install and set module as inactive
-		$this->initialize_module($svxlink_name, 0);
+		if ($this->initialize_module($svxlink_name, 0) !== true) {
+			if (is_dir($new_module_path) && !is_link($new_module_path)) {
+				rename($new_module_path, $tempModulePath);
+			}
+			if (is_dir($tempModulePath)) {
+				exec('rm ' . escapeshellarg($tempModulePath) . ' -R');
+			}
+			return false;
+		}
 
 		# Final Cleanup
 		if (file_exists($tempModulePath)) { exec('rm ' . $tempModulePath. ' -R'); }

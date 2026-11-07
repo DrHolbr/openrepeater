@@ -1,0 +1,243 @@
+<?php
+// The new prepared writers must report a failed execute or commit and leave the
+// previous rows in place. This uses a copy of the stock database, not the Pi.
+if ($argc < 2) {
+	fwrite(STDERR, "usage: db_write_boundary_test.php root\n");
+	exit(1);
+}
+$root = $argv[1];
+require_once $root . '/includes/classes/Database.php';
+
+function fail($message) {
+	fwrite(STDERR, "FAIL: $message\n");
+	exit(1);
+}
+function snap($path) {
+	$db = new SQLite3($path, SQLITE3_OPEN_READONLY);
+	$db->busyTimeout(1000);
+	$out = array('settings' => array(), 'ports' => array(), 'gpio' => array(), 'flags' => array());
+	$result = $db->query('SELECT keyID, value FROM settings ORDER BY keyID');
+	while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+		$out['settings'][$row['keyID']] = $row['value'];
+	}
+	$result = $db->query('SELECT portNum, portLabel, rxGPIO, txGPIO FROM ports ORDER BY portNum');
+	while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+		$out['ports'][] = $row['portNum'] . ':' . $row['portLabel'] . ':' . $row['rxGPIO'] . ':' . $row['txGPIO'];
+	}
+	$result = $db->query('SELECT gpio_num, type FROM gpio_pins ORDER BY gpio_num');
+	while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+		$out['gpio'][] = $row['gpio_num'] . ':' . $row['type'];
+	}
+	$result = $db->query('SELECT keyID, value FROM system_flags ORDER BY keyID');
+	while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+		$out['flags'][$row['keyID']] = $row['value'];
+	}
+	$db->close();
+	return $out;
+}
+function hold_read_lock($path) {
+	$db = new SQLite3($path);
+	$db->busyTimeout(0);
+	if ($db->exec('BEGIN') === false) {
+		fail('the test could not hold a read lock');
+	}
+	$result = $db->query('SELECT keyID FROM settings LIMIT 1');
+	if ($result === false || $result->fetchArray() === false) {
+		fail('the test could not hold a read lock');
+	}
+	return $db;
+}
+function port_row($label, $rx, $tx) {
+	return array(
+		'portLabel' => $label,
+		'rxMode' => 'gpio',
+		'rxGPIO' => (string) $rx,
+		'txGPIO' => (string) $tx,
+		'rxAudioDev' => 'alsa:plughw:0|0',
+		'txAudioDev' => 'alsa:plughw:0|0',
+		'rxGPIO_active' => 'low',
+		'txGPIO_active' => 'high',
+	);
+}
+
+$copy = sys_get_temp_dir() . '/orp-write-boundary-' . getmypid() . '.db';
+if (!copy($root . '/install/sql/openrepeater.db', $copy)) {
+	fail('could not copy the stock database');
+}
+chmod($copy, 0644);
+putenv('ORP_DB_PATH=' . $copy);
+putenv('ORP_FLAG_STORE=sqlite');
+$db = new Database();
+if ($db->update_existing_settings(array('callSign' => 'KEEPME')) !== true) {
+	fail('a normal settings write did not succeed');
+}
+if (snap($copy)['settings']['callSign'] !== 'KEEPME') {
+	fail('a normal settings write did not store the value');
+}
+echo "ok: a normal settings write commits\n";
+
+$before = snap($copy);
+$locked = hold_read_lock($copy);
+$wrote = $db->update_existing_settings(array('callSign' => 'LOCKED'));
+$caller = $wrote === true ? 'updated' : 'not-written';
+$locked->exec('ROLLBACK');
+$locked->close();
+if ($wrote === true || $caller !== 'not-written') {
+	fail('a locked commit was reported as success');
+}
+if (snap($copy) != $before) {
+	fail('a locked commit changed rows');
+}
+echo "ok: a locked COMMIT returns not-written and leaves settings unchanged\n";
+
+$before = snap($copy);
+$locked = hold_read_lock($copy);
+$wrote = $db->replace_port_form(array(port_row('SHOULD-NOT', '11', '12')));
+$caller = $wrote === true ? 'updated' : 'not-written';
+$locked->exec('ROLLBACK');
+$locked->close();
+if ($wrote === true || $caller !== 'not-written') {
+	fail('a locked port replace was reported as success');
+}
+if (snap($copy) != $before) {
+	fail('a locked port replace changed rows');
+}
+echo "ok: a locked port replace returns not-written and leaves ports unchanged\n";
+
+chmod($copy, 0444);
+$before = snap($copy);
+$wrote = $db->update_existing_settings(array('callSign' => 'RO'));
+chmod($copy, 0644);
+if ($wrote === true) {
+	fail('a read-only database reported a settings write');
+}
+if (snap($copy) != $before) {
+	fail('a read-only settings write changed rows');
+}
+echo "ok: a read-only database refuses the settings write\n";
+
+$writable = new SQLite3($copy);
+$writable->exec("CREATE TRIGGER settings_abort_tail BEFORE UPDATE ON settings WHEN NEW.keyID = 'txTailValueSec' AND NEW.value = 'ABORTME' BEGIN SELECT RAISE(ABORT, 'fixture abort'); END;");
+$writable->close();
+$before = snap($copy);
+$wrote = $db->update_existing_settings(array('callSign' => 'PARTIAL', 'txTailValueSec' => 'ABORTME'));
+if ($wrote === true) {
+	fail('a constraint abort was reported as success');
+}
+$after = snap($copy);
+if ($after['settings']['callSign'] !== 'KEEPME' || $after['settings']['txTailValueSec'] !== $before['settings']['txTailValueSec']) {
+	fail('a failed settings batch left a partial call sign write');
+}
+echo "ok: a constraint abort rolls back the whole settings batch\n";
+
+$before = snap($copy);
+$wrote = $db->replace_port_form(array(
+	port_row('ONE', '11', '12'),
+	port_row('TWO', '11', '13'),
+));
+if ($wrote === true) {
+	fail('a duplicate gpio constraint was reported as success');
+}
+if (snap($copy)['ports'] !== $before['ports'] || snap($copy)['gpio'] !== $before['gpio']) {
+	fail('a duplicate gpio constraint left a partial port replace');
+}
+echo "ok: a port constraint rolls back the delete and the inserts\n";
+
+function module_rows($path) {
+	$db = new SQLite3($path, SQLITE3_OPEN_READONLY);
+	$db->busyTimeout(1000);
+	$rows = array();
+	$result = $db->query('SELECT moduleKey, moduleEnabled, svxlinkName, IFNULL(moduleOptions, "") AS moduleOptions FROM modules ORDER BY moduleKey');
+	while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+		$rows[] = $row['moduleKey'] . ':' . $row['moduleEnabled'] . ':' . $row['svxlinkName'] . ':' . $row['moduleOptions'];
+	}
+	$db->close();
+	return $rows;
+}
+
+$beforeModules = module_rows($copy);
+$locked = hold_read_lock($copy);
+$wrote = $db->set_module_enabled('1', 0);
+$caller = $wrote === true ? 'activated' : 'not-written';
+$locked->exec('ROLLBACK');
+$locked->close();
+if ($wrote === true || $caller !== 'not-written' || module_rows($copy) !== $beforeModules) {
+	fail('a locked module enable was reported as success or changed a row');
+}
+echo "ok: a locked module enable returns not-written and leaves the row unchanged\n";
+
+$beforeModules = module_rows($copy);
+$locked = hold_read_lock($copy);
+$wrote = $db->write_module_options('1', 'LOCKED');
+$caller = $wrote === true ? 'saved' : 'not-written';
+$locked->exec('ROLLBACK');
+$locked->close();
+if ($wrote === true || $caller !== 'not-written' || module_rows($copy) !== $beforeModules) {
+	fail('a locked module options write was reported as success or changed a row');
+}
+echo "ok: a locked module options write returns not-written and leaves the row unchanged\n";
+
+$writable = new SQLite3($copy);
+$writable->exec("CREATE TRIGGER modules_abort_options BEFORE UPDATE ON modules WHEN NEW.moduleOptions = 'ABORTME' BEGIN SELECT RAISE(ABORT, 'fixture abort'); END;");
+$writable->close();
+$beforeModules = module_rows($copy);
+$wrote = $db->write_module_options('1', 'ABORTME');
+$caller = $wrote === true ? 'saved' : 'not-written';
+if ($wrote === true || $caller !== 'not-written' || module_rows($copy) !== $beforeModules) {
+	fail('a module constraint abort was reported as success or left a partial options write');
+}
+echo "ok: a module constraint abort leaves the previous options unchanged\n";
+
+if ($db->write_module_options('1', 'kept-options') !== true || $db->set_module_enabled('1', 0) !== true) {
+	fail('a normal module write did not succeed');
+}
+$saved = module_rows($copy);
+$saw = false;
+foreach ($saved as $row) {
+	if (strpos($row, '1:0:') === 0 && substr($row, -12) === 'kept-options') {
+		$saw = true;
+	}
+}
+if (!$saw) {
+	fail('a normal module write did not store the enabled bit and options');
+}
+echo "ok: a normal module write commits\n";
+
+$dump = sys_get_temp_dir() . '/orp-write-boundary-' . getmypid() . '.sql';
+if ($db->db_export(array('settings', 'gpio_pins', 'ports', 'modules'), $dump) !== true) {
+	fail('a normal backup export did not succeed');
+}
+$exported = snap($copy);
+if ($db->update_existing_settings(array('callSign' => 'AFTEREXPORT')) !== true) {
+	fail('could not change the database before the restore check');
+}
+if ($db->db_import(array('settings', 'gpio_pins', 'ports', 'modules'), $dump) !== true) {
+	fail('a normal backup import did not succeed');
+}
+if (snap($copy)['settings']['callSign'] !== $exported['settings']['callSign']) {
+	fail('a normal backup import did not restore the previous call sign');
+}
+echo "ok: a normal backup export and import round trip\n";
+
+$before = snap($copy);
+$bad = sys_get_temp_dir() . '/orp-write-boundary-bad-' . getmypid() . '.sql';
+file_put_contents($bad, "BEGIN TRANSACTION;\nINSERT INTO settings (keyID, value) VALUES ('callSign', 'CHANGED');\nINSERT INTO settings (keyID, value) VALUES ('callSign', 'CHANGED');\nCOMMIT;\n");
+$wrote = $db->db_import(array('settings', 'gpio_pins', 'ports', 'modules'), $bad);
+$caller = $wrote === true ? 'successfully restored' : 'not-written';
+if ($wrote === true || $caller !== 'not-written' || snap($copy) != $before) {
+	fail('a backup constraint failure was reported as success or changed rows');
+}
+echo "ok: a backup constraint failure returns not-written and leaves the previous rows unchanged\n";
+
+file_put_contents($bad, "this is not sql;\n");
+$wrote = $db->db_import(array('settings', 'gpio_pins', 'ports', 'modules'), $bad);
+if ($wrote === true || snap($copy) != $before) {
+	fail('invalid backup SQL was reported as success or changed rows');
+}
+echo "ok: invalid backup SQL leaves the previous rows unchanged\n";
+
+if ($db->db_export(array('settings'), $bad . '/nested.sql') === true) {
+	fail('an unwritable backup path was reported as success');
+}
+echo "ok: a backup export that cannot create the file returns failure\n";
+echo "database write boundary checks passed\n";

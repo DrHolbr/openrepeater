@@ -72,7 +72,10 @@ for ($i = 0; $i < $count; $i++) {
 }
 $Database = new Database();
 if ($Database->replace_port_form($rows) !== true) {
-	port_form_fail();
+	http_response_code(500);
+	header('Content-Type: text/plain; charset=UTF-8');
+	echo "not-written\n";
+	exit;
 }
 header('Content-Type: text/plain; charset=UTF-8');
 echo "updated\n";

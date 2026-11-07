@@ -43,13 +43,11 @@ foreach ($updates as $key => $value) {
 		exit;
 	}
 }
-foreach ($updates as $key => $value) {
-	if ($Database->update_existing_setting($key, $value) !== true) {
-		http_response_code(400);
-		header('Content-Type: text/plain; charset=UTF-8');
-		echo "refused\n";
-		exit;
-	}
+if ($Database->update_existing_settings($updates) !== true) {
+	http_response_code(500);
+	header('Content-Type: text/plain; charset=UTF-8');
+	echo "not-written\n";
+	exit;
 }
 header('Content-Type: text/plain; charset=UTF-8');
 echo "updated\n";

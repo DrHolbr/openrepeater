@@ -23,35 +23,29 @@ if (isset($_POST['action'])){
 
 	if ($_POST['action'] == "changMode") {
 		if ($_POST['orp_Mode'] == "advanced") {
-			// Setup Advanced Mode, create DB table and update setting to switch to Advanced mode.
-
-			$new_table_sql = "CREATE TABLE IF NOT EXISTS advanced (
-			    keyID	TEXT	NOT NULL	PRIMARY KEY,
-			    value	TEXT	NOT NULL
-			);";
-			$new_query = $Database->insert($new_table_sql);	
-
-			$sql = "UPDATE settings SET value='advanced' WHERE keyID='orp_Mode'";
-			$query = $Database->update($sql);	
-
-			$msgText = "Advanced mode is stored and is not applied. The root publisher does not replace the runtime file while orp_Mode is advanced.";
-			$alert = '<div class="alert alert-success"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
+			if ($Database->ensure_advanced_table() === true && $Database->update_existing_setting('orp_Mode', 'advanced') === true) {
+				$msgText = "Advanced mode is stored and is not applied. The root publisher does not replace the runtime file while orp_Mode is advanced.";
+				$alert = '<div class="alert alert-success"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
+			} else {
+				$msgText = "Advanced mode was not written. The previous rows were left unchanged.";
+				$alert = '<div class="alert alert-error"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
+			}
 
 
 		} else if ($_POST['orp_Mode'] == "repeater") {
-			// Change mode back to standard ORP mode
-			$sql = "UPDATE settings SET value='repeater' WHERE keyID='orp_Mode'";
-			$query = $Database->update($sql);	
-
-			$msgText = "Open Repeater has been reverted back to standard repeater mode. Please rebuild your configuration files.";
-			$alert = '<div class="alert alert-success"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
+			if ($Database->update_existing_setting('orp_Mode', 'repeater') === true) {
+				$msgText = "Open Repeater has been reverted back to standard repeater mode. Please rebuild your configuration files.";
+				$alert = '<div class="alert alert-success"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
+			} else {
+				$msgText = "Repeater mode was not written. The previous rows were left unchanged.";
+				$alert = '<div class="alert alert-error"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
+			}
 
 		}
 
 
 	} else if ($_POST['action'] == "update_advanced") {
-		$advancedDb = new SQLite3($Database->databasePath());
-		$stmt = $advancedDb->prepare('INSERT OR REPLACE INTO advanced (keyID, value) VALUES (:key, :value)');
+		$advancedRows = array();
 		foreach($_POST as $key=>$value){
 			if ($key === 'action' || $key === 'csrf_token' || !is_string($key) || !is_string($value)) {
 				continue;
@@ -59,16 +53,15 @@ if (isset($_POST['action'])){
 			if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}$/', $key)) {
 				continue;
 			}
-			$stmt->bindValue(':key', $key, SQLITE3_TEXT);
-			$stmt->bindValue(':value', $value, SQLITE3_TEXT);
-			$stmt->execute();
-			$stmt->reset();
+			$advancedRows[$key] = $value;
 		}
-		$advancedDb->close();
-		
-		$msgText = "The settings have been updated successfully!";
-		$alert = '<div class="alert alert-success"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
-	
+		if ($Database->write_advanced_rows($advancedRows) === true) {
+			$msgText = "The settings have been updated successfully!";
+			$alert = '<div class="alert alert-success"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
+		} else {
+			$msgText = "The advanced text was not written. The previous rows were left unchanged.";
+			$alert = '<div class="alert alert-error"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
+		}
 	}
 }
 

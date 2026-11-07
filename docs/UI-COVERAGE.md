@@ -42,7 +42,13 @@ That paragraph describes the log install. The Tcl harness result is in the next 
 
 Installed `41f37034a34c68290c2e5858c37320dfc9d348f6` on November 6, 2026, about 10:23–10:37 PM EST. `tclsh upgrade/tests/svxlink26_ident_test.tcl /usr/local/share/svxlink/events.d` exited 0 on all nine checks, including phonetic `repeater_down` and plain-letter spelling. `locale.tcl` was `01f54727222129ee2e212aa3e698aa75cac94dcaf05773147e2c6cda8b8a874a`. That run records audio primitives. It is not a receiver end-of-communication, heard speech, or RF. The log suffix check passed again: 206, `bytes 12640-13864/13865`, length 1225. The database stayed `ae65ca06082f85aeb1091ba66ca7e7f4604889997efb1efefffc0fb957b29c3c`. The binary and config hashes were unchanged. PHP 8.4.27 and nginx matched. svxlink was left inactive, unmasked, and disabled. The other two units stayed masked.
 
-Heather was not installed. Two bounded runs of the reviewed installer expired at 90 and 420 seconds while still reading the bzip2 archive. 476 files were in a private stage. `/usr/local/share/svxlink/sounds/en_US` was absent. `/tmp` is a different filesystem from the sound directory on this Pi, so a stage created there cannot be renamed into place. No installer process remained. The partial stages were left as evidence. Playback is not proven.
+Heather was not installed by `41f3703`. Two bounded runs expired at 90 and 420 seconds while still reading the bzip2 archive. 476 files were in a private stage. `/usr/local/share/svxlink/sounds/en_US` was absent. `/tmp` is a different filesystem from the sound directory on this Pi.
+
+## Native 143d5e7 Heather install, measured on orp-test
+
+Installed `143d5e7e7fc235d34ead677f2383b02c69e23da0` on November 6, 2026, about 10:40–10:46 PM EST. The first Heather publish took 8.205 seconds and the repeat took 8.026 seconds. `en_US` has 584 regular WAV files and 13 directories, all root-owned, files mode `0644`, directories mode `0755`, and zero symlinks. The repeat left the previous tree at `en_US.bak.20261107T034451Z`. A copied-database publish produced `SimplexLogic`/`TYPE=Simplex`, then `RepeaterLogic`/`TYPE=Repeater`, both with `PTT_TYPE=NONE` and the installed `events.tcl`. `orp_Mode=advanced` refused and left the previous file hash unchanged. The nine Tcl checks and the log range check passed. Nine pages returned 200. Fifty-eight PHP files linted. nginx and PHP 8.4.27 matched. The database stayed `ae65ca06082f85aeb1091ba66ca7e7f4604889997efb1efefffc0fb957b29c3c`. The binary and live config were unchanged. svxlink was left inactive, unmasked, and disabled. The other two units stayed masked. The clips are installed files. They were not played, and an end-of-communication identification was not executed.
+
+The prepared settings and port writers in that install did not check SQLite execute or commit results. The following commit checks those results, plus module enable, module options, and backup import, on a copy of the stock database. A locked commit, a read-only file, a constraint abort, and invalid backup SQL return failure and leave the previous rows in place. Callers report `not-written` or the existing error text. That commit is not this native install. Command: `php upgrade/tests/db_write_boundary_test.php .` from the repository root. It is also in `bash upgrade/tests/run.sh`.
 
 ## Authenticated mutation boundary
 
@@ -126,7 +132,7 @@ Numbers 0–27 are BCM header candidates only. The map is `GpioMap::headerMap()`
 | Create, upload, restore, delete backup | `backup.php` | Cloud create, restore, and delete stay in the backup directory. Not deployed. |
 | Advanced config textareas, standard mode, advanced mode | `advanced.php` | Text is stored. Publish stays `PTT_TYPE=NONE` and does not copy `gpio498`. Not deployed. |
 | Wizard agree, call sign, board, port, Save, Finish | `wizard/index.php` | `software-proven` on a copy for the Memcached-free save and the Finish POST form. Not the station database. |
-| Heather installer | `upgrade/install_heather_sounds.py` | Stored pin unchanged. Not applied on the Pi: the 41f3703 run did not publish `en_US`. The next installer reads the archive once and stages on the destination filesystem. Playback is not executed. |
+| Heather installer | `upgrade/install_heather_sounds.py` | Installed files on `143d5e7`: 584 WAVs, zero links, root `0644`/`0755`. Playback is not executed. |
 
 ## Form matrix on a copied database
 

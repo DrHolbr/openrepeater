@@ -73,7 +73,13 @@ class BackupRestore {
 		
  		// Dump the sqlite database, specified tables only
 		$sql_file = $this->archive_build_dir . $this->backup_db_file;
-		$this->Database->db_export( $this->db_tables, $sql_file );
+		if ($this->Database->db_export( $this->db_tables, $sql_file ) !== true) {
+			$this->removeDirectory($this->archive_build_dir);
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The backup was not written. The previous database rows were left unchanged.'
+			);
+		}
 
 		// Backup of ALSA settings
 		exec('sudo orp_helper alsa backup "' . $this->archive_build_dir . $this->alsa_state_file . '"');
@@ -217,9 +223,14 @@ class BackupRestore {
 			exec('sudo orp_helper alsa restore "' . $this->backup_restore_dir . $this->alsa_state_file . '"');
 		}
 
-		// Empty affected DB tables and import SQL file to DB.
+		// Replace the database only when the whole import commits on a copy.
 		$sql_file = $this->backup_restore_dir . $this->backup_db_file;
-		$this->Database->db_import( $this->db_tables, $sql_file );
+		if ($this->Database->db_import( $this->db_tables, $sql_file ) !== true) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The backup was not restored. The previous database rows were left unchanged.'
+			);
+		}
 
 		// Cleanup/Delete Restore directory
 		$this->removeDirectory($this->backup_restore_dir);
