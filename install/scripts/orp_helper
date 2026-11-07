@@ -155,6 +155,12 @@ function svxlink_enable {
 function svxlink_service_ctl {
 	local action=$1
 	local rc
+	if [ "$action" = "start" ] || [ "$action" = "restart" ]; then
+		if ! config_matches_snapshot; then
+			echo "refused: svxlink.conf is not the disconnected-test snapshot. Start was not called."
+			return 1
+		fi
+	fi
 	# Never unmask. A masked unit is service-disabled, which is separate
 	# from an unresolved GPIO number and from the dummy audio path.
 	if [ -n "${ORP_SYSTEMCTL:-}" ]; then
@@ -229,46 +235,218 @@ function svxlink_gpio_down {
 
 
 ### SYSTEM FUNCTIONS ###
+# The web process never supplies this file. Root renders one fixed
+# disconnected-test document. A staged svxlink.conf is ignored, including
+# ORP_STAGED_CONFIG, so a check-then-install race cannot change the bytes.
+function config_real_file() {
+	local path=$1
+	[ -f "$path" ] && [ ! -L "$path" ]
+}
+
+function config_event_handler() {
+	local path
+	for path in /usr/local/share/svxlink/events.tcl /usr/share/svxlink/events.tcl; do
+		if config_real_file "$path"; then
+			printf '%s' "$path"
+			return 0
+		fi
+	done
+	return 1
+}
+
+function config_module_dir() {
+	local path
+	for path in \
+		/usr/local/lib/aarch64-linux-gnu/svxlink \
+		/usr/local/lib/arm-linux-gnueabihf/svxlink \
+		/usr/lib/aarch64-linux-gnu/svxlink \
+		/usr/lib/x86_64-linux-gnu/svxlink
+	do
+		if [ -d "$path" ] && [ ! -L "$path" ]; then
+			printf '%s' "$path"
+			return 0
+		fi
+	done
+	return 1
+}
+
+function config_callsign() {
+	local db value
+	db="${ORP_DB_PATH:-${ORP_ROOT:-}/var/lib/openrepeater/db/openrepeater.db}"
+	config_real_file "$db" || return 1
+	value=$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='callSign';") || return 1
+	case "$value" in
+		*[!A-Z0-9]*|"") return 1 ;;
+	esac
+	local len=${#value}
+	[ "$len" -ge 3 ] && [ "$len" -le 12 ] || return 1
+	printf '%s' "$value"
+}
+
+function config_ancestors_real() {
+	local path=$1 acc="" part rest
+	case "$path" in
+		/*) ;;
+		*) return 1 ;;
+	esac
+	rest=${path#/}
+	while [ -n "$rest" ]; do
+		part=${rest%%/*}
+		if [ "$rest" = "$part" ]; then
+			rest=""
+		else
+			rest=${rest#*/}
+		fi
+		[ -n "$part" ] || continue
+		acc="${acc}/${part}"
+		if [ -L "$acc" ]; then
+			echo "refused: symbolic link at ${acc}" >&2
+			return 1
+		fi
+		if [ -n "$rest" ] && [ ! -d "$acc" ]; then
+			echo "refused: missing directory ${acc}" >&2
+			return 1
+		fi
+	done
+	return 0
+}
+
+function config_parent_anchored() {
+	local parent=$1
+	[ -d "$parent" ] && [ ! -L "$parent" ] || return 1
+	if find "$parent" -maxdepth 0 -perm /022 | grep -q .; then
+		echo "refused: ${parent} is group or world writable" >&2
+		return 1
+	fi
+	return 0
+}
+
+function config_render() {
+	local out=$1 callsign events modules
+	callsign=$(config_callsign) || return 1
+	events=$(config_event_handler) || return 1
+	modules=$(config_module_dir) || return 1
+	cat > "$out" <<EOF
+[GLOBAL]
+MODULE_PATH=${modules}
+LOGICS=RepeaterLogic
+CFG_DIR=/etc/svxlink/svxlink.d
+TIMESTAMP_FORMAT="%c"
+CARD_SAMPLE_RATE=16000
+[RepeaterLogic]
+TYPE=Repeater
+RX=Rx1
+TX=Tx1
+CALLSIGN=${callsign}
+SHORT_IDENT_INTERVAL=10
+LONG_IDENT_INTERVAL=0
+IDENT_ONLY_AFTER_TX=0
+EVENT_HANDLER=${events}
+SHORT_VOICE_ID_ENABLE=1
+SHORT_CW_ID_ENABLE=0
+LONG_VOICE_ID_ENABLE=1
+LONG_CW_ID_ENABLE=0
+[Rx1]
+TYPE=Local
+AUDIO_DEV=udp:127.0.0.1:17001
+AUDIO_CHANNEL=0
+SQL_DET=SIGLEV
+SQL_START_DELAY=1
+SQL_DELAY=40
+SIGLEV_SLOPE=1
+SIGLEV_OFFSET=0
+SIGLEV_OPEN_THRESH=30
+SIGLEV_CLOSE_THRESH=10
+[Tx1]
+TYPE=Local
+AUDIO_DEV=udp:127.0.0.1:17002
+AUDIO_CHANNEL=0
+PTT_TYPE=NONE
+EOF
+}
+
+function config_dest() {
+	printf '%s' "${ORP_ROOT:-}/etc/svxlink/svxlink.conf"
+}
+
+function config_matches_snapshot() {
+	local dest expected
+	dest=$(config_dest)
+	expected=$(mktemp)
+	if ! config_render "$expected"; then
+		rm -f "$expected"
+		return 1
+	fi
+	cmp -s "$expected" "$dest"
+	local rc=$?
+	rm -f "$expected"
+	return "$rc"
+}
+
 function config_publish {
-	local src dest dir backup
+	local dest parent snapshot backup sum_before sum_after
 	if ! functional_test_on; then
 		echo "refused: config publish requires functional-test"
 		return 1
 	fi
-	src="${ORP_STAGED_CONFIG:-${ORP_BENCH_PREVIEW:-/var/lib/openrepeater/bench-preview}/svxlink.conf}"
-	dest="${ORP_ROOT:-}/etc/svxlink/svxlink.conf"
-	if [ ! -f "$src" ] || [ -L "$src" ]; then
-		echo "refused: staged svxlink.conf is missing"
+	# Deliberately ignore ORP_STAGED_CONFIG and the preview file.
+	if ! config_callsign >/dev/null; then
+		echo "refused: stored call sign is not a plain station token. It was not changed and was not published."
 		return 1
 	fi
-	if grep -E -q '^[[:space:]]*[^#].*(PTT_PIN|GPIO_SQL_PIN|GPIO_PATH|PTT_TYPE=GPIO|SQL_DET=GPIO|SQL_DET=GPIOD)' "$src"; then
-		echo "refused: staged config contains GPIO or PTT hardware. Stored wiring was not changed."
+	if ! config_event_handler >/dev/null || ! config_module_dir >/dev/null; then
+		echo "refused: installed SvxLink event handler or module directory is missing"
 		return 1
 	fi
-	if ! grep -q '^PTT_TYPE=NONE$' "$src"; then
-		echo "refused: disconnected runtime requires PTT_TYPE=NONE"
+	dest=$(config_dest)
+	parent=$(dirname "$dest")
+	if ! config_ancestors_real "$parent"; then
 		return 1
 	fi
-	if ! grep -q '/share/svxlink/events.tcl' "$src"; then
-		echo "refused: EVENT_HANDLER is not the installed SvxLink events.tcl"
+	if ! config_parent_anchored "$parent"; then
 		return 1
 	fi
-	dir=$(dirname "$dest")
-	mkdir -p "$dir" "${ORP_ROOT:-}/etc/svxlink/svxlink.d"
-	if [ -L "$dest" ]; then
-		echo "refused: live svxlink.conf is a symbolic link"
+	if [ -L "$dest" ] || [ -L "${parent}/svxlink.d" ]; then
+		echo "refused: live svxlink path is a symbolic link"
 		return 1
 	fi
+	if [ -e "${parent}/svxlink.d" ] && [ ! -d "${parent}/svxlink.d" ]; then
+		echo "refused: svxlink.d is not a directory"
+		return 1
+	fi
+	snapshot=$(mktemp "${parent}/.orp-svxlink.XXXXXX")
+	if ! config_render "$snapshot"; then
+		rm -f "$snapshot"
+		echo "refused: disconnected-test config was not rendered"
+		return 1
+	fi
+	sum_before=$(sha256sum "$snapshot" | awk '{print $1}')
 	if [ -f "$dest" ]; then
 		backup="${ORP_ROOT:-}/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%SZ)"
+		if ! config_ancestors_real "$(dirname "$backup")"; then
+			rm -f "$snapshot"
+			return 1
+		fi
 		mkdir -p "$backup"
 		cp -p "$dest" "$backup/svxlink.conf"
 	fi
-	install -m 644 "$src" "$dest"
+	if [ ! -d "${parent}/svxlink.d" ]; then
+		mkdir -m 755 "${parent}/svxlink.d"
+	fi
+	mv -f "$snapshot" "$dest"
+	chmod 644 "$dest"
+	sum_after=$(sha256sum "$dest" | awk '{print $1}')
+	if [ "$sum_before" != "$sum_after" ]; then
+		echo "refused: published bytes did not match the rendered snapshot"
+		return 1
+	fi
 	echo "published ${dest}"
-	echo "runtime=simulation/dummy-path PTT_TYPE=NONE udp audio"
-	echo "gpio=unresolved-not-applied"
+	echo "snapshot=${sum_after}"
+	echo "runtime=simulation/dummy-path PTT_TYPE=NONE loopback-udp"
+	echo "gpio=not-applied"
+	echo "event=$(config_event_handler)"
 	echo "stored wiring was not modified"
+	echo "service was not started"
 }
 
 function system_reboot {

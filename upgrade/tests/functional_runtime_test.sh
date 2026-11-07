@@ -36,6 +36,7 @@ export ORP_FLAG_STORE=sqlite
 
 export ORP_ROOT="$live"
 export ORP_STAGED_CONFIG="$preview/svxlink.conf"
+printf 'PTT_PIN=gpio498\nEVENT_HANDLER=/tmp/attacker.tcl\nAUDIO_DEV=udp:10.1.1.1:9\n' > "$preview/svxlink.conf"
 set +e
 pub=$("$ROOT_DIR/install/scripts/orp_helper" config publish 2>&1)
 pub_rc=$?
@@ -64,10 +65,7 @@ if [ "$now" != "$stored" ]; then
 	exit 1
 fi
 
-run_cfg="$tmp/run.conf"
-sed "s#^CFG_DIR=.*#CFG_DIR=$tmp/svxlink.d#" "$live/etc/svxlink/svxlink.conf" > "$run_cfg"
-mkdir -p "$tmp/svxlink.d"
-timeout 4 /usr/bin/svxlink --config="$run_cfg" --logfile="$log" --pidfile="$pid" || true
+timeout 4 /usr/bin/svxlink --config="$live/etc/svxlink/svxlink.conf" --logfile="$log" --pidfile="$pid" || true
 grep -q 'Event handler script successfully loaded' "$log"
 grep -q 'Shutting down application' "$log"
 if grep -E -q 'GPIO|PTT_PIN|gpio498' "$log"; then

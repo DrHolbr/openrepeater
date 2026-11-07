@@ -107,14 +107,16 @@ set -e
 [ "$gpio_rc" -ne 0 ]
 printf '%s\n' "$gpio_out" | grep -q 'GPIO and PTT setup stay blocked'
 set +e
-"$ROOT_DIR/install/scripts/orp_helper" svxlink start >/dev/null 2>&1
+start_out=$("$ROOT_DIR/install/scripts/orp_helper" svxlink start 2>&1)
+start_rc=$?
 set -e
-grep -q 'start svxlink.service' "$ORP_SYSTEMCTL_LOG"
-if grep -q 'unmask' "$ORP_SYSTEMCTL_LOG"; then
-	echo "FAIL: functional-test start unmasked the unit" >&2
+[ "$start_rc" -ne 0 ]
+printf '%s\n' "$start_out" | grep -q 'Start was not called'
+if grep -q 'start svxlink.service' "$ORP_SYSTEMCTL_LOG"; then
+	echo "FAIL: start ran without the disconnected-test snapshot" >&2
 	exit 1
 fi
-echo "ok: helper start targets svxlink.service and gpio_up stays blocked"
+echo "ok: gpio_up stays blocked and start does nothing without the root snapshot"
 
 mkdir -p "$tmp/root/etc/openrepeater"
 printf 'orp-test\n' > "$tmp/root/etc/hostname"
