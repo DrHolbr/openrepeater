@@ -25,12 +25,12 @@ class Modules {
 		$guard = BenchGuard::detect();
 		if ($guard->isBench()) {
 			$preview = rtrim($guard->previewDir(), '/');
-			$this->svxlink_events_d_path = $preview . '/events.d/';
-			$this->svxlink_modules_d_path = $preview . '/modules.d/';
-			$this->svxlink_sounds = $preview . '/sounds/en_US/';
-			foreach (array($this->svxlink_events_d_path, $this->svxlink_modules_d_path, $this->svxlink_sounds) as $dir) {
-				if (!is_dir($dir)) {
-					mkdir($dir, 0750, true);
+			if (BenchGuard::previewAllowed($preview) && !is_link($preview)) {
+				$this->svxlink_events_d_path = $preview . '/events.d/';
+				$this->svxlink_modules_d_path = $preview . '/modules.d/';
+				$this->svxlink_sounds = $preview . '/sounds/en_US/';
+				foreach (array($this->svxlink_events_d_path, $this->svxlink_modules_d_path, $this->svxlink_sounds) as $dir) {
+					$this->mkdirReal($dir);
 				}
 			}
 		}
@@ -38,6 +38,20 @@ class Modules {
 
 	public function svxlinkEventsPath() {
 		return $this->svxlink_events_d_path;
+	}
+
+	private function mkdirReal($dir) {
+		if (is_link($dir) || is_dir($dir)) {
+			return;
+		}
+		$parent = dirname($dir);
+		if ($parent !== $dir && !is_dir($parent)) {
+			$this->mkdirReal($parent);
+		}
+		if (!is_dir($parent) || is_link($parent) || is_link($dir) || !BenchGuard::componentsAreReal($parent)) {
+			return;
+		}
+		mkdir($dir, 0750);
 	}
 
 

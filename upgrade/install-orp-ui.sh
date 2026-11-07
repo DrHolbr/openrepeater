@@ -14,6 +14,13 @@ NGINX_TEMPLATE=${NGINX_TEMPLATE:-$REPO_ROOT/upgrade/nginx/openrepeater.conf.temp
 # shellcheck source=lib/bench-target.sh
 . "$SCRIPT_DIR/lib/bench-target.sh"
 
+if [ -n "${ORP_ROOT:-}" ] || [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ]; then
+	if ! bench_test_harness_allowed; then
+		echo "refused: test overrides are ignored on the bench host" >&2
+		exit 1
+	fi
+fi
+
 if [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ] && [ -z "${ORP_ROOT:-}" ]; then
 	echo "refused: offline install requires ORP_ROOT" >&2
 	exit 1
@@ -45,29 +52,6 @@ bench_trace() {
 	fi
 }
 
-bench_chown() {
-	local flag="" spec path
-	if [ "$1" = "-R" ]; then
-		flag="-R"
-		spec=$2
-		path=$3
-	else
-		spec=$1
-		path=$2
-	fi
-	if [ -n "${ORP_CHOWN_LOG:-}" ]; then
-		printf '%s %s %s\n' "$flag" "$spec" "$path" >> "$ORP_CHOWN_LOG"
-	fi
-	if [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ]; then
-		return 0
-	fi
-	if [ -n "$flag" ]; then
-		chown -R "$spec" "$path"
-	else
-		chown "$spec" "$path"
-	fi
-}
-
 bench_nginx_test() {
 	if [ -n "${ORP_NGINX_TEST:-}" ]; then
 		"$ORP_NGINX_TEST"
@@ -80,14 +64,22 @@ bench_nginx_test() {
 }
 
 install_service_block() {
-	local dest
+	local dest block
 	dest=$(p /usr/sbin/policy-rc.d)
-	mkdir -p "$(dirname "$dest")" "$backup_root"
-	if [ -e "$dest" ]; then
+	bench_anchor_dir "$(dirname "$dest")"
+	bench_anchor_dir "$backup_root"
+	if [ "$(bench_lstat_kind "$dest")" = symlink ]; then
+		echo "refused: policy-rc.d is a symbolic link" >&2
+		exit 6
+	fi
+	if [ -f "$dest" ]; then
 		cp -a "$dest" "${backup_root}/policy-rc.d.saved"
 	fi
-	printf '%s\n' '#!/bin/sh' 'exit 101' > "$dest"
-	chmod 755 "$dest"
+	block=$(mktemp)
+	printf '%s\n' '#!/bin/sh' 'exit 101' > "$block"
+	bench_place_file "$block" "$dest"
+	rm -f "$block"
+	bench_chmod 755 "$dest"
 	POLICY_BLOCK=1
 }
 
@@ -119,8 +111,9 @@ fail_closed() {
 	orp_systemctl stop nginx >/dev/null 2>&1
 	orp_systemctl disable nginx >/dev/null 2>&1
 	rm -f "$(p /etc/nginx/sites-enabled/openrepeater)"
-	if [ -e "${backup_root}/etc/nginx/sites-enabled/default" ] && [ ! -e "$(p /etc/nginx/sites-enabled/default)" ]; then
-		mkdir -p "$(p /etc/nginx/sites-enabled)"
+	if [ -e "${backup_root}/etc/nginx/sites-enabled/default" ] && [ ! -e "$(p /etc/nginx/sites-enabled/default)" ] \
+		&& [ "$(bench_lstat_kind "$(p /etc/nginx/sites-enabled)")" = dir ]
+	then
 		cp -a "${backup_root}/etc/nginx/sites-enabled/default" "$(p /etc/nginx/sites-enabled/default)"
 	fi
 	# The bench marker is a safety boundary. Leave it in place.
@@ -129,14 +122,26 @@ fail_closed() {
 }
 trap fail_closed EXIT
 
+# Stop web writers before repairing paths. Stopping them is not the
+# boundary; a planted symlink is still refused below.
+orp_systemctl stop nginx || true
+orp_systemctl stop php8.4-fpm || true
+orp_systemctl stop php-fpm || true
+
 backup_if_present() {
 	local rel full dest_dir
 	rel=$1
 	full=$(p "/${rel}")
 	if [ -e "$full" ] || [ -L "$full" ]; then
+		bench_require_real_components "$(dirname "$full")"
 		dest_dir="${backup_root}/$(dirname "$rel")"
-		mkdir -p "$dest_dir"
-		cp -a "$full" "${backup_root}/${rel}"
+		bench_anchor_dir "$dest_dir"
+		if [ -L "$full" ]; then
+			# Copy the link itself. Do not follow it into the target.
+			cp -P "$full" "${backup_root}/${rel}"
+		else
+			cp -a "$full" "${backup_root}/${rel}"
+		fi
 	fi
 }
 
@@ -156,9 +161,16 @@ do
 done
 
 # Root-owned policy before any files are published and before apt can start nginx.
+# Every directory is anchored from its parent before a child is created or chmod'd.
 bench_trace marker
-mkdir -p "$(p /etc/openrepeater)" "$(p /etc/sudoers.d)" "$(p /var/lib/openrepeater/bench-preview)" "$(p /var/lib/openrepeater/db)" "$(p /usr/sbin)"
-cat > "$(p /etc/openrepeater/bench-mode)" <<'EOF'
+bench_anchor_dir "$(p /etc/openrepeater)"
+bench_anchor_dir "$(p /etc/sudoers.d)"
+bench_anchor_dir "$(p /var/lib/openrepeater)"
+bench_anchor_dir "$(p /var/lib/openrepeater/bench-preview)"
+bench_anchor_dir "$(p /var/lib/openrepeater/db)"
+bench_anchor_dir "$(p /usr/sbin)"
+marker_body=$(mktemp)
+cat > "$marker_body" <<'EOF'
 host=orp-test
 radio=blocked
 reboot=blocked
@@ -166,13 +178,18 @@ gpio=readonly
 publish=fixed
 preview=/var/lib/openrepeater/bench-preview
 EOF
-chmod 755 "$(p /etc/openrepeater)" "$(p /var/lib/openrepeater)"
-chmod 644 "$(p /etc/openrepeater/bench-mode)"
-chmod 2770 "$(p /var/lib/openrepeater/bench-preview)"
+bench_place_file "$marker_body" "$(p /etc/openrepeater/bench-mode)"
+rm -f "$marker_body"
+bench_chmod 755 "$(p /etc/openrepeater)"
+bench_chmod 755 "$(p /var/lib/openrepeater)"
+bench_chmod 755 "$(p /var/lib/openrepeater/bench-preview)"
+bench_chmod 755 "$(p /var/lib/openrepeater/db)"
+bench_chmod 644 "$(p /etc/openrepeater/bench-mode)"
 bench_chown root:root "$(p /etc/openrepeater)"
 bench_chown root:root "$(p /etc/openrepeater/bench-mode)"
 bench_chown root:root "$(p /var/lib/openrepeater)"
-bench_chown root:www-data "$(p /var/lib/openrepeater/bench-preview)"
+bench_chown root:root "$(p /var/lib/openrepeater/bench-preview)"
+bench_chown root:root "$(p /var/lib/openrepeater/db)"
 
 if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] && [ "${ORP_INSTALL_SKIP_APT:-0}" != 1 ]; then
 	install_service_block
@@ -211,16 +228,41 @@ fi
 
 bench_trace stage-www
 stage=$(p /var/lib/openrepeater/stage)
-rm -rf "$stage"
-mkdir -p "$stage"
-tar -C "$REPO_ROOT" --exclude=.git -cf - . | tar -C "$stage" -xf -
-mkdir -p "$(p /var/www/openrepeater)"
-tar -C "$stage" -cf - . | tar -C "$(p /var/www/openrepeater)" -xf -
-bench_chown -R www-data:www-data "$(p /var/www/openrepeater)"
+web=$(p /var/www/openrepeater)
+bench_anchor_dir "$(p /var/www)"
+case "$(bench_lstat_kind "$web")" in
+	symlink)
+		echo "refused: web root is a symbolic link" >&2
+		exit 6
+		;;
+	dir)
+		# Replace the directory inode. Do not extract or chown through
+		# symlinks the web user may have planted inside the old tree.
+		mv "$web" "${web}.previous.${STAMP}"
+		;;
+esac
+mkdir "$web"
+bench_chmod 755 "$web"
+if [ "$(bench_lstat_kind "$stage")" = symlink ]; then
+	echo "refused: stage path is a symbolic link" >&2
+	exit 6
+fi
+if [ "$(bench_lstat_kind "$stage")" = dir ]; then
+	mv "$stage" "${stage}.previous.${STAMP}"
+fi
+mkdir "$stage"
+bench_chmod 755 "$stage"
+tar -C "$REPO_ROOT" --exclude=.git --exclude=dev -cf - . | tar -C "$stage" -xf -
+tar -C "$stage" -cf - . | tar -C "$web" -xf -
+if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
+	find -P "$web" -xdev ! -type l -exec chown -h www-data:www-data {} +
+fi
+bench_chown www-data:www-data "$web"
 
-mkdir -p "$(p /etc/nginx/sites-available)" "$(p /etc/nginx/sites-enabled)"
+bench_anchor_dir "$(p /etc/nginx/sites-available)"
+bench_anchor_dir "$(p /etc/nginx/sites-enabled)"
 bench_render_nginx "$PHP_SOCK" "$(p /etc/nginx/sites-available/openrepeater)"
-if [ -e "$(p /etc/nginx/sites-enabled/default)" ] || [ -L "$(p /etc/nginx/sites-enabled/default)" ]; then
+if [ "$(bench_lstat_kind "$(p /etc/nginx/sites-enabled/default)")" = symlink ] || [ -e "$(p /etc/nginx/sites-enabled/default)" ]; then
 	rm -f "$(p /etc/nginx/sites-enabled/default)"
 fi
 ln -sfn ../sites-available/openrepeater "$(p /etc/nginx/sites-enabled/openrepeater)"
@@ -231,8 +273,12 @@ if ! bench_nginx_test; then
 	exit 5
 fi
 
-cp "$REPO_ROOT/install/scripts/orp_helper" "$(p /usr/sbin/orp_helper)"
-chmod 755 "$(p /usr/sbin/orp_helper)"
+if [ "$(bench_lstat_kind "$(p /usr/sbin/orp_helper)")" = symlink ]; then
+	echo "refused: /usr/sbin/orp_helper is a symbolic link" >&2
+	exit 6
+fi
+bench_place_file "$REPO_ROOT/install/scripts/orp_helper" "$(p /usr/sbin/orp_helper)"
+bench_chmod 755 "$(p /usr/sbin/orp_helper)"
 bench_chown root:root "$(p /usr/sbin/orp_helper)"
 
 sudoers_tmp=$(mktemp)
@@ -255,21 +301,39 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio version
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system uptime
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system user
 EOF
-install -m 440 "$sudoers_tmp" "$(p /etc/sudoers.d/openrepeater)"
+if [ "$(bench_lstat_kind "$(p /etc/sudoers.d/openrepeater)")" = symlink ]; then
+	rm -f "$sudoers_tmp"
+	echo "refused: sudoers fragment is a symbolic link" >&2
+	exit 6
+fi
+bench_place_file "$sudoers_tmp" "$(p /etc/sudoers.d/openrepeater)"
 rm -f "$sudoers_tmp"
+bench_chmod 440 "$(p /etc/sudoers.d/openrepeater)"
 bench_chown root:root "$(p /etc/sudoers.d/openrepeater)"
 
-if [ ! -f "$(p /var/lib/openrepeater/db/openrepeater.db)" ]; then
-	cp "$REPO_ROOT/install/sql/openrepeater.db" "$(p /var/lib/openrepeater/db/openrepeater.db)"
+db_file=$(p /var/lib/openrepeater/db/openrepeater.db)
+# Parent is anchored above, so a planted symlink cannot be swapped in now.
+if ! bench_ensure_regular "$db_file"; then
+	exit 6
 fi
-chmod 640 "$(p /var/lib/openrepeater/db/openrepeater.db)" || true
-mkdir -p "$(p /var/lib/openrepeater/db)"
-bench_chown www-data:www-data "$(p /var/lib/openrepeater/db)"
-bench_chown www-data:www-data "$(p /var/lib/openrepeater/db/openrepeater.db)"
+if [ "$(bench_lstat_kind "$db_file")" = missing ]; then
+	bench_place_file "$REPO_ROOT/install/sql/openrepeater.db" "$db_file"
+fi
+bench_chmod 660 "$db_file"
+if getent group www-data >/dev/null 2>&1 && [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
+	bench_chown "root:www-data" "$db_file"
+	bench_chown "root:www-data" "$(p /var/lib/openrepeater/db)"
+else
+	bench_chown "root:$(id -gn)" "$db_file"
+	bench_chown "root:$(id -gn)" "$(p /var/lib/openrepeater/db)"
+fi
+# Sticky and group-writable only after the database inode is root-owned.
+# www-data can create SQLite journals and cannot replace that inode.
+bench_chmod 1770 "$(p /var/lib/openrepeater/db)"
 
 # Re-assert the marker after file publish. It stays root-owned and not web-writable.
-chmod 755 "$(p /etc/openrepeater)"
-chmod 644 "$(p /etc/openrepeater/bench-mode)"
+bench_chmod 755 "$(p /etc/openrepeater)"
+bench_chmod 644 "$(p /etc/openrepeater/bench-mode)"
 bench_chown root:root "$(p /etc/openrepeater)"
 bench_chown root:root "$(p /etc/openrepeater/bench-mode)"
 

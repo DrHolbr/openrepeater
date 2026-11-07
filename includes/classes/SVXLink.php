@@ -506,17 +506,27 @@ class SVXLink {
 			return;
 		}
 		$filepath = dirname($full_file_path);
+		if ($guard->isBench()) {
+			if (!BenchGuard::previewAllowed($filepath) || is_link($filepath) || is_link($full_file_path)) {
+				return;
+			}
+			if (!is_dir($filepath)) {
+				$parent = dirname($filepath);
+				if (!is_dir($parent) || is_link($parent) || !BenchGuard::componentsAreReal($parent)) {
+					return;
+				}
+				mkdir($filepath, 0750);
+			}
+			BenchGuard::writeContained($full_file_path, $file_output);
+			return;
+		}
 		if (is_link($filepath) || is_link($full_file_path)) {
 			return;
 		}
-		
-		// If Directory Doesn't Exist, create it.
 		if (!is_dir($filepath)) { mkdir($filepath, 0750, true); }
 		if (is_link($filepath) || is_link($full_file_path)) {
 			return;
 		}
-
-		// Write the File.
 		file_put_contents( $full_file_path, $file_output );
 	}
 
@@ -532,12 +542,17 @@ class SVXLink {
 			return;
 		}
 		$dir = dirname($sample);
-		if (!is_dir($dir) || is_link($dir)) {
+		if (!is_dir($dir) || is_link($dir) || !BenchGuard::componentsAreReal($dir)) {
 			return;
 		}
 		$files = glob($dir . '/ORP_*');
 		if ($files) {
-			array_map('unlink', $files);
+			foreach ($files as $file) {
+				if (is_link($file) || !is_file($file)) {
+					continue;
+				}
+				unlink($file);
+			}
 		}
 	}
 

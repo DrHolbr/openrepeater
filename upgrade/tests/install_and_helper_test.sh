@@ -2,6 +2,7 @@
 # Fixture checks for the bench installer and orp_helper. No apt, no radio, no GPIO.
 set -euo pipefail
 
+export ORP_BENCH_TEST_HARNESS=1
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 INSTALL="$ROOT_DIR/upgrade/install-orp-ui.sh"
 HELPER="$ROOT_DIR/install/scripts/orp_helper"
@@ -484,6 +485,126 @@ else
 	printf '%s\n' "$out" >&2
 	cat "$hlog" >&2 || true
 fi
+
+canary_record() {
+	stat -c '%u %g %a %n' "$1"
+	cat "$1"
+}
+
+plant_canary() {
+	local path=$1
+	printf 'CANARY-BYTES\n' > "$path"
+	chmod 604 "$path"
+	canary_record "$path"
+}
+
+assert_canary() {
+	local path=$1
+	local before=$2
+	local after
+	after=$(canary_record "$path")
+	if [ "$before" = "$after" ]; then
+		ok "canary unchanged: $(basename "$path")"
+	else
+		bad "canary changed: $path"
+		printf 'before [%s]\nafter  [%s]\n' "$before" "$after" >&2
+	fi
+}
+
+# Leaf symlink where the old installer would chmod the canary.
+leaf="$tmp/leaf-link"
+seed_identity "$leaf"
+mkdir -p "$leaf/var/lib/openrepeater/db"
+leaf_canary="$leaf/protected-canary"
+leaf_before=$(plant_canary "$leaf_canary")
+ln -s "$leaf_canary" "$leaf/var/lib/openrepeater/db/openrepeater.db"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$leaf" ORP_SYSTEMCTL="$bin/systemctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/leaf.log" ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/leaf.out" 2>"$tmp/leaf.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
+	ok "db symlink aborts the install"
+else
+	bad "db symlink install rc=$rc"
+	cat "$tmp/leaf.err" >&2 || true
+fi
+assert_canary "$leaf_canary" "$leaf_before"
+
+# Ancestor symlink. A leaf -L check would not see this.
+anc="$tmp/ancestor-link"
+seed_identity "$anc"
+real="$anc/real-tree"
+mkdir -p "$real"
+anc_canary="$real/keep"
+anc_before=$(plant_canary "$anc_canary")
+ln -s "$real" "$anc/var/lib/openrepeater"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$anc" ORP_SYSTEMCTL="$bin/systemctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/anc.log" ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/anc.out" 2>"$tmp/anc.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && [ ! -e "$real/db" ] && [ ! -e "$real/bench-preview" ]; then
+	ok "ancestor symlink is not followed"
+else
+	bad "ancestor symlink rc=$rc"
+	cat "$tmp/anc.err" >&2 || true
+fi
+assert_canary "$anc_canary" "$anc_before"
+
+# Reinstall after the database inode is replaced with a symlink.
+re="$tmp/reinstall-link"
+seed_identity "$re"
+: > "$tmp/re.log"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$re" ORP_SYSTEMCTL="$bin/systemctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/re.log" ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/re.out" 2>"$tmp/re.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
+	bad "reinstall setup failed rc=$rc"
+	cat "$tmp/re.err" >&2 || true
+fi
+re_canary="$re/protected-canary"
+re_before=$(plant_canary "$re_canary")
+rm -f "$re/var/lib/openrepeater/db/openrepeater.db"
+ln -s "$re_canary" "$re/var/lib/openrepeater/db/openrepeater.db"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$re" ORP_SYSTEMCTL="$bin/systemctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/re2.log" ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/re2.out" 2>"$tmp/re2.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && [ -f "$re/etc/openrepeater/bench-mode" ]; then
+	ok "reinstall refuses a replaced database symlink and keeps the marker"
+else
+	bad "reinstall symlink rc=$rc"
+	cat "$tmp/re2.err" >&2 || true
+fi
+assert_canary "$re_canary" "$re_before"
+
+preview="$tmp/preview-link"
+seed_identity "$preview"
+mkdir -p "$preview/var/lib/openrepeater"
+preview_canary="$preview/etc/svxlink/svxlink.conf"
+preview_before=$(canary_record "$preview_canary")
+ln -s "$preview/etc/svxlink" "$preview/var/lib/openrepeater/bench-preview"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$preview" ORP_SYSTEMCTL="$bin/systemctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/preview.log" ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/preview.out" 2>"$tmp/preview.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
+	ok "bench-preview symlink aborts the install"
+else
+	bad "bench-preview symlink rc=$rc"
+	cat "$tmp/preview.err" >&2 || true
+fi
+assert_canary "$preview_canary" "$preview_before"
 
 if [ "$fail" -ne 0 ]; then
 	echo "shell checks failed" >&2

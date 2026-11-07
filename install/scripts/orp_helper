@@ -29,8 +29,17 @@ function display_help {
 	echo "USAGE: orp_helper [service] [option]"
 }
 
+function bench_test_harness {
+	[ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ] || return 1
+	local real
+	real=$(tr -d '[:space:]' < /etc/hostname 2>/dev/null || true)
+	[ "$real" = "orp-test" ] && return 1
+	[ -f /etc/openrepeater/bench-mode ] && return 1
+	return 0
+}
+
 function bench_marker_path {
-	if [ -n "${ORP_BENCH_MARKER:-}" ]; then
+	if bench_test_harness && [ -n "${ORP_BENCH_MARKER:-}" ]; then
 		printf '%s' "$ORP_BENCH_MARKER"
 	else
 		printf '%s' /etc/openrepeater/bench-mode
@@ -38,7 +47,10 @@ function bench_marker_path {
 }
 
 function bench_hostname {
-	local file=${ORP_BENCH_HOSTNAME_FILE:-/etc/hostname}
+	local file=/etc/hostname
+	if bench_test_harness && [ -n "${ORP_BENCH_HOSTNAME_FILE:-}" ]; then
+		file=$ORP_BENCH_HOSTNAME_FILE
+	fi
 	if [ -f "$file" ]; then
 		tr -d '[:space:]' < "$file"
 	fi

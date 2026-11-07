@@ -148,9 +148,13 @@ bench_hash_path() {
 		printf 'ABSENT %s\n' "$rel"
 		return
 	fi
+	if [ -L "$full" ]; then
+		printf 'LINK %s %s\n' "$(readlink "$full")" "$rel"
+		return
+	fi
 	if [ -d "$full" ]; then
 		local sum
-		sum=$(find "$full" -type f -print | LC_ALL=C sort | while IFS= read -r file; do
+		sum=$(find -P "$full" -xdev ! -type l -type f -print | LC_ALL=C sort | while IFS= read -r file; do
 			sha256sum "$file"
 		done | sha256sum | awk '{print $1}')
 		printf '%s %s\n' "$sum" "$rel"
@@ -162,7 +166,7 @@ bench_hash_path() {
 bench_snapshot_protected() {
 	local rel dest
 	dest=$(p /var/backups/orp-ui/protected.sha256)
-	mkdir -p "$(dirname "$dest")"
+	bench_anchor_dir "$(dirname "$dest")"
 	: > "$dest"
 	for rel in "${BENCH_PROTECTED_PATHS[@]}"; do
 		bench_hash_path "$rel" >> "$dest"
@@ -202,7 +206,14 @@ bench_render_nginx() {
 			return 5
 			;;
 	esac
-	sed "s|__PHP_FPM_SOCK__|${sock}|g" "$NGINX_TEMPLATE" > "$dest"
+	local rendered
+	rendered=$(mktemp)
+	sed "s|__PHP_FPM_SOCK__|${sock}|g" "$NGINX_TEMPLATE" > "$rendered"
+	if ! bench_place_file "$rendered" "$dest"; then
+		rm -f "$rendered"
+		return 5
+	fi
+	rm -f "$rendered"
 	if grep -q '__PHP_FPM_SOCK__' "$dest"; then
 		echo "refused: nginx socket placeholder was not replaced" >&2
 		return 5
@@ -212,4 +223,274 @@ bench_render_nginx() {
 		return 5
 	fi
 	return 0
+}
+
+# A privileged chmod/chown/create is safe only for a direct child of a trust
+# anchor: a real directory owned by the installer and not writable by group
+# or other. Inspecting a path inside a www-data-writable directory and then
+# chmod/chown is not safe. test -f and chmod follow symlinks, and the leaf
+# can be swapped, or an ancestor can be a symlink, after the check.
+
+bench_test_harness_allowed() {
+	[ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ] || return 1
+	local real
+	real=$(tr -d '[:space:]' < /etc/hostname 2>/dev/null || true)
+	[ "$real" = "orp-test" ] && return 1
+	[ -f /etc/openrepeater/bench-mode ] && return 1
+	return 0
+}
+
+bench_installer_uid() {
+	id -u
+}
+
+bench_lstat_kind() {
+	local path=$1
+	if [ -L "$path" ]; then
+		printf '%s' symlink
+		return
+	fi
+	if [ ! -e "$path" ]; then
+		printf '%s' missing
+		return
+	fi
+	if [ -d "$path" ]; then
+		printf '%s' dir
+		return
+	fi
+	if [ -f "$path" ]; then
+		printf '%s' file
+		return
+	fi
+	printf '%s' other
+}
+
+bench_nonowner_can_write() {
+	local mode=$((8#$1))
+	[ $((mode & 0022)) -ne 0 ]
+}
+
+bench_assert_anchor() {
+	local dir=$1
+	local uid mode
+	[ "$(bench_lstat_kind "$dir")" = dir ] || return 1
+	uid=$(stat -c %u "$dir")
+	mode=$(stat -c %a "$dir")
+	[ "$uid" = "$(bench_installer_uid)" ] || return 1
+	if bench_nonowner_can_write "$mode"; then
+		return 1
+	fi
+	return 0
+}
+
+bench_require_real_components() {
+	local path=$1
+	local prefix rel acc rest part kind
+	case "$path" in
+		/*) ;;
+		*)
+			echo "refused: relative path $path" >&2
+			return 1
+			;;
+	esac
+	case "$path" in
+		*$'\n'*|*'..'*|*'//'*)
+			echo "refused: unsafe path $path" >&2
+			return 1
+			;;
+	esac
+	if [ -n "${ROOT:-}" ]; then
+		prefix=$ROOT
+		case "$path" in
+			"$ROOT"|"$ROOT"/*) rel=${path#"$ROOT"} ;;
+			*)
+				echo "refused: $path is outside the install root" >&2
+				return 1
+				;;
+		esac
+		acc=$prefix
+		if ! bench_assert_anchor "$acc"; then
+			echo "refused: install root $acc is not a trust anchor" >&2
+			return 1
+		fi
+	else
+		acc=
+		rel=$path
+		if ! bench_assert_anchor /; then
+			echo "refused: / is not a trust anchor" >&2
+			return 1
+		fi
+	fi
+	rest=${rel#/}
+	while [ -n "$rest" ]; do
+		part=${rest%%/*}
+		if [ "$rest" = "$part" ]; then
+			rest=
+		else
+			rest=${rest#*/}
+		fi
+		[ -n "$part" ] || continue
+		if [ "$part" = "." ] || [ "$part" = ".." ]; then
+			echo "refused: unsafe component in $path" >&2
+			return 1
+		fi
+		acc="${acc}/${part}"
+		kind=$(bench_lstat_kind "$acc")
+		if [ "$kind" = symlink ]; then
+			echo "refused: symbolic link in trusted path: $acc" >&2
+			return 1
+		fi
+		if [ "$kind" = missing ]; then
+			return 0
+		fi
+	done
+	return 0
+}
+
+bench_chown() {
+	local spec=$1
+	local path=$2
+	bench_require_real_components "$path" || return 1
+	if [ "$(bench_lstat_kind "$path")" = symlink ]; then
+		echo "refused: not chowning symbolic link $path" >&2
+		return 1
+	fi
+	if [ -n "${ORP_CHOWN_LOG:-}" ]; then
+		printf '%s %s %s\n' "" "$spec" "$path" >> "$ORP_CHOWN_LOG"
+	fi
+	if [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ]; then
+		return 0
+	fi
+	chown -h "$spec" "$path"
+}
+
+bench_chmod() {
+	local mode=$1
+	local path=$2
+	bench_require_real_components "$path" || return 1
+	if [ "$(bench_lstat_kind "$path")" = symlink ]; then
+		echo "refused: not chmodding symbolic link $path" >&2
+		return 1
+	fi
+	if [ "$(bench_lstat_kind "$path")" = missing ]; then
+		echo "refused: not chmodding missing path $path" >&2
+		return 1
+	fi
+	chmod "$mode" "$path"
+}
+
+bench_anchor_dir() {
+	local path=$1
+	local prefix rel acc rest part kind
+	if [ -n "${ROOT:-}" ]; then
+		prefix=$ROOT
+		case "$path" in
+			"$ROOT"|"$ROOT"/*) rel=${path#"$ROOT"} ;;
+			*)
+				echo "refused: $path is outside the install root" >&2
+				return 1
+				;;
+		esac
+		if ! bench_assert_anchor "$prefix"; then
+			echo "refused: install root $prefix is not a trust anchor" >&2
+			return 1
+		fi
+		acc=$prefix
+	else
+		if ! bench_assert_anchor /; then
+			echo "refused: / is not a trust anchor" >&2
+			return 1
+		fi
+		acc=
+		rel=$path
+	fi
+	rest=${rel#/}
+	if [ -n "${ROOT:-}" ] && [ "$path" = "$ROOT" ]; then
+		return 0
+	fi
+	while [ -n "$rest" ]; do
+		part=${rest%%/*}
+		if [ "$rest" = "$part" ]; then
+			rest=
+		else
+			rest=${rest#*/}
+		fi
+		[ -n "$part" ] || continue
+		acc="${acc}/${part}"
+		kind=$(bench_lstat_kind "$acc")
+		case "$kind" in
+			symlink)
+				echo "refused: symbolic link at $acc" >&2
+				return 1
+				;;
+			missing)
+				mkdir "$acc"
+				chmod 755 "$acc"
+				;;
+			dir)
+				if ! bench_assert_anchor "$acc"; then
+					chmod 755 "$acc"
+					if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
+						chown -h "$(bench_installer_uid):$(id -g)" "$acc"
+					fi
+					if ! bench_assert_anchor "$acc"; then
+						echo "refused: $acc is still writable by someone other than the installer" >&2
+						return 1
+					fi
+				fi
+				;;
+			*)
+				echo "refused: $acc is not a directory" >&2
+				return 1
+				;;
+		esac
+	done
+	return 0
+}
+
+bench_place_file() {
+	local src=$1
+	local dest=$2
+	local dir kind tmp
+	dir=$(dirname "$dest")
+	bench_anchor_dir "$dir" || return 1
+	kind=$(bench_lstat_kind "$dest")
+	case "$kind" in
+		symlink)
+			echo "refused: not writing through symbolic link $dest" >&2
+			return 1
+			;;
+		dir|other)
+			echo "refused: $dest is not a regular file" >&2
+			return 1
+			;;
+	esac
+	tmp=$(mktemp "$dir/.orp.XXXXXX")
+	cp "$src" "$tmp"
+	if [ "$(bench_lstat_kind "$dest")" = symlink ]; then
+		rm -f "$tmp"
+		echo "refused: $dest became a symbolic link" >&2
+		return 1
+	fi
+	mv -f "$tmp" "$dest"
+}
+
+bench_ensure_regular() {
+	local dest=$1
+	local kind
+	kind=$(bench_lstat_kind "$dest")
+	case "$kind" in
+		symlink)
+			echo "refused: symbolic link at $dest" >&2
+			return 1
+			;;
+		dir|other)
+			echo "refused: $dest is not a regular file" >&2
+			return 1
+			;;
+		missing|file)
+			return 0
+			;;
+	esac
+	return 1
 }

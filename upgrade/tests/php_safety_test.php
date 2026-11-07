@@ -5,6 +5,7 @@
  */
 
 $failures = 0;
+putenv('ORP_BENCH_TEST_HARNESS=1');
 
 function check($cond, $msg) {
 	global $failures;
@@ -264,6 +265,27 @@ check($linked->configDestination('svxlink.conf') === null, 'a symlinked preview 
 $linked->write_config("PTT_PIN=gpio498\n", 'svxlink.conf', 'text');
 check(file_get_contents($linkTarget . '/sentinel') === 'keep', 'symlink preview did not change the target');
 check(!file_exists($linkTarget . '/svxlink.conf'), 'symlink preview did not receive svxlink.conf');
+
+$nested = $preview . '/nested';
+putenv('ORP_BENCH_PREVIEW=' . $nested);
+check(BenchGuard::previewAllowed($nested) === false, 'nested test preview paths are rejected');
+$secret = sys_get_temp_dir() . '/orp-secret-' . getmypid();
+mkdir($secret);
+file_put_contents($secret . '/keep', 'SECRET');
+$anc = sys_get_temp_dir() . '/orp-preview-anc-' . getmypid();
+symlink($secret, $anc);
+putenv('ORP_BENCH_PREVIEW=' . $anc);
+check(BenchGuard::previewAllowed($anc) === false, 'a symlinked test preview is rejected');
+$ancLeaf = $anc . '/leaf';
+check(BenchGuard::previewAllowed($ancLeaf) === false, 'a descendant of a symlinked preview is rejected');
+$writer = new SVXLink(array(), array(), array());
+$writer->write_config("PTT_PIN=gpio498\n", 'svxlink.conf', 'text');
+check(file_get_contents($secret . '/keep') === 'SECRET', 'ancestor symlink did not receive a preview write');
+check(!file_exists($secret . '/svxlink.conf'), 'ancestor symlink did not gain svxlink.conf');
+putenv('ORP_BENCH_TEST_HARNESS=0');
+putenv('ORP_BENCH_PREVIEW=' . $preview);
+check(BenchGuard::detect()->previewDir() === BenchGuard::DEFAULT_PREVIEW, 'without the test harness the preview override is ignored');
+putenv('ORP_BENCH_TEST_HARNESS=1');
 
 if ($failures > 0) {
 	fwrite(STDERR, "$failures failure(s)\n");

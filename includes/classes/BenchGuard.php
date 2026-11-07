@@ -18,9 +18,23 @@ class BenchGuard {
 		$this->markerPath = $markerPath;
 	}
 
+	public static function testHarnessActive() {
+		if (getenv('ORP_BENCH_TEST_HARNESS') !== '1') {
+			return false;
+		}
+		$host = @file_get_contents('/etc/hostname');
+		if (is_string($host) && trim($host) === 'orp-test') {
+			return false;
+		}
+		if (is_file(self::DEFAULT_MARKER)) {
+			return false;
+		}
+		return true;
+	}
+
 	public static function detect() {
 		$env = getenv('ORP_BENCH_MARKER');
-		if (is_string($env) && $env !== '') {
+		if (self::testHarnessActive() && is_string($env) && $env !== '') {
 			$path = $env;
 		} else {
 			$path = self::DEFAULT_MARKER;
@@ -42,9 +56,10 @@ class BenchGuard {
 	}
 
 	public function hostname() {
-		$file = getenv('ORP_BENCH_HOSTNAME_FILE');
-		if (!is_string($file) || $file === '') {
-			$file = '/etc/hostname';
+		$file = '/etc/hostname';
+		$override = getenv('ORP_BENCH_HOSTNAME_FILE');
+		if (self::testHarnessActive() && is_string($override) && $override !== '') {
+			$file = $override;
 		}
 		if (!is_file($file)) {
 			return '';
@@ -56,6 +71,35 @@ class BenchGuard {
 		return trim($raw);
 	}
 
+	public static function componentsAreReal($path) {
+		if (!is_string($path) || $path === '' || $path[0] !== '/') {
+			return false;
+		}
+		if (strpos($path, "\0") !== false || strpos($path, '..') !== false) {
+			return false;
+		}
+		$parts = explode('/', $path);
+		$acc = '';
+		$last = count($parts) - 1;
+		for ($i = 0; $i <= $last; $i++) {
+			$part = $parts[$i];
+			if ($part === '') {
+				continue;
+			}
+			if ($part === '.' || $part === '..') {
+				return false;
+			}
+			$acc .= '/' . $part;
+			if (is_link($acc)) {
+				return false;
+			}
+			if (!file_exists($acc) && $i !== $last) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	public static function previewAllowed($dir) {
 		if (!is_string($dir) || $dir === '' || $dir[0] !== '/') {
 			return false;
@@ -64,19 +108,50 @@ class BenchGuard {
 			return false;
 		}
 		if ($dir === self::DEFAULT_PREVIEW) {
-			return true;
+			return self::componentsAreReal($dir);
 		}
-		$temp = rtrim(sys_get_temp_dir(), '/') . '/orp-preview-';
-		return strpos($dir, $temp) === 0;
+		if (!self::testHarnessActive()) {
+			return false;
+		}
+		$temp = rtrim(sys_get_temp_dir(), '/');
+		$pattern = '#^' . preg_quote($temp, '#') . '/orp-preview-[A-Za-z0-9._-]+$#';
+		if (!preg_match($pattern, $dir)) {
+			return false;
+		}
+		return self::componentsAreReal($dir);
 	}
 
 	public function previewDir() {
 		// The marker file is not a path authority. A preview= line is ignored.
+		// ORP_BENCH_PREVIEW works only in the cloud harness, never on hostname orp-test.
 		$env = getenv('ORP_BENCH_PREVIEW');
-		if (is_string($env) && self::previewAllowed($env)) {
+		if (self::testHarnessActive() && is_string($env) && self::previewAllowed($env)) {
 			return $env;
 		}
 		return self::DEFAULT_PREVIEW;
+	}
+
+	public static function writeContained($path, $data) {
+		if (!self::componentsAreReal($path) || is_link($path)) {
+			return false;
+		}
+		$dir = dirname($path);
+		if (!is_dir($dir) || is_link($dir) || !self::componentsAreReal($dir)) {
+			return false;
+		}
+		$tmp = $dir . '/.' . basename($path) . '.' . getmypid() . '.tmp';
+		if (file_put_contents($tmp, $data) === false) {
+			return false;
+		}
+		if (is_link($path)) {
+			@unlink($tmp);
+			return false;
+		}
+		if (!rename($tmp, $path)) {
+			@unlink($tmp);
+			return false;
+		}
+		return true;
 	}
 
 	public function mixerUpdatesAllowed() {

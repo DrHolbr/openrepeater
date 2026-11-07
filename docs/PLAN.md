@@ -42,7 +42,7 @@ publish=preview
 preview=/var/lib/openrepeater/bench-preview
 ```
 
-The file's presence is the switch. The `preview=` line is the only value that changes a path. Radio, reboot, and GPIO output stay blocked for as long as the file exists. There is no flag in the file that turns them back on.
+The file's presence is not required on hostname `orp-test`: that hostname stays in bench mode even if the file is removed. A `preview=` line in the file is not a path. The only publish directory on the bench is `/var/lib/openrepeater/bench-preview`. `ORP_BENCH_PREVIEW` is honored only when `ORP_BENCH_TEST_HARNESS=1`, `/etc/hostname` is not `orp-test`, and `/etc/openrepeater/bench-mode` does not exist. The harness path must be exactly one `orp-preview-<token>` segment under the temp directory, with no symlink in the path.
 
 ### Paths
 
@@ -162,6 +162,25 @@ Expected enablement is `masked` and activity is `inactive`. If a unit is not mas
 - This branch, then `upgrade/install-orp-ui.sh` (it copies the rest of the tree).
 - `docs/PLAN.md` and `docs/GPIO-MAP.md` for the gate and the pin names.
 - Do not fetch a second copy of SvxLink, do not copy `/usr/local` off the Pi, and do not copy private module trees into this checkout.
+
+## Threat model
+
+The installer runs as root. The web server runs as `www-data`. A previous install, or the web process itself, may have planted a symbolic link or may still be able to replace a directory entry.
+
+Experiment on a disposable fixture, not the Pi: `test -f` on a symlink is true, so a "copy only if missing" check skips the copy. `chmod` of that symlink changes the target's mode (`600` became `640`). A shell redirect through the symlink overwrites the target's bytes. If an ancestor is a symlink, the final component is an ordinary file inside the other tree, so a leaf-only `-L` check does not see it, and `chmod` still changes that file. Replacing the path with a symlink after a passed check and then calling `chmod` changes the canary as well. `chown -h` does not. The premise "inspect a path inside a www-data-writable tree, then chmod or chown it" is false.
+
+Privileged mutation is allowed only for a direct child of a trust anchor: a real directory owned by the installer and not writable by group or other. The walk starts at `/` on the bench and at the fixture root in the cloud harness. A symlink aborts the install and is not followed. A directory is tightened to mode `755` only after its parent is already an anchor, which is what stops a swap. The web tree is replaced as a directory inode; it is not `chown -R`'d. The database file stays root-owned. Its directory is mode `1770` only after that inode exists, so `www-data` can create SQLite journals and cannot replace the database file. Test-only path overrides do not work when `/etc/hostname` is `orp-test` or the real marker exists.
+
+| Path | Owner | Mode | Who may write | Installer may mutate it |
+| --- | --- | --- | --- | --- |
+| `/etc/openrepeater` | root | `755` | root | Yes, it is an anchor |
+| `/etc/openrepeater/bench-mode` | root | `644` | root | Yes, parent is an anchor |
+| `/var/lib/openrepeater` | root | `755` | root | Yes |
+| `/var/lib/openrepeater/bench-preview` | root | `755` | root | The directory inode only. Contents are not chowned |
+| `/var/lib/openrepeater/db` | root | `1770` | root, plus new files by `www-data` | Tighten to `755` before touching the database file, then restore `1770` |
+| `/var/lib/openrepeater/db/openrepeater.db` | root | `660` | root and the `www-data` group | Only when it is a regular file and the directory is an anchor |
+| `/var/www/openrepeater` | `www-data` after publish | `755` | owner of the new inode | Replace the directory from `/var/www`. Do not walk a previous tree |
+| `/etc/svxlink`, `/usr/local`, `/var/lib/orp-test` | bootstrap | unchanged | not this installer | No |
 
 ## Review fixes after 0dd447a
 
