@@ -202,9 +202,13 @@ bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/db)"
 if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] && [ "${ORP_INSTALL_SKIP_APT:-0}" != 1 ]; then
 	install_service_block
 	export DEBIAN_FRONTEND=noninteractive
-	apt-get update
-	apt-get install -y --no-install-recommends --no-upgrade \
-		nginx php-fpm php-cli php-sqlite3 gpiod sudo sqlite3
+	if ! bench_install_php84; then
+		exit 5
+	fi
+	# PHP is handled above and may move to the security candidate.
+	# These packages stay at the version already installed.
+	bench_apt install -y --no-install-recommends --no-upgrade \
+		nginx gpiod sudo sqlite3
 	remove_service_block
 	orp_systemctl stop nginx || true
 	orp_systemctl disable nginx || true
@@ -217,19 +221,18 @@ else
 		echo "refused: /etc/nginx/snippets/fastcgi-php.conf is absent" >&2
 		exit 5
 	fi
-	php_unit=$(orp_systemctl list-unit-files --no-legend 'php*-fpm.service' | awk '{print $1}' | grep '^php8' | head -n 1 || true)
-	php_unit=${php_unit%.service}
-	if [ -z "$php_unit" ]; then
-		echo "refused: no PHP 8 FPM unit is installed" >&2
+	php_unit=php8.4-fpm
+	if ! orp_systemctl list-unit-files --no-legend 'php8.4-fpm.service' | awk '{print $1}' | grep -qx 'php8.4-fpm.service'; then
+		echo "refused: php8.4-fpm is not installed" >&2
 		exit 5
 	fi
 	orp_systemctl start "$php_unit"
-	if [ -S "/run/php/${php_unit}.sock" ]; then
-		PHP_SOCK="/run/php/${php_unit}.sock"
-	elif [ -S "/var/run/php/${php_unit}.sock" ]; then
-		PHP_SOCK="/var/run/php/${php_unit}.sock"
+	if [ -S "/run/php/php8.4-fpm.sock" ]; then
+		PHP_SOCK="/run/php/php8.4-fpm.sock"
+	elif [ -S "/var/run/php/php8.4-fpm.sock" ]; then
+		PHP_SOCK="/var/run/php/php8.4-fpm.sock"
 	else
-		echo "refused: PHP 8 FPM socket for ${php_unit} was not created" >&2
+		echo "refused: php8.4-fpm socket was not created" >&2
 		exit 5
 	fi
 fi

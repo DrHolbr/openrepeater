@@ -195,14 +195,9 @@ bench_render_nginx() {
 	sock=$1
 	dest=$2
 	case "$sock" in
-		*php5*|*php7*)
-			echo "refused: php-fpm socket is not PHP 8 (${sock})" >&2
-			return 5
-			;;
-		*php8*)
-			;;
+		*php8.4-fpm.sock) ;;
 		*)
-			echo "refused: php-fpm socket is not PHP 8 (${sock})" >&2
+			echo "refused: php-fpm socket is not Debian PHP 8.4 (${sock})" >&2
 			return 5
 			;;
 	esac
@@ -501,4 +496,101 @@ bench_ensure_regular() {
 			;;
 	esac
 	return 1
+}
+
+# Debian Trixie PHP 8.4 from the already enabled security suite.
+# These three packages may be installed or upgraded to the apt candidate.
+# Nothing else is upgraded here. No third-party PHP repository is added.
+BENCH_PHP84_PACKAGES=(php8.4-fpm php8.4-cli php8.4-sqlite3)
+
+bench_apt() {
+	if [ -n "${ORP_APT_GET:-}" ]; then
+		"${ORP_APT_GET}" "$@"
+	else
+		apt-get "$@"
+	fi
+}
+
+bench_apt_cache() {
+	if [ -n "${ORP_APT_CACHE:-}" ]; then
+		"${ORP_APT_CACHE}" "$@"
+	else
+		apt-cache "$@"
+	fi
+}
+
+bench_php_security_enabled() {
+	local dir file
+	dir="${ROOT:-}/etc/apt"
+	if [ ! -d "$dir" ]; then
+		echo "refused: apt sources directory $dir is absent" >&2
+		return 1
+	fi
+	if grep -R -l -E --include='sources.list' --include='*.list' --include='*.sources' '^[^#]*trixie-security' "$dir" >/dev/null 2>&1; then
+		return 0
+	fi
+	echo "refused: Debian trixie-security is not enabled in $dir" >&2
+	return 1
+}
+
+bench_php_policy_field() {
+	local pkg=$1
+	local field=$2
+	bench_apt_cache policy "$pkg" | awk -v field="${field}:" '$1 == field { print $2; exit }'
+}
+
+bench_php_candidate_is_84() {
+	local ver=$1
+	ver=${ver#*:}
+	case "$ver" in
+		8.4.*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# Refresh apt, then install or upgrade only the PHP 8.4 runtime and the
+# sqlite3 extension up to the candidate from the enabled distro repositories.
+# --no-upgrade is intentionally not used here: a reinstall must not keep an
+# older installed PHP when the candidate is newer. Returns 0 only when each
+# package's installed version equals that candidate.
+bench_install_php84() {
+	local pkg installed candidate
+	local -a stale=()
+	if ! bench_apt update; then
+		echo "refused: apt-get update failed" >&2
+		return 5
+	fi
+	if ! bench_php_security_enabled; then
+		return 5
+	fi
+	for pkg in "${BENCH_PHP84_PACKAGES[@]}"; do
+		candidate=$(bench_php_policy_field "$pkg" Candidate)
+		installed=$(bench_php_policy_field "$pkg" Installed)
+		if [ -z "$candidate" ] || [ "$candidate" = "(none)" ]; then
+			echo "refused: apt has no candidate for ${pkg}" >&2
+			return 5
+		fi
+		if ! bench_php_candidate_is_84 "$candidate"; then
+			echo "refused: candidate for ${pkg} is ${candidate}, expected PHP 8.4 from Debian" >&2
+			return 5
+		fi
+		if [ "$installed" != "$candidate" ]; then
+			stale+=("$pkg")
+		fi
+	done
+	if [ "${#stale[@]}" -gt 0 ]; then
+		if ! bench_apt install -y --no-install-recommends "${stale[@]}"; then
+			echo "refused: PHP 8.4 package install failed" >&2
+			return 5
+		fi
+	fi
+	for pkg in "${BENCH_PHP84_PACKAGES[@]}"; do
+		candidate=$(bench_php_policy_field "$pkg" Candidate)
+		installed=$(bench_php_policy_field "$pkg" Installed)
+		if [ "$installed" != "$candidate" ] || ! bench_php_candidate_is_84 "$installed"; then
+			echo "refused: ${pkg} installed (${installed:-none}) is not the apt candidate (${candidate:-none})" >&2
+			return 5
+		fi
+	done
+	return 0
 }

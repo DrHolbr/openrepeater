@@ -109,7 +109,7 @@ The stock `ports` row is RX 26 active low and TX 506 active high. The ICS 2X 3.1
 7. **TX numbers disagree, so none are driven.** Preset 498/499, database 506, and the ICS manual's PTT 506 / GPA2 498 are all recorded in [GPIO-MAP.md](GPIO-MAP.md). Active level for COS is a preset value; the ICS manual also says the board switch selects COS polarity. No switch was read. Default is disconnected.
 8. **Rebuild stays in the database.** `functions/svxlink_update.php` returns before it reads `RepeaterLogic.tcl`, deletes `ORP_*` files, or calls `orp_helper`. The update flag is left set so the bar does not pretend a restart happened. Reboot and shutdown buttons are disabled in the page, and the helper still refuses the commands.
 9. **Private modules stay private.** `DrHolbr/openrepeater-modules` pull request 1 is already merged there. This public tree still gitignores everything under `modules/` except Help, Parrot, and EchoLink. Those private trees were not readable here and were not vendored. Their TCL against SvxLink 26.05.2 is untested. The installer does not clone that repository.
-10. **Packages.** After the marker exists, apt installs only `nginx`, `php-fpm`, `php-cli`, `php-sqlite3`, `gpiod`, `sudo`, and `sqlite3`, with `--no-install-recommends --no-upgrade`. No dist-upgrade. No second SvxLink package. The bootstrap's cmake, gcc, and `libgpiod3` are left at the versions already installed.
+10. **Packages.** After the marker exists, apt installs `nginx`, `gpiod`, `sudo`, and `sqlite3` with `--no-install-recommends --no-upgrade`. PHP is separate: only `php8.4-fpm`, `php8.4-cli`, and `php8.4-sqlite3`, from the already enabled Debian `trixie-security` suite. No dist-upgrade. No PHP repository outside Debian. No second SvxLink package. The bootstrap's cmake, gcc, and `libgpiod3` are left at the versions already installed.
 
 ## Install, after the parent confirms bootstrap completion
 
@@ -162,6 +162,16 @@ Expected enablement is `masked` and activity is `inactive`. If a unit is not mas
 - This branch, then `upgrade/install-orp-ui.sh` (it copies the rest of the tree).
 - `docs/PLAN.md` and `docs/GPIO-MAP.md` for the gate and the pin names.
 - Do not fetch a second copy of SvxLink, do not copy `/usr/local` off the Pi, and do not copy private module trees into this checkout.
+
+## PHP 8.4 package policy
+
+The bench install uses Debian Trixie's PHP 8.4 packages: `php8.4-fpm`, `php8.4-cli`, and `php8.4-sqlite3`. It does not add a PHP repository, and it does not accept another major or minor series if that is what apt offers.
+
+`apt-get update` uses the sources already enabled on the machine. The install refuses to continue unless those sources include the `trixie-security` suite. For each of the three packages, the installed version is compared with the apt candidate. A package that is missing or older than the candidate is installed or upgraded with `apt-get install` of that package list only. `--no-upgrade` is not applied to those packages, so a reinstall does not keep a stale PHP when the candidate has moved. `nginx`, `gpiod`, `sudo`, and `sqlite3` still use `--no-upgrade`. There is no `dist-upgrade` and no `full-upgrade`.
+
+After that install, the same comparison is repeated. The install stops if an installed PHP package is still not the candidate, or if the candidate is not PHP 8.4. The nginx site accepts only a `php8.4-fpm` socket.
+
+This is a package-freshness rule for the distro runtime. It does not name a vulnerability and it does not claim that moving to the candidate closes one. The cloud harness still typechecks with the image's PHP 8.3 CLI; that is not the runtime the installer selects for the Pi. Commit `10c4df4` is the head a native reviewer was already evaluating. This package rule is a later commit and has not been installed on the Pi.
 
 ## Threat model
 
