@@ -24,6 +24,7 @@ printf 'functional-test\n' > "$mode"
 chmod 644 "$mode"
 cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 php "$ROOT_DIR/upgrade/tests/functional_runtime_prepare.php" "$ROOT_DIR" "$db" "$host" "$tmp/no-marker" "$mode" "$preview" "$tmp/stored-tx"
+apply_ident_profile "$db"
 before=$(sha256sum "$db" | awk '{print $1}')
 
 export ORP_BENCH_TEST_HARNESS=1
@@ -50,6 +51,12 @@ fi
 printf '%s\n' "$pub" | grep -q 'published'
 printf '%s\n' "$pub" | grep -q 'simulation/dummy-path'
 grep -q '^PTT_TYPE=NONE$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^CALLSIGN=FIXTURE$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^SHORT_IDENT_INTERVAL=5$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^SHORT_CW_ID_ENABLE=1$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^SHORT_VOICE_ID_ENABLE=0$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^CW_WPM=20$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^CW_PITCH=600$' "$live/etc/svxlink/svxlink.conf"
 grep -q '^MODULE_PATH=/usr/local/lib/svxlink$' "$live/etc/svxlink/svxlink.conf"
 grep -q '^LOGIC_CORE_PATH=/usr/local/lib/svxlink$' "$live/etc/svxlink/svxlink.conf"
 grep -q '^EVENT_HANDLER=/usr/local/share/svxlink/events.tcl$' "$live/etc/svxlink/svxlink.conf"

@@ -23,6 +23,7 @@ printf 'functional-test\n' > "$mode"
 chmod 644 "$mode"
 cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 sqlite3 "$db" "UPDATE settings SET value='FIXTURE' WHERE keyID='callSign';"
+apply_ident_profile "$db"
 
 export ORP_BENCH_TEST_HARNESS=1
 export ORP_BENCH_HOSTNAME_FILE="$host"
@@ -99,6 +100,9 @@ grep -q '^AUDIO_DEV=udp:127.0.0.1:17001$' "$dest"
 grep -q '^AUDIO_DEV=udp:127.0.0.1:17002$' "$dest"
 grep -q '^EVENT_HANDLER=/usr/local/share/svxlink/events.tcl$' "$dest"
 grep -q '^CALLSIGN=FIXTURE$' "$dest"
+grep -q '^SHORT_IDENT_INTERVAL=5$' "$dest"
+grep -q '^CW_WPM=20$' "$dest"
+grep -q '^SHORT_CW_ID_ENABLE=1$' "$dest"
 [ "$(grep -c '^\[Tx' "$dest")" -eq 1 ]
 grep -q '^MODULE_PATH=/usr/local/lib/svxlink$' "$dest"
 [ ! -s "$log" ]
@@ -120,6 +124,29 @@ printf '%s\n' "$masked" | grep -q 'Unmask was not performed'
 [ "$(readlink "$live/etc/systemd/system/svxlink.service")" = "/dev/null" ]
 echo "ok: publisher ignored the mutable staged file, including a racing rewrite"
 echo "ok: start does not unmask the administrative mask"
+
+good_sum=$(sha256sum "$dest" | awk '{print $1}')
+sqlite3 "$db" "UPDATE settings SET value='25' WHERE keyID='ID_Morse_WPM';"
+set +e
+fast=$("$ROOT_DIR/install/scripts/orp_helper" config publish 2>&1)
+fast_rc=$?
+set -e
+[ "$fast_rc" -ne 0 ]
+printf '%s\n' "$fast" | grep -q 'stored speed was not changed'
+[ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_WPM';")" = "25" ]
+[ "$(sha256sum "$dest" | awk '{print $1}')" = "$good_sum" ]
+sqlite3 "$db" "UPDATE settings SET value='20' WHERE keyID='ID_Morse_WPM';"
+sqlite3 "$db" "UPDATE settings SET value='custom' WHERE keyID='ID_Long_Mode';"
+set +e
+custom=$("$ROOT_DIR/install/scripts/orp_helper" config publish 2>&1)
+custom_rc=$?
+set -e
+[ "$custom_rc" -ne 0 ]
+printf '%s\n' "$custom" | grep -q 'mode custom is not published'
+[ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Long_Mode';")" = "custom" ]
+[ "$(sha256sum "$dest" | awk '{print $1}')" = "$good_sum" ]
+sqlite3 "$db" "UPDATE settings SET value='disabled' WHERE keyID='ID_Long_Mode';"
+echo "ok: 25 WPM and a custom clip are not published and the stored rows stay put"
 
 # Corrupt the installed bytes. Start must not run.
 printf 'PTT_PIN=gpio498\n' >> "$dest"

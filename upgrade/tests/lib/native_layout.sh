@@ -48,3 +48,18 @@ plant_native_layout() {
 		printf '%s\n' 'svxlink:x:200:200::/var/lib/svxlink:/usr/sbin/nologin' >> "$root/etc/passwd"
 	fi
 }
+
+# Stored identification the disconnected runtime is allowed to copy.
+# Morse at 20 WPM, short interval 5, long identification disabled.
+apply_ident_profile() {
+	local db=$1
+	sqlite3 "$db" "
+UPDATE settings SET value='morse' WHERE keyID='ID_Short_Mode';
+UPDATE settings SET value='5' WHERE keyID='ID_Short_IntervalMin';
+UPDATE settings SET value='False' WHERE keyID='ID_Short_AppendMorse';
+UPDATE settings SET value='False' WHERE keyID='ID_Short_IdentOnlyAfterTX';
+UPDATE settings SET value='disabled' WHERE keyID='ID_Long_Mode';
+UPDATE settings SET value='20' WHERE keyID='ID_Morse_WPM';
+UPDATE settings SET value='600' WHERE keyID='ID_Morse_Pitch';
+"
+}

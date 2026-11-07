@@ -574,11 +574,151 @@ function config_parent_anchored() {
 	return 0
 }
 
+function config_db_value() {
+	local key=$1 db value
+	db="${ORP_DB_PATH:-${ORP_ROOT:-}/var/lib/openrepeater/db/openrepeater.db}"
+	config_real_file "$db" || return 1
+	value=$(sqlite3 "$db" "SELECT ifnull(value,'') FROM settings WHERE keyID='${key}';") || return 1
+	case "$value" in
+		*$'\n'*|*$'\r'*) return 1 ;;
+	esac
+	printf '%s' "$value"
+}
+
+function config_ident_mode() {
+	case "$1" in
+		disabled|morse|voice) return 0 ;;
+		custom)
+			echo "refused: identification mode custom is not published. The stock 26.05 handler does not play an uploaded clip. The stored mode was not changed." >&2
+			return 1
+			;;
+		*)
+			echo "refused: identification mode is not disabled, morse, or voice. The stored mode was not changed." >&2
+			return 1
+			;;
+	esac
+}
+
+function config_ident_bool() {
+	case "$1" in
+		True) printf '1' ;;
+		False|"") printf '0' ;;
+		*) return 1 ;;
+	esac
+}
+
+# Read stored identification fields and keep only values the stock 26.05
+# handler already understands. Nothing here rewrites the database.
+function config_ident_load() {
+	local short_mode long_mode short_raw long_raw after_raw append_s append_l
+	local wpm pitch short_voice short_cw long_voice long_cw short_covers
+	short_mode=$(config_db_value ID_Short_Mode) || return 1
+	long_mode=$(config_db_value ID_Long_Mode) || return 1
+	short_raw=$(config_db_value ID_Short_IntervalMin) || return 1
+	long_raw=$(config_db_value ID_Long_IntervalMin) || return 1
+	after_raw=$(config_db_value ID_Short_IdentOnlyAfterTX) || return 1
+	append_s=$(config_db_value ID_Short_AppendMorse) || return 1
+	append_l=$(config_db_value ID_Long_AppendMorse) || return 1
+	wpm=$(config_db_value ID_Morse_WPM) || return 1
+	pitch=$(config_db_value ID_Morse_Pitch) || return 1
+	config_ident_mode "$short_mode" || return 1
+	config_ident_mode "$long_mode" || return 1
+	ident_after=$(config_ident_bool "$after_raw") || {
+		echo "refused: ID_Short_IdentOnlyAfterTX is not True or False. The stored value was not changed." >&2
+		return 1
+	}
+	case "$append_s" in
+		True|False|"") ;;
+		*) echo "refused: ID_Short_AppendMorse is not True or False. The stored value was not changed." >&2; return 1 ;;
+	esac
+	case "$append_l" in
+		True|False|"") ;;
+		*) echo "refused: ID_Long_AppendMorse is not True or False. The stored value was not changed." >&2; return 1 ;;
+	esac
+	if [ "$short_mode" = disabled ]; then
+		ident_short_interval=0
+		short_covers=0
+	else
+		case "$short_raw" in
+			[1-9]|10) ident_short_interval=$short_raw; short_covers=1 ;;
+			*)
+				echo "refused: short identification interval is not a whole number from 1 through 10. SvxLink 26.05 would still load another SHORT_IDENT_INTERVAL. The stored number was not changed." >&2
+				return 1
+				;;
+		esac
+	fi
+	if [ "$long_mode" = disabled ]; then
+		ident_long_interval=0
+	else
+		case "$long_raw" in
+			[1-9]|[1-9][0-9]|1[0-7][0-9]|180) ;;
+			*)
+				echo "refused: long identification interval is not a whole number from 1 through 180. The stored number was not changed." >&2
+				return 1
+				;;
+		esac
+		if [ "$long_raw" -gt 10 ] && [ "$short_covers" -ne 1 ]; then
+			echo "refused: the only enabled identification interval is longer than 10 minutes. SvxLink 26.05 would still load it. The stored number was not changed." >&2
+			return 1
+		fi
+		ident_long_interval=$long_raw
+	fi
+	short_voice=0
+	short_cw=0
+	long_voice=0
+	long_cw=0
+	if [ "$short_mode" = voice ]; then
+		short_voice=1
+	fi
+	if [ "$short_mode" = morse ] || { [ "$short_mode" = voice ] && [ "$append_s" = True ]; }; then
+		short_cw=1
+	fi
+	if [ "$long_mode" = voice ]; then
+		long_voice=1
+	fi
+	if [ "$long_mode" = morse ] || { [ "$long_mode" = voice ] && [ "$append_l" = True ]; }; then
+		long_cw=1
+	fi
+	ident_short_voice=$short_voice
+	ident_short_cw=$short_cw
+	ident_long_voice=$long_voice
+	ident_long_cw=$long_cw
+	ident_emit_cw=0
+	ident_cw_wpm=""
+	ident_cw_pitch=""
+	if [ "$short_cw" = 1 ] || [ "$long_cw" = 1 ]; then
+		case "$wpm" in
+			[1-9]|1[0-9]|20) ;;
+			*)
+				echo "refused: Morse speed is above 20 words per minute or is not a whole number from 1 through 20. The stored speed was not changed." >&2
+				return 1
+				;;
+		esac
+		case "$pitch" in
+			400|600|800|1000|1200) ;;
+			*)
+				echo "refused: Morse pitch is not one of 400, 600, 800, 1000, or 1200. The stored pitch was not changed." >&2
+				return 1
+				;;
+		esac
+		ident_emit_cw=1
+		ident_cw_wpm=$wpm
+		ident_cw_pitch=$pitch
+	fi
+	return 0
+}
+
 function config_render() {
-	local out=$1 callsign events modules
+	local out=$1 callsign events modules cw_lines
 	callsign=$(config_callsign) || return 1
 	events=$(config_event_handler) || return 1
 	modules=$(config_module_dir) || return 1
+	config_ident_load || return 1
+	cw_block=""
+	if [ "$ident_emit_cw" = 1 ]; then
+		cw_block="CW_WPM=${ident_cw_wpm}
+CW_PITCH=${ident_cw_pitch}"
+	fi
 	cat > "$out" <<EOF
 [GLOBAL]
 MODULE_PATH=${modules}
@@ -592,14 +732,15 @@ TYPE=Repeater
 RX=Rx1
 TX=Tx1
 CALLSIGN=${callsign}
-SHORT_IDENT_INTERVAL=10
-LONG_IDENT_INTERVAL=0
-IDENT_ONLY_AFTER_TX=0
+SHORT_IDENT_INTERVAL=${ident_short_interval}
+LONG_IDENT_INTERVAL=${ident_long_interval}
+IDENT_ONLY_AFTER_TX=${ident_after}
 EVENT_HANDLER=${events}
-SHORT_VOICE_ID_ENABLE=1
-SHORT_CW_ID_ENABLE=0
-LONG_VOICE_ID_ENABLE=1
-LONG_CW_ID_ENABLE=0
+SHORT_VOICE_ID_ENABLE=${ident_short_voice}
+SHORT_CW_ID_ENABLE=${ident_short_cw}
+LONG_VOICE_ID_ENABLE=${ident_long_voice}
+LONG_CW_ID_ENABLE=${ident_long_cw}
+${cw_block}
 [Rx1]
 TYPE=Local
 AUDIO_DEV=udp:127.0.0.1:17001
@@ -886,6 +1027,13 @@ while :; do
     case $1 in
         config)
 			if [ "$2" == "publish" ]; then config_publish
+			elif [ "$2" == "ident" ]; then
+				config_ident_load || exit 1
+				callsign=$(config_callsign) || exit 1
+				printf 'CALLSIGN=%s\nSHORT_IDENT_INTERVAL=%s\nLONG_IDENT_INTERVAL=%s\nIDENT_ONLY_AFTER_TX=%s\nSHORT_VOICE_ID_ENABLE=%s\nSHORT_CW_ID_ENABLE=%s\nLONG_VOICE_ID_ENABLE=%s\nLONG_CW_ID_ENABLE=%s\n' "$callsign" "$ident_short_interval" "$ident_long_interval" "$ident_after" "$ident_short_voice" "$ident_short_cw" "$ident_long_voice" "$ident_long_cw"
+				if [ "$ident_emit_cw" = 1 ]; then
+					printf 'CW_WPM=%s\nCW_PITCH=%s\n' "$ident_cw_wpm" "$ident_cw_pitch"
+				fi
 			else echo "INVALID OPTION"; echo "USAGE: orp_helper config publish"
 			fi
 			exit;;
