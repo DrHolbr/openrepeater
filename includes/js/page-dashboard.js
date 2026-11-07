@@ -181,10 +181,21 @@ function updateDisk(){
 var ajax_url = 'functions/ajax_system.php'; //Used by all ajax request in this script
 
 function reboot_orp_system() {
-    $.ajax({ type: 'POST', dataType: 'text', url: ajax_url, data: { post_service: 'system', post_option: 'restart' } });	   
-	clearInterval(updateTimeInterval); 
-	clearInterval(updateInfoInterval); 
-	reboot_countdown();
+    $.ajax({
+		type: 'POST',
+		dataType: 'text',
+		url: ajax_url,
+		data: { post_service: 'system', post_option: 'restart' },
+		success: function (data) {
+			if (typeof data === 'string' && data.indexOf('refused:') === 0) {
+				window.alert(data);
+				return;
+			}
+			clearInterval(updateTimeInterval);
+			clearInterval(updateInfoInterval);
+			reboot_countdown();
+		}
+	});
 }
 
 function reboot_countdown() {
@@ -212,10 +223,21 @@ function reboot_countdown() {
 
 
 function shutdown_orp_system() {
-    $.ajax({ type: 'POST', dataType: 'text', url: ajax_url, data: { post_service: 'system', post_option: 'stop' } });	   
-	clearInterval(updateTimeInterval); 
-	clearInterval(updateInfoInterval); 
-	shutdown_countdown();
+    $.ajax({
+		type: 'POST',
+		dataType: 'text',
+		url: ajax_url,
+		data: { post_service: 'system', post_option: 'stop' },
+		success: function (data) {
+			if (typeof data === 'string' && data.indexOf('refused:') === 0) {
+				window.alert(data);
+				return;
+			}
+			clearInterval(updateTimeInterval);
+			clearInterval(updateInfoInterval);
+			shutdown_countdown();
+		}
+	});
 }
 
 function shutdown_countdown() {

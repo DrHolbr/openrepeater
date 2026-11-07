@@ -172,8 +172,8 @@ class BoardPresets {
 		$classDB->set_update_flag(true);
 
 
-		// Update Alsa Mixer Settings
-		if ( isset( $this->selectedBoardArray['alsa_settings'] ) ) {
+		// Update Alsa Mixer Settings. Bench mode does not touch the mixer.
+		if ( isset( $this->selectedBoardArray['alsa_settings'] ) && BenchGuard::detect()->mixerUpdatesAllowed() ) {
 			$this->alsa_mixer_settings();
 		}
 

@@ -29,6 +29,26 @@ function display_help {
 	echo "USAGE: orp_helper [service] [option]"
 }
 
+function bench_marker_path {
+	if [ -n "${ORP_BENCH_MARKER:-}" ]; then
+		printf '%s' "$ORP_BENCH_MARKER"
+	else
+		printf '%s' /etc/openrepeater/bench-mode
+	fi
+}
+
+function bench_mode_on {
+	[ -f "$(bench_marker_path)" ]
+}
+
+function bench_refuses {
+	if bench_mode_on; then
+		echo "refused: bench mode blocks $1"
+		return 0
+	fi
+	return 1
+}
+
 function svxlink_disable {
 	echo "SVXLink Disable"
 	service svxlink stop
@@ -36,12 +56,18 @@ function svxlink_disable {
 }
 
 function svxlink_enable {
+	if bench_refuses "svxlink enable"; then
+		return 1
+	fi
 	echo "SVXLink Enable"
 	systemctl enable svxlink.service
 	service svxlink start
 }
 
 function svxlink_restart {
+	if bench_refuses "svxlink restart"; then
+		return 1
+	fi
 	service svxlink restart
 	svxlink_status
 }
@@ -52,6 +78,9 @@ function svxlink_stop {
 }
 
 function svxlink_start {
+	if bench_refuses "svxlink start"; then
+		return 1
+	fi
 	service svxlink start
 	svxlink_status
 }
@@ -61,22 +90,34 @@ function svxlink_status {
 }
 
 function svxlink_gpio_up {
-	/usr/sbin/svxlink_gpio_up
+	if bench_refuses "svxlink gpio_up"; then
+		return 1
+	fi
+	"${SVXLINK_GPIO_UP_BIN:-/usr/sbin/svxlink_gpio_up}"
 	echo up
 }
 
 function svxlink_gpio_down {
-	/usr/sbin/svxlink_gpio_down
+	if bench_refuses "svxlink gpio_down"; then
+		return 1
+	fi
+	"${SVXLINK_GPIO_DOWN_BIN:-/usr/sbin/svxlink_gpio_down}"
 	echo down
 }
 
 
 ### SYSTEM FUNCTIONS ###
 function system_reboot {
+	if bench_refuses "system restart"; then
+		return 1
+	fi
 	shutdown -r now
 }
 
 function system_shutdown {
+	if bench_refuses "system stop"; then
+		return 1
+	fi
 	shutdown -h now
 }
 
@@ -105,6 +146,9 @@ function audio_version {
 
 ### AUDIO FUNCTIONS ###
 function set_mixer {
+	if bench_refuses "set_mixer"; then
+		return 1
+	fi
 	if [ -n "$3" ]; then
 		amixer -c$3 set "$1" $2
 	else
@@ -118,6 +162,9 @@ function alsamixer_backup {
 }
 
 function alsamixer_restore {
+	if bench_refuses "alsa restore"; then
+		return 1
+	fi
 	alsactl --file "$1" restore
 }
 
@@ -208,6 +255,10 @@ function info_os {
 ###############################################################################
 
 while :; do
+    if [ "${2:-}" = "unmask" ]; then
+        echo "refused: unmask is not permitted"
+        exit 1
+    fi
     case $1 in
         svxlink)
 			if [ "$2" == "start" ]; then svxlink_start

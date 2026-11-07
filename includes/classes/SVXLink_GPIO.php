@@ -53,6 +53,9 @@ class SVXLink_GPIO {
 
 
 	public function build_gpio_config() {
+		if (BenchGuard::detect()->isBench()) {
+			return $this->build_bench_gpio_config();
+		}
 		
 		$this->process_gpio_pins();
 		
@@ -103,6 +106,24 @@ class SVXLink_GPIO {
 		$gpioConfigFile = trim(preg_replace('/\t+/', '', $gpioConfigFile));
 
 		return $gpioConfigFile;
+	}
+
+
+	private function build_bench_gpio_config() {
+		$lines = array();
+		$lines[] = '# Bench GPIO preview. Read-only. No sysfs path. No pins are exported.';
+		$lines[] = '# Outputs are disconnected. Do not copy this file onto the radio.';
+		foreach ($this->gpioArray as $row) {
+			$num = isset($row['gpio_num']) ? $row['gpio_num'] : '';
+			$dir = isset($row['direction']) ? $row['direction'] : '';
+			$active = isset($row['active']) ? $row['active'] : '';
+			$lines[] = '# stored gpio_num=' . $num . ' direction=' . $dir . ' active=' . $active . ' (not configured)';
+		}
+		$lines[] = 'GPIO_IN_HIGH=""';
+		$lines[] = 'GPIO_IN_LOW=""';
+		$lines[] = 'GPIO_OUT_HIGH=""';
+		$lines[] = 'GPIO_OUT_LOW=""';
+		return implode("\n", $lines) . "\n";
 	}
 
 

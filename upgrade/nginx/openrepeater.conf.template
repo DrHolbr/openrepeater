@@ -1,0 +1,37 @@
+# Bench HTTP site for the OpenRepeater UI.
+# PHP 8 FPM socket is substituted at install time. No PHP 5 socket, no TLS redirect.
+server {
+	listen 80 default_server;
+	listen [::]:80 default_server;
+	server_name orp-test;
+
+	root /var/www/openrepeater;
+	index index.php index.html;
+
+	client_max_body_size 25M;
+
+	location ^~ /install/ {
+		deny all;
+	}
+
+	location ^~ /upgrade/ {
+		deny all;
+	}
+
+	location ~* \.(db|sqlite|sqlite3)$ {
+		deny all;
+	}
+
+	location ~ /\. {
+		deny all;
+	}
+
+	location / {
+		try_files $uri $uri/ /index.php?$query_string;
+	}
+
+	location ~ \.php$ {
+		include snippets/fastcgi-php.conf;
+		fastcgi_pass unix:__PHP_FPM_SOCK__;
+	}
+}
