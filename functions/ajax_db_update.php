@@ -1,11 +1,6 @@
 <?php
-// --------------------------------------------------------
-// SESSION CHECK TO SEE IF USER IS LOGGED IN.
-session_start();
-if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
-	header('location: ../login.php');
-} else { // If they are, show the page.
-// --------------------------------------------------------
+require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
+RequestGuard::requireMutation();
 
 ################################################################################
 # AUTOLOAD CLASSES
@@ -13,7 +8,8 @@ require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/autoloadClasses.
 ################################################################################
 $Database = new Database();
 
-foreach($_POST as $key=>$value){  
+foreach($_POST as $key=>$value){
+	if ($key === 'csrf_token') { continue; }
 	// SPECIAL FORMATING
 	if ($key == "callSign") { $value = strtoupper($value); }
 	if ($key == "echolink_callSign") { $value = strtoupper($value); }
@@ -22,10 +18,4 @@ foreach($_POST as $key=>$value){
 }
 
 if ($query) { return true; } else { return false; }
-
-
-// --------------------------------------------------------
-// SESSION CHECK TO SEE IF USER IS LOGGED IN.
- } // close ELSE to end login check from top of page
-// --------------------------------------------------------
 ?>

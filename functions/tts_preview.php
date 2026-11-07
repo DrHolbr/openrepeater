@@ -11,14 +11,8 @@
 
 // Capture any PHP notices/warnings so they don't corrupt the HTTP response.
 ob_start();
-session_start();
-if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))) {
-	ob_end_clean();
-	http_response_code(403);
-	header('Content-Type: application/json');
-	echo json_encode(['status' => 'error', 'message' => 'Not authorized.']);
-	exit;
-}
+require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
+RequestGuard::requireMutation();
 
 require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/classes/TTS.php');
 

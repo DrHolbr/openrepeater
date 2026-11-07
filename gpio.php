@@ -2,6 +2,11 @@
 // --------------------------------------------------------
 // SESSION CHECK TO SEE IF USER IS LOGGED IN.
 session_start();
+require_once(__DIR__ . '/includes/classes/RequestGuard.php');
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] !== 'GET' && $_SERVER['REQUEST_METHOD'] !== 'HEAD') {
+	RequestGuard::requireMutation();
+	RequestGuard::deny(405);
+}
 if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
 	header('location: login.php');
 } elseif (!isset($_SESSION['callsign'])) {

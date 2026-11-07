@@ -1,11 +1,6 @@
 <?php
-// --------------------------------------------------------
-// SESSION CHECK TO SEE IF USER IS LOGGED IN.
-session_start();
-if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
-	header('location: ../login.php');
-} else { // If they are, show the page.
-// --------------------------------------------------------
+require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
+RequestGuard::requireMutation();
 
 ################################################################################
 # AUTOLOAD CLASSES
@@ -52,8 +47,4 @@ if(isset($_POST)==true && empty($_POST)==false) {
 } 
 
 
-// --------------------------------------------------------
-// SESSION CHECK TO SEE IF USER IS LOGGED IN.
- } // close ELSE to end login check from top of page
-// --------------------------------------------------------
 ?>

@@ -54,6 +54,12 @@ grep -q '^MODULE_PATH=/usr/local/lib/svxlink$' "$live/etc/svxlink/svxlink.conf"
 grep -q '^LOGIC_CORE_PATH=/usr/local/lib/svxlink$' "$live/etc/svxlink/svxlink.conf"
 grep -q '^EVENT_HANDLER=/usr/local/share/svxlink/events.tcl$' "$live/etc/svxlink/svxlink.conf"
 grep -q '^CFG_DIR=/etc/svxlink/functional-test.d$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^SQL_SIGLEV_OPEN_THRESH=30$' "$live/etc/svxlink/svxlink.conf"
+grep -q '^SQL_SIGLEV_CLOSE_THRESH=10$' "$live/etc/svxlink/svxlink.conf"
+if grep -q '^SIGLEV_OPEN_THRESH=\|^SIGLEV_CLOSE_THRESH=' "$live/etc/svxlink/svxlink.conf"; then
+	echo "FAIL: published config still uses the deprecated SIGLEV threshold keys" >&2
+	exit 1
+fi
 if grep -q 'ModuleEchoLink\|/usr/lib/\|/usr/share/svxlink' "$live/etc/svxlink/svxlink.conf"; then
 	echo "FAIL: published config followed distro paths or svxlink.d" >&2
 	exit 1

@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/http_session.sh
+. "$ROOT_DIR/upgrade/tests/lib/http_session.sh"
 db=$(mktemp)
 cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 php -r '
@@ -57,27 +59,42 @@ else
 fi
 
 bad_jar=$(mktemp)
-code=$(curl -s -c "$bad_jar" -o /tmp/orp-bad-login.html -w '%{http_code}' \
-	-d 'username=admin' -d 'password=wrong-password' \
+login_page=$(curl -s -c "$bad_jar" -b "$bad_jar" "http://127.0.0.1:${port}/login.php")
+bad_token=$(http_token "$login_page")
+code=$(curl -s -c "$bad_jar" -b "$bad_jar" -o /tmp/orp-bad-login.html -w '%{http_code}' \
+	--data-urlencode 'username=admin' \
+	--data-urlencode 'password=wrong-password' \
+	--data-urlencode "csrf_token=${bad_token}" \
 	"http://127.0.0.1:${port}/login.php")
-headers=$(curl -s -D - -c "$bad_jar" -o /dev/null \
-	-d 'username=admin' -d 'password=wrong-password' \
+headers=$(curl -s -D - -c "$bad_jar" -b "$bad_jar" -o /dev/null \
+	--data-urlencode 'username=admin' \
+	--data-urlencode 'password=wrong-password' \
+	--data-urlencode "csrf_token=${bad_token}" \
 	"http://127.0.0.1:${port}/login.php")
 printf '%s\n' "$headers" | grep -q 'incorrectLogin'
 gpio_headers=$(curl -s -D - -b "$bad_jar" -o /dev/null "http://127.0.0.1:${port}/gpio.php")
 printf '%s\n' "$gpio_headers" | grep -q 'login.php'
 echo "ok: wrong password does not open a protected page"
 
-unknown_headers=$(curl -s -D - -o /dev/null \
-	-d 'username=nobody' -d 'password=wrong-password' \
+unknown_jar=$(mktemp)
+unknown_page=$(curl -s -c "$unknown_jar" -b "$unknown_jar" "http://127.0.0.1:${port}/login.php")
+unknown_token=$(http_token "$unknown_page")
+unknown_headers=$(curl -s -D - -c "$unknown_jar" -b "$unknown_jar" -o /dev/null \
+	--data-urlencode 'username=nobody' \
+	--data-urlencode 'password=wrong-password' \
+	--data-urlencode "csrf_token=${unknown_token}" \
 	"http://127.0.0.1:${port}/login.php")
 printf '%s\n' "$unknown_headers" | grep -q 'incorrectLogin'
 printf '%s\n' "$unknown_headers" | grep -q '302'
 echo "ok: unknown user is rejected without a server error"
 
 jar=$(mktemp)
-headers=$(curl -s -D - -c "$jar" -o /dev/null \
-	-d 'username=admin' -d 'password=bench-only-test' \
+login_ok=$(curl -s -c "$jar" -b "$jar" "http://127.0.0.1:${port}/login.php")
+ok_token=$(http_token "$login_ok")
+headers=$(curl -s -D - -c "$jar" -b "$jar" -o /dev/null \
+	--data-urlencode 'username=admin' \
+	--data-urlencode 'password=bench-only-test' \
+	--data-urlencode "csrf_token=${ok_token}" \
 	"http://127.0.0.1:${port}/login.php")
 printf '%s\n' "$headers" | grep -q '302'
 printf '%s\n' "$headers" | grep -q 'dashboard.php'
@@ -94,5 +111,5 @@ if printf '%s' "$dash" | grep -q 'Please login'; then
 	exit 1
 fi
 echo "ok: valid login sets a session that can open protected pages"
-rm -f "$bad_jar" "$jar"
+rm -f "$bad_jar" "$jar" "$unknown_jar"
 echo "login session checks passed"

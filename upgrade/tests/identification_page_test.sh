@@ -5,6 +5,8 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/http_session.sh
+. "$ROOT_DIR/upgrade/tests/lib/http_session.sh"
 tmp=$(mktemp -d)
 db="$tmp/openrepeater.db"
 preview=$(mktemp -d "${TMPDIR:-/tmp}/orp-preview-id.XXXXXX")
@@ -214,9 +216,12 @@ if [ "$ready" -ne 1 ]; then
 	exit 1
 fi
 
-curl -s -c "$jar" -o /dev/null \
+login_page=$(curl -s -c "$jar" -b "$jar" "http://127.0.0.1:${port}/login.php")
+login_token=$(http_token "$login_page")
+curl -s -c "$jar" -b "$jar" -o /dev/null \
 	--data-urlencode 'username=admin' \
 	--data-urlencode 'password=bench-only-test' \
+	--data-urlencode "csrf_token=${login_token}" \
 	"http://127.0.0.1:${port}/login.php"
 
 assert_complete() {

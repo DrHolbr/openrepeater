@@ -4,6 +4,26 @@ Installed `adda19c` passed the page gate on November 6, 2026, about 8:51–8:55 
 
 Status values: `page-render-passed` means the installed page closed and showed the named controls. `software-proven` means a cloud test exercised a handler on a throwaway database. `read-only-inventoried` means the control was seen and not operated. `not-accepted` means the page gate does not count the handler.
 
+## Authenticated mutation boundary
+
+`2e1cf4d` let `functions/ajax_system.php` call the helper with no session. The boundary below is the auth milestone. A cloud HTTP fixture covers the denial codes and one authenticated `svxlink status` POST. It does not unmask a radio. Spoken identification and preset propagation remain open.
+
+| Endpoint | Verb | Anonymous | Missing or bad CSRF | Foreign Origin | Authenticated POST |
+| --- | --- | --- | --- | --- | --- |
+| `functions/ajax_system.php` lifecycle fields | POST | 401 before helper | 403 before helper | 403 before helper | allowlist, then BenchGuard, then helper |
+| `functions/ajax_system.php?post_option=start` | GET | 405 | 405 | 405 | 405 |
+| `functions/ajax_system.php?update=` | GET | 401 | session required, no CSRF | read allowlist only | read allowlist |
+| `functions/svxlink_update.php` | GET | 405 | 405 | 405 | 405 |
+| `functions/svxlink_update.php` | POST | 401 | 403 | 403 | publish path after the token matches |
+| `functions/ajax_db_update.php` | POST | 401 before SQL | 403 before SQL | 403 | settings update, `csrf_token` is not a setting |
+| `functions/port_db_update.php` | POST | 401 | 403 | 403 | port replace |
+| `functions/tts_preview.php` | POST | 401 | 403 | 403 | preview audio |
+| `login.php` password post | POST | form token required before the users table | 403 | 403 | creates the session and rotates the token |
+| `wizard/index.php` | POST | 401 | 403 | 403 | wizard steps; Finish posts to `svxlink_update.php` |
+| `modules.php`, `identification.php`, `courtesy_tone.php`, `ports.php`, `advanced.php`, `backup.php`, `settings.php`, `dtmf.php`, `dashboard.php`, `log.php` | POST | 401 | 403 | 403 | existing page action |
+| `gpio.php` | POST | 401 | 403 | 403 | 405, diagnostics stay read-only |
+| page GET routes | GET | 302 to `login.php` | not a mutation | not a mutation | render, including the CSRF meta tag |
+
 | Route | Native ac0613f | Forms seen | Controls seen | This commit |
 | --- | --- | --- | --- | --- |
 | `dashboard.php` | HTTP 200, bench text, document not accepted as functional | POST `functions/svxlink_update.php` | `return_url`; enabled Restart and Shutdown labels plus disabled "Restart blocked on bench" and "Shutdown blocked on bench" | `read-only-inventoried`. Buttons were not activated. Bench still refuses the helper start, restart, and reboot commands. |

@@ -180,12 +180,17 @@ function updateDisk(){
 // AJAX FUNCTIONS
 var ajax_url = 'functions/ajax_system.php'; //Used by all ajax request in this script
 
+function orpCsrfToken() {
+	var meta = document.querySelector('meta[name="csrf-token"]');
+	return meta ? meta.getAttribute('content') : '';
+}
+
 function reboot_orp_system() {
     $.ajax({
 		type: 'POST',
 		dataType: 'text',
 		url: ajax_url,
-		data: { post_service: 'system', post_option: 'restart' },
+		data: { post_service: 'system', post_option: 'restart', csrf_token: orpCsrfToken() },
 		success: function (data) {
 			if (typeof data === 'string' && data.indexOf('refused:') === 0) {
 				window.alert(data);
@@ -227,7 +232,7 @@ function shutdown_orp_system() {
 		type: 'POST',
 		dataType: 'text',
 		url: ajax_url,
-		data: { post_service: 'system', post_option: 'stop' },
+		data: { post_service: 'system', post_option: 'stop', csrf_token: orpCsrfToken() },
 		success: function (data) {
 			if (typeof data === 'string' && data.indexOf('refused:') === 0) {
 				window.alert(data);
@@ -271,7 +276,7 @@ function toggleRepeaterState() {
 
 function svxlink_toggle_check_status(service, option) {
     $.ajax({ async: true, type: 'POST', dataType: 'text', url: ajax_url,
-        data: { post_service: service, post_option: option },
+        data: { post_service: service, post_option: option, csrf_token: orpCsrfToken() },
         success: function (status) {
 			var status = $.trim(status);
 			if(status==="active") {
@@ -288,7 +293,7 @@ function svxlink_toggle_check_status(service, option) {
 
 function svxlink_toggle_state(service, option) {
     $.ajax({ async: true, type: 'POST', dataType: 'text', url: ajax_url,
-        data: { post_service: service, post_option: option },
+        data: { post_service: service, post_option: option, csrf_token: orpCsrfToken() },
         success: function (state) {
 			var state = $.trim(state);
 			if(state==="active") {

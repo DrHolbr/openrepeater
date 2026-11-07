@@ -8,10 +8,11 @@ files for SVXLink.
 */
 
 /* ---------------------------------------------------------- */
-/* SESSION CHECK TO SEE IF USER IS LOGGED IN. */
-session_start();
+/* SESSION, VERB, AND CSRF BEFORE ANY DATABASE OR HELPER USE */
+require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
+RequestGuard::requireMutation();
 if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
-	header('location: login.php');
+	RequestGuard::deny(401);
 } else { // If they are, show the page.
 /* ---------------------------------------------------------- */
 

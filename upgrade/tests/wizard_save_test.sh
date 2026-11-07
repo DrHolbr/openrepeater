@@ -5,6 +5,8 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/http_session.sh
+. "$ROOT_DIR/upgrade/tests/lib/http_session.sh"
 tmp=$(mktemp -d)
 db="$tmp/openrepeater.db"
 preview=$(mktemp -d "${TMPDIR:-/tmp}/orp-preview-wizard.XXXXXX")
@@ -181,15 +183,23 @@ printf '%s\n' "$anon" | grep -q '302'
 printf '%s\n' "$anon" | grep -q 'login.php'
 echo "ok: anonymous wizard redirects to login"
 
-headers=$(curl -s -D - -c "$jar" -o /dev/null \
+login_page=$(curl -s -c "$jar" -b "$jar" "http://127.0.0.1:${port}/login.php")
+login_token=$(http_token "$login_page")
+headers=$(curl -s -D - -c "$jar" -b "$jar" -o /dev/null \
 	--data-urlencode 'username=admin' \
 	--data-urlencode 'password=bench-only-test' \
+	--data-urlencode "csrf_token=${login_token}" \
 	"http://127.0.0.1:${port}/login.php")
 printf '%s\n' "$headers" | grep -q '302'
 printf '%s\n' "$headers" | grep -q 'dashboard.php'
 echo "ok: auth fixture opens a session"
 
 page=$(curl -s -b "$jar" -c "$jar" "http://127.0.0.1:${port}/wizard/index.php")
+token=$(http_token "$page")
+if [ -z "$token" ]; then
+	echo "FAIL: wizard page did not render a CSRF token" >&2
+	exit 1
+fi
 assert_no_memcached_error <(printf '%s' "$page")
 printf '%s' "$page" | grep -q 'Step 1 of 5'
 if printf '%s' "$page" | grep -q 'Session name cannot be changed'; then
@@ -202,6 +212,7 @@ page=$(curl -s -b "$jar" -c "$jar" \
 	--data-urlencode 'process_page=wizard_page1' \
 	--data-urlencode 'page=wizard_page2' \
 	--data-urlencode 'agree=yes' \
+	--data-urlencode "csrf_token=${token}" \
 	"http://127.0.0.1:${port}/wizard/index.php")
 assert_no_memcached_error <(printf '%s' "$page")
 printf '%s' "$page" | grep -q 'Step 2 of 5'
@@ -210,6 +221,7 @@ page=$(curl -s -b "$jar" -c "$jar" \
 	--data-urlencode 'process_page=wizard_page2' \
 	--data-urlencode 'page=wizard_page3' \
 	--data-urlencode 'callSign=W8TEST' \
+	--data-urlencode "csrf_token=${token}" \
 	"http://127.0.0.1:${port}/wizard/index.php")
 assert_no_memcached_error <(printf '%s' "$page")
 printf '%s' "$page" | grep -q 'Step 3 of 5'
@@ -227,6 +239,7 @@ page=$(curl -s -b "$jar" -c "$jar" \
 	--data-urlencode 'txGPIO=26' \
 	--data-urlencode 'txGPIO_active=low' \
 	--data-urlencode 'txAudioDev=' \
+	--data-urlencode "csrf_token=${token}" \
 	"http://127.0.0.1:${port}/wizard/index.php")
 assert_no_memcached_error <(printf '%s' "$page")
 printf '%s' "$page" | grep -q 'Step 4 of 5'
@@ -239,6 +252,7 @@ save_body="$tmp/save.body"
 curl -s -D "$save_headers" -o "$save_body" -b "$jar" -c "$jar" \
 	--data-urlencode 'process_page=wizard_update' \
 	--data-urlencode 'page=wizard_complete' \
+	--data-urlencode "csrf_token=${token}" \
 	"http://127.0.0.1:${port}/wizard/index.php"
 assert_no_memcached_error "$save_body"
 if grep -q 'HTTP/1.1 302' "$save_headers" || grep -q 'svxlink_update.php' "$save_headers"; then
@@ -309,15 +323,18 @@ finish_body="$tmp/finish.body"
 curl -s -D "$finish_headers" -o "$finish_body" -b "$jar" -c "$jar" \
 	--data-urlencode 'process_page=wizard_complete' \
 	--data-urlencode 'page=wizard_complete' \
+	--data-urlencode "csrf_token=${token}" \
 	"http://127.0.0.1:${port}/wizard/index.php"
 assert_no_memcached_error "$finish_body"
-grep -q 'HTTP/1.1 302' "$finish_headers"
-grep -q 'svxlink_update.php' "$finish_headers"
-echo "ok: Finish redirects to the bench update route"
+grep -q 'HTTP/1.1 200' "$finish_headers"
+grep -q 'svxlink_update.php' "$finish_body"
+finish_token=$(http_token "$(cat "$finish_body")")
+echo "ok: Finish posts to the bench update route"
 
 rebuild_headers="$tmp/rebuild.headers"
 rebuild_body="$tmp/rebuild.body"
 curl -s -D "$rebuild_headers" -o "$rebuild_body" -b "$jar" -c "$jar" \
+	--data-urlencode "csrf_token=${finish_token}" \
 	"http://127.0.0.1:${port}/functions/svxlink_update.php"
 assert_no_memcached_error "$rebuild_body"
 grep -q 'HTTP/1.1 302' "$rebuild_headers"
