@@ -7,6 +7,9 @@ if ($argc < 2) {
 }
 $root = $argv[1];
 require_once $root . '/includes/classes/Database.php';
+if (isset($argv[2]) && $argv[2] === '--as-web') {
+	exit(web_uid_fixture($argv[3]));
+}
 
 function fail($message) {
 	fwrite(STDERR, "FAIL: $message\n");
@@ -34,6 +37,46 @@ function snap($path) {
 	}
 	$db->close();
 	return $out;
+}
+function web_uid_fixture($layout) {
+	$dbPath = $layout . '/db/openrepeater.db';
+	putenv('ORP_DB_PATH=' . $dbPath);
+	putenv('ORP_FLAG_STORE=sqlite');
+	$db = new Database();
+	$tables = array('settings', 'gpio_pins', 'ports', 'modules');
+	$inode = fileinode($dbPath);
+	$sibling = $layout . '/db/.orp-rename-probe.db';
+	if (!copy($dbPath, $sibling)) {
+		fwrite(STDERR, "copy for rename probe failed\n");
+		return 1;
+	}
+	$warning = '';
+	set_error_handler(function ($errno, $message) use (&$warning) {
+		$warning = $message;
+		return true;
+	});
+	$renamed = rename($sibling, $dbPath);
+	restore_error_handler();
+	echo 'rename_replaced=' . ($renamed ? '1' : '0') . "\n";
+	echo 'rename_error=' . (strpos($warning, 'Operation not permitted') !== false ? 'EPERM' : 'other') . "\n";
+	if ($renamed) {
+		return 1;
+	}
+	if (is_file($sibling)) {
+		unlink($sibling);
+	}
+	foreach (array('attach', 'vacuum', 'pragma', 'writefile', 'trigger', 'users') as $name) {
+		$ok = $db->db_import($tables, $layout . '/' . $name . '.sql');
+		echo $name . '_import=' . ($ok === true ? '1' : '0') . "\n";
+	}
+	$good = $db->db_import($tables, $layout . '/good.sql');
+	echo 'good_import=' . ($good === true ? '1' : '0') . "\n";
+	echo 'inode_same=' . (fileinode($dbPath) === $inode ? '1' : '0') . "\n";
+	$read = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
+	$sign = $read->querySingle("SELECT value FROM settings WHERE keyID='callSign'");
+	echo 'callSign=' . $sign . "\n";
+	$read->close();
+	return ($good === true && !$renamed) ? 0 : 1;
 }
 function hold_read_lock($path) {
 	$db = new SQLite3($path);
@@ -221,7 +264,8 @@ echo "ok: a normal backup export and import round trip\n";
 
 $before = snap($copy);
 $bad = sys_get_temp_dir() . '/orp-write-boundary-bad-' . getmypid() . '.sql';
-file_put_contents($bad, "BEGIN TRANSACTION;\nINSERT INTO settings (keyID, value) VALUES ('callSign', 'CHANGED');\nINSERT INTO settings (keyID, value) VALUES ('callSign', 'CHANGED');\nCOMMIT;\n");
+copy($dump, $bad);
+file_put_contents($bad, "\nINSERT INTO settings VALUES('callSign','CHANGED');\n", FILE_APPEND);
 $wrote = $db->db_import(array('settings', 'gpio_pins', 'ports', 'modules'), $bad);
 $caller = $wrote === true ? 'successfully restored' : 'not-written';
 if ($wrote === true || $caller !== 'not-written' || snap($copy) != $before) {
@@ -279,4 +323,87 @@ if (snap($copy) != $before) {
 	fail('a bad backup restore changed database rows');
 }
 echo "ok: a bad backup restore leaves courtesy files and database rows unchanged\n";
+
+copy($dump, $backup . '/restore/backup.sql');
+$before = snap($copy);
+$locked = hold_read_lock($copy);
+$lockedResult = $restore->restore_backup();
+$lockedCaller = (is_array($lockedResult) && isset($lockedResult['msgText'])) ? $lockedResult['msgText'] : '';
+$locked->exec('ROLLBACK');
+$locked->close();
+if (!is_array($lockedResult) || $lockedResult['msgType'] !== 'error' || strpos($lockedCaller, 'successfully restored') !== false) {
+	fail('a locked restore was reported as success');
+}
+if (file_get_contents($sounds . '/courtesy_tones/keep.wav') !== 'keep' || is_file($sounds . '/courtesy_tones/new.wav')) {
+	fail('a locked restore left courtesy files changed');
+}
+if (snap($copy) != $before) {
+	fail('a locked restore changed database rows');
+}
+$stashes = glob($sounds . '/.orp-stash-*');
+if ($stashes !== array() && $stashes !== false) {
+	fail('a locked restore left a courtesy stash behind');
+}
+echo "ok: a locked restore rolls courtesy files back and leaves database rows unchanged\n";
+
+$layout = sys_get_temp_dir() . '/orp-sticky-' . getmypid();
+$stickyDb = $layout . '/db/openrepeater.db';
+$victim = $layout . '/victim.db';
+$goodDb = $layout . '/good.db';
+$written = sys_get_temp_dir() . '/orp-written-' . getmypid() . '.txt';
+$vacuum = sys_get_temp_dir() . '/orp-vacuum-' . getmypid() . '.db';
+if (!mkdir($layout . '/db', 0755, true) || !copy($root . '/install/sql/openrepeater.db', $stickyDb) || !copy($stickyDb, $victim) || !copy($stickyDb, $goodDb)) {
+	fail('could not build the sticky database layout');
+}
+exec('sqlite3 ' . escapeshellarg($stickyDb) . ' ' . escapeshellarg("UPDATE settings SET value='STICKY' WHERE keyID='callSign';"));
+exec('sqlite3 ' . escapeshellarg($victim) . ' ' . escapeshellarg("UPDATE settings SET value='VICTIM' WHERE keyID='callSign';"));
+exec('sqlite3 ' . escapeshellarg($goodDb) . ' ' . escapeshellarg("UPDATE settings SET value='RESTORED' WHERE keyID='callSign';"));
+putenv('ORP_DB_PATH=' . $goodDb);
+$exporter = new Database();
+if ($exporter->db_export(array('settings', 'gpio_pins', 'ports', 'modules'), $layout . '/good.sql') !== true) {
+	fail('could not export the sticky fixture backup');
+}
+$goodSql = file_get_contents($layout . '/good.sql');
+$attacks = array(
+	'attach' => "ATTACH DATABASE '" . str_replace("'", "''", $victim) . "' AS victim;\nUPDATE victim.settings SET value='PWNED' WHERE keyID='callSign';\n",
+	'vacuum' => "VACUUM INTO '" . str_replace("'", "''", $vacuum) . "';\n",
+	'pragma' => "PRAGMA writable_schema=ON;\n",
+	'writefile' => "SELECT writefile('" . str_replace("'", "''", $written) . "','pwned');\n",
+	'trigger' => "CREATE TRIGGER evil AFTER INSERT ON settings BEGIN SELECT RAISE(ABORT,'x'); END;\n",
+	'users' => "INSERT INTO users (userID, username, password, salt) VALUES (9,'attacker','x','y');\n",
+);
+foreach ($attacks as $name => $suffix) {
+	file_put_contents($layout . '/' . $name . '.sql', $goodSql . "\n" . $suffix);
+}
+chmod($victim, 0666);
+exec('sudo -n chown root:www-data ' . escapeshellarg($layout . '/db') . ' ' . escapeshellarg($stickyDb) . ' && sudo -n chmod 1770 ' . escapeshellarg($layout . '/db') . ' && sudo -n chmod 0660 ' . escapeshellarg($stickyDb), $unused, $setupRc);
+if ($setupRc !== 0) {
+	fail('could not apply the root-owned sticky database policy');
+}
+$inodeBefore = trim(shell_exec('sudo -n stat -c %i ' . escapeshellarg($stickyDb)));
+$usersBefore = trim(shell_exec('sudo -n sqlite3 ' . escapeshellarg($stickyDb) . ' ' . escapeshellarg('SELECT COUNT(*) FROM users;')));
+$childOut = array();
+$childRc = 1;
+exec('sudo -n setpriv --reuid=33 --regid=33 --clear-groups --inh-caps=-all -- php ' . escapeshellarg(__FILE__) . ' ' . escapeshellarg($root) . ' --as-web ' . escapeshellarg($layout), $childOut, $childRc);
+$childText = implode("\n", $childOut);
+if ($childRc !== 0 || strpos($childText, 'rename_replaced=0') === false || strpos($childText, 'rename_error=EPERM') === false || strpos($childText, 'good_import=1') === false || strpos($childText, 'inode_same=1') === false || strpos($childText, 'callSign=RESTORED') === false) {
+	fwrite(STDERR, $childText . "\n");
+	fail('the www-data sticky restore did not publish in place');
+}
+foreach (array('attach', 'vacuum', 'pragma', 'writefile', 'trigger', 'users') as $name) {
+	if (strpos($childText, $name . '_import=0') === false) {
+		fail('untrusted backup SQL was accepted: ' . $name);
+	}
+}
+$inodeAfter = trim(shell_exec('sudo -n stat -c %i ' . escapeshellarg($stickyDb)));
+$usersAfter = trim(shell_exec('sudo -n sqlite3 ' . escapeshellarg($stickyDb) . ' ' . escapeshellarg('SELECT COUNT(*) FROM users;')));
+$attacker = trim(shell_exec('sudo -n sqlite3 ' . escapeshellarg($stickyDb) . ' ' . escapeshellarg("SELECT COUNT(*) FROM users WHERE username='attacker';")));
+$victimSign = trim(shell_exec('sqlite3 ' . escapeshellarg($victim) . ' ' . escapeshellarg("SELECT value FROM settings WHERE keyID='callSign';")));
+if ($inodeBefore === '' || $inodeBefore !== $inodeAfter) {
+	fail('the restore replaced the root-owned database inode');
+}
+if ($usersBefore !== $usersAfter || $attacker !== '0' || $victimSign !== 'VICTIM' || is_file($written) || is_file($vacuum)) {
+	fail('untrusted backup SQL changed a database or wrote a file');
+}
+echo "ok: www-data restores in place on a root-owned sticky database and confined SQL has no side effects\n";
 echo "database write boundary checks passed\n";

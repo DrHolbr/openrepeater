@@ -169,88 +169,210 @@ class BackupRestore {
 
 	public function restore_backup() {
 		$sql_file = $this->backup_restore_dir . $this->backup_db_file;
-		$staged = $this->Database->stage_db_import($this->db_tables, $sql_file);
-		if (!is_string($staged)) {
-			return array(
-				'msgType' => 'error',
-				'msgText' => 'The backup was not restored. The previous database rows were left unchanged.'
-			);
+		$rows = $this->Database->load_backup_rows($this->db_tables, $sql_file);
+		if ($rows === false) {
+			return $this->restore_failed();
 		}
-
-		########################################
-		# Copy Sounds into place
-
-		$existing_courtesy_tones = $this->orp_sounds_dir . 'courtesy_tones/';
-		$existing_identification = $this->orp_sounds_dir . 'identification/';
-		$restore_courtesy_tones = $this->backup_restore_dir . 'courtesy_tones/';
-		$restore_identification = $this->backup_restore_dir . 'identification/';
-		
-		// If Courtesy Tones exist in backup, then restore
-		if (file_exists($restore_courtesy_tones)) {
-			$this->removeDirectory($existing_courtesy_tones);
-			exec("cp $restore_courtesy_tones $existing_courtesy_tones -R");
+		$prior = $this->Database->capture_table_rows($this->db_tables);
+		if ($prior === false) {
+			return $this->restore_failed();
 		}
-
-		// If Identification exist in backup, then restore
-		if (file_exists($restore_identification)) {
-			$this->removeDirectory($existing_identification);
-			exec("cp $restore_identification $existing_identification -R");
+		$stashes = $this->apply_restore_files();
+		if ($stashes === false) {
+			return $this->restore_failed();
 		}
-
-
-		########################################
-		# Restore Modules (non-core / add-ons)
-		
-		$restore_module_path = $this->backup_restore_dir . 'modules/';
-		
-		if (file_exists($restore_module_path)) {
-			// Remove existing modules first (non-core)
-			$non_core_modules = $this->Modules->get_non_core_modules_path();
-			if(isset($non_core_modules)) {
-				foreach($non_core_modules as $mod_name => $mod_path) {
-					$this->Modules->remove_module($mod_name);
-				}				
-			}
-
-			// Restore backed up modules
-			$mod_folder_list  = glob($restore_module_path . '*', GLOB_ONLYDIR);
-			foreach($mod_folder_list as $mod_path) {
-				$mod_name = basename($mod_path);
-				exec('cp "' . $mod_path . '" "' . $this->Modules->modules_path . $mod_name . '" -R');			
-
-				// Init module just to create symlinks. DB will get overwritten below
-				$this->Modules->initialize_module($mod_name, 0);
-			}
-
+		if ($this->Database->replace_backup_tables($this->db_tables, $rows) !== true) {
+			$this->revert_restore_files($stashes);
+			return $this->restore_failed();
 		}
-
-		########################################
-
-		// Restoration of ALSA settings
-		if (file_exists($this->backup_restore_dir . $this->alsa_state_file)) {
-			exec('sudo orp_helper alsa restore "' . $this->backup_restore_dir . $this->alsa_state_file . '"');
+		if (!$this->restore_alsa()) {
+			$this->Database->replace_backup_tables($this->db_tables, $prior);
+			$this->revert_restore_files($stashes);
+			return $this->restore_failed();
 		}
-
-		// The staged copy replaces the live database only after the file copy.
-		// initialize_module may insert rows; this rename puts the backup rows back.
-		if ($this->Database->publish_staged_import($staged) !== true) {
-			return array(
-				'msgType' => 'error',
-				'msgText' => 'The backup was not restored. The previous database rows were left unchanged.'
-			);
-		}
-
-		// Cleanup/Delete Restore directory
+		$this->discard_restore_stashes($stashes);
 		$this->removeDirectory($this->backup_restore_dir);
-		
-		// Set Rebuild Flag
 		$this->Database->set_update_flag(true);
-
 		return array(
 			'msgType' => 'success',
 			'msgText' => 'Backup was successfully restored.'
-		);	
+		);
+	}
 
+	private function restore_failed() {
+		return array(
+			'msgType' => 'error',
+			'msgText' => 'The backup was not restored. The previous database rows were left unchanged.'
+		);
+	}
+
+	private function apply_restore_files() {
+		$stashes = array();
+		$trees = array(
+			array($this->orp_sounds_dir . 'courtesy_tones', $this->backup_restore_dir . 'courtesy_tones'),
+			array($this->orp_sounds_dir . 'identification', $this->backup_restore_dir . 'identification'),
+		);
+		foreach ($trees as $pair) {
+			if (!is_dir($pair[1])) {
+				continue;
+			}
+			$stash = $this->replace_tree($pair[0], $pair[1]);
+			if ($stash === false) {
+				$this->revert_restore_files($stashes);
+				return false;
+			}
+			$stashes[] = $stash;
+		}
+		$restore_module_path = $this->backup_restore_dir . 'modules/';
+		if (is_dir($restore_module_path)) {
+			$existing = $this->Modules->get_non_core_modules_path();
+			if (is_array($existing)) {
+				foreach ($existing as $mod_name => $mod_path) {
+					if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $mod_name)) {
+						$this->revert_restore_files($stashes);
+						return false;
+					}
+					$held = $this->hold_tree($mod_path);
+					if ($held === false) {
+						$this->revert_restore_files($stashes);
+						return false;
+					}
+					$stashes[] = $held;
+				}
+			}
+			$incoming = glob($restore_module_path . '*', GLOB_ONLYDIR);
+			if ($incoming === false) {
+				$this->revert_restore_files($stashes);
+				return false;
+			}
+			foreach ($incoming as $mod_path) {
+				$mod_name = basename($mod_path);
+				if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $mod_name)) {
+					$this->revert_restore_files($stashes);
+					return false;
+				}
+				$dest = $this->Modules->modules_path . $mod_name;
+				$copied = $this->replace_tree($dest, $mod_path);
+				if ($copied === false) {
+					$this->revert_restore_files($stashes);
+					return false;
+				}
+				$stashes[] = $copied;
+				$linked = $this->Modules->link_module_files($mod_name);
+				if ($linked === false) {
+					$this->revert_restore_files($stashes);
+					return false;
+				}
+				$stashes[] = array('links' => $linked);
+			}
+		}
+		return $stashes;
+	}
+
+	private function replace_tree($live, $incoming) {
+		if ($this->tree_has_link($incoming)) {
+			return false;
+		}
+		$held = $this->hold_tree($live);
+		if ($held === false) {
+			return false;
+		}
+		if (!$this->copy_tree($incoming, $live)) {
+			$this->restore_held($held);
+			return false;
+		}
+		$held['created'] = $live;
+		return $held;
+	}
+
+	private function hold_tree($live) {
+		if (!file_exists($live)) {
+			return array('live' => $live, 'stash' => null, 'created' => null);
+		}
+		if (is_link($live)) {
+			return false;
+		}
+		$stash = dirname($live) . '/.orp-stash-' . bin2hex(random_bytes(6));
+		if (!rename($live, $stash)) {
+			return false;
+		}
+		return array('live' => $live, 'stash' => $stash, 'created' => null);
+	}
+
+	private function tree_has_link($path) {
+		if (is_link($path)) {
+			return true;
+		}
+		if (!is_dir($path)) {
+			return false;
+		}
+		$items = scandir($path);
+		if ($items === false) {
+			return true;
+		}
+		foreach ($items as $item) {
+			if ($item === '.' || $item === '..') {
+				continue;
+			}
+			if ($this->tree_has_link($path . '/' . $item)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private function copy_tree($src, $dest) {
+		if (!is_dir($src) || is_link($src) || is_link(dirname($dest))) {
+			return false;
+		}
+		exec('cp -a ' . escapeshellarg($src) . ' ' . escapeshellarg($dest), $unused, $rc);
+		return $rc === 0 && is_dir($dest) && !is_link($dest);
+	}
+
+	private function revert_restore_files($stashes) {
+		if (!is_array($stashes)) {
+			return;
+		}
+		for ($i = count($stashes) - 1; $i >= 0; $i--) {
+			$item = $stashes[$i];
+			if (isset($item['links']) && is_array($item['links'])) {
+				$this->Modules->undo_module_links($item['links']);
+				continue;
+			}
+			$this->restore_held($item);
+		}
+	}
+
+	private function restore_held($held) {
+		if (!is_array($held) || !isset($held['live'])) {
+			return;
+		}
+		if (isset($held['created']) && is_string($held['created']) && file_exists($held['created']) && !is_link($held['created'])) {
+			exec('rm -R ' . escapeshellarg($held['created']), $unused, $rc);
+		}
+		if (isset($held['stash']) && is_string($held['stash']) && file_exists($held['stash'])) {
+			rename($held['stash'], $held['live']);
+		}
+	}
+
+	private function discard_restore_stashes($stashes) {
+		if (!is_array($stashes)) {
+			return;
+		}
+		foreach ($stashes as $item) {
+			if (isset($item['stash']) && is_string($item['stash']) && file_exists($item['stash']) && !is_link($item['stash'])) {
+				exec('rm -R ' . escapeshellarg($item['stash']), $unused, $rc);
+			}
+		}
+	}
+
+	private function restore_alsa() {
+		$state = $this->backup_restore_dir . $this->alsa_state_file;
+		if (!is_file($state) || is_link($state)) {
+			return true;
+		}
+		exec('sudo orp_helper alsa restore ' . escapeshellarg($state), $unused, $rc);
+		return $rc === 0;
 	}
 
 

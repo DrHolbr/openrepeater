@@ -420,6 +420,87 @@ class Modules {
 
 	}
 
+	public function link_module_files($svxlink_name) {
+		if (!is_string($svxlink_name) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $svxlink_name)) {
+			return false;
+		}
+		if (in_array($svxlink_name, $this->core_modules, true)) {
+			return false;
+		}
+		$undo = array();
+		$pairs = array(
+			array($this->modules_path . $svxlink_name . '/svxlink/events.d/', $this->svxlink_events_d_path),
+			array($this->modules_path . $svxlink_name . '/svxlink/modules.d/', $this->svxlink_modules_d_path),
+		);
+		foreach ($pairs as $pair) {
+			if (!$this->link_each($pair[0], $pair[1], $undo)) {
+				$this->undo_module_links($undo);
+				return false;
+			}
+		}
+		$sounds_src = $this->modules_path . $svxlink_name . '/svxlink/sounds/en_US';
+		if (is_dir($sounds_src) && !is_link($sounds_src)) {
+			if (!$this->place_link($sounds_src, $this->svxlink_sounds . $svxlink_name, $undo)) {
+				$this->undo_module_links($undo);
+				return false;
+			}
+		}
+		return $undo;
+	}
+
+	public function undo_module_links($undo) {
+		if (!is_array($undo)) {
+			return;
+		}
+		for ($i = count($undo) - 1; $i >= 0; $i--) {
+			$item = $undo[$i];
+			if (!is_array($item) || !isset($item['path']) || !is_string($item['path'])) {
+				continue;
+			}
+			if (!empty($item['created']) && is_link($item['path'])) {
+				unlink($item['path']);
+			}
+			if (isset($item['prior']) && is_string($item['prior']) && !file_exists($item['path']) && !is_link($item['path'])) {
+				symlink($item['prior'], $item['path']);
+			}
+		}
+	}
+
+	private function link_each($src, $destDir, &$undo) {
+		if (!is_dir($src)) {
+			return true;
+		}
+		if (!is_dir($destDir) || is_link($destDir)) {
+			return false;
+		}
+		foreach ($this->read_dir($src) as $file) {
+			if (!$this->place_link($file['filePath'], $destDir . $file['fileName'], $undo)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private function place_link($target, $link, &$undo) {
+		$prior = null;
+		if (is_link($link)) {
+			$prior = readlink($link);
+			if ($prior === false || !unlink($link)) {
+				return false;
+			}
+		} elseif (file_exists($link)) {
+			return false;
+		}
+		if (!symlink($target, $link)) {
+			if ($prior !== null) {
+				symlink($prior, $link);
+			}
+			return false;
+		}
+		$undo[] = array('path' => $link, 'prior' => $prior, 'created' => true);
+		return true;
+	}
+
 
 	public function install_module($tempModulePath) {
 		$error_level = 0;

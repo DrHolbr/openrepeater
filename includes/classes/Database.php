@@ -688,80 +688,228 @@ class Database {
 	###############################################
 
 	public function db_import($db_tables, $sql_file) {
-		$copy = $this->stage_db_import($db_tables, $sql_file);
-		if (!is_string($copy)) {
+		$rows = $this->load_backup_rows($db_tables, $sql_file);
+		if ($rows === false) {
 			return false;
 		}
-		return $this->publish_staged_import($copy);
+		return $this->replace_backup_tables($db_tables, $rows);
 	}
 
-	public function stage_db_import($db_tables, $sql_file) {
+	public function load_backup_rows($db_tables, $sql_file) {
 		if (!is_string($sql_file) || !is_file($sql_file) || !is_readable($sql_file)) {
 			return false;
 		}
-		if (!is_array($db_tables) || $db_tables === array()) {
+		$sql = file_get_contents($sql_file);
+		if (!is_string($sql)) {
 			return false;
 		}
-		foreach ($db_tables as $cur_table) {
-			if (!is_string($cur_table) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $cur_table)) {
+		require_once __DIR__ . '/BackupSql.php';
+		return BackupSql::parse($sql, $db_tables);
+	}
+
+	public function capture_table_rows($db_tables) {
+		if (!$this->backup_tables_ok($db_tables)) {
+			return false;
+		}
+		$db = $this->open_reader();
+		if ($db === null) {
+			return false;
+		}
+		$rows = array();
+		foreach ($db_tables as $table) {
+			$captured = $this->capture_one_table($db, $table);
+			if ($captured === false) {
+				$db->close();
+				return false;
+			}
+			$rows[$table] = $captured;
+		}
+		$db->close();
+		return $rows;
+	}
+
+	// The installed database is root-owned inside a sticky directory. The web
+	// user can write that inode and cannot rename another file over it.
+	public function replace_backup_tables($db_tables, $rows) {
+		if (!$this->backup_tables_ok($db_tables) || !is_array($rows)) {
+			return false;
+		}
+		foreach ($db_tables as $table) {
+			if (!isset($rows[$table]) || !is_array($rows[$table])) {
 				return false;
 			}
 		}
-		$sql = file_get_contents($sql_file);
-		if (!is_string($sql) || $sql === '') {
+		$db = $this->open_writer();
+		if ($db === null) {
 			return false;
 		}
-		$dir = dirname($this->db_loc);
-		if (!is_dir($dir) || !is_writable($dir)) {
+		$allowed = array();
+		foreach ($db_tables as $table) {
+			$allowed[$table] = true;
+		}
+		$columns = array();
+		foreach ($db_tables as $table) {
+			$info = $db->query('PRAGMA table_info("' . $table . '")');
+			if ($info === false) {
+				$this->close_quietly($db);
+				return false;
+			}
+			$names = array();
+			while ($col = $info->fetchArray(SQLITE3_ASSOC)) {
+				$names[] = $col['name'];
+			}
+			if ($names === array()) {
+				$this->close_quietly($db);
+				return false;
+			}
+			$columns[$table] = $names;
+		}
+		if (!method_exists($db, 'setAuthorizer')) {
+			$this->close_quietly($db);
 			return false;
 		}
-		$copy = $dir . '/.orp-import-' . bin2hex(random_bytes(6)) . '.db';
-		if (!copy($this->db_loc, $copy)) {
+		$db->setAuthorizer(function ($action, $arg1 = null, $arg2 = null, $arg3 = null, $arg4 = null) use ($allowed) {
+			if ($action === SQLite3::TRANSACTION) {
+				return SQLite3::OK;
+			}
+			$internal = ($arg1 === 'sqlite_sequence' || $arg1 === 'sqlite_master' || $arg1 === 'sqlite_schema' || $arg1 === 'sqlite_temp_master' || $arg1 === 'sqlite_temp_schema');
+			if ($action === SQLite3::READ && ($internal || (is_string($arg1) && isset($allowed[$arg1])))) {
+				return SQLite3::OK;
+			}
+			if (($action === SQLite3::INSERT || $action === SQLite3::DELETE || $action === SQLite3::UPDATE)
+				&& ($arg1 === 'sqlite_sequence' || (is_string($arg1) && isset($allowed[$arg1])))) {
+				return SQLite3::OK;
+			}
+			return SQLite3::DENY;
+		});
+		if (!$this->exec_ok($db, 'BEGIN IMMEDIATE')) {
+			$this->close_quietly($db);
 			return false;
 		}
-		try {
-			$db = new SQLite3($copy);
-		} catch (Exception $e) {
-			$this->discard_import_copy($copy);
-			return false;
-		}
-		$db->busyTimeout(0);
-		$failed = false;
-		foreach ($db_tables as $cur_table) {
-			if ($db->exec('DELETE FROM "' . $cur_table . '"') === false || $db->lastErrorCode() !== 0) {
-				$failed = true;
-				break;
+		foreach ($db_tables as $table) {
+			if (!$this->exec_ok($db, 'DELETE FROM "' . $table . '"')) {
+				return $this->abort_write($db);
+			}
+			foreach ($rows[$table] as $row) {
+				if (!is_array($row) || !isset($row['values']) || !is_array($row['values'])) {
+					return $this->abort_write($db);
+				}
+				$names = $row['columns'] === null ? $columns[$table] : $row['columns'];
+				if (!is_array($names) || count($names) !== count($row['values'])) {
+					return $this->abort_write($db);
+				}
+				foreach ($names as $name) {
+					if (!is_string($name) || !in_array($name, $columns[$table], true)) {
+						return $this->abort_write($db);
+					}
+				}
+				$holders = array();
+				foreach ($names as $index => $name) {
+					$holders[] = ':' . $index;
+				}
+				$stmt = $db->prepare('INSERT INTO "' . $table . '" ("' . implode('","', $names) . '") VALUES (' . implode(',', $holders) . ')');
+				if ($stmt === false) {
+					return $this->abort_write($db);
+				}
+				foreach ($row['values'] as $index => $value) {
+					if (!$this->bind_backup_value($stmt, ':' . $index, $value)) {
+						return $this->abort_write($db);
+					}
+				}
+				if (!$this->ran($db, $stmt->execute())) {
+					return $this->abort_write($db);
+				}
 			}
 		}
-		if (!$failed && ($db->exec($sql) === false || $db->lastErrorCode() !== 0)) {
-			$failed = true;
-		}
-		$db->close();
-		if ($failed) {
-			$this->discard_import_copy($copy);
-			return false;
-		}
-		return $copy;
+		return $this->commit_write($db);
 	}
 
-	public function publish_staged_import($copy) {
-		$dir = dirname($this->db_loc);
-		if (!is_string($copy) || dirname($copy) !== $dir || !preg_match('/^\.orp-import-[0-9a-f]{12}\.db$/', basename($copy)) || !is_file($copy)) {
+	private function backup_tables_ok($db_tables) {
+		if (!is_array($db_tables) || $db_tables === array()) {
 			return false;
 		}
-		if (!rename($copy, $this->db_loc)) {
-			$this->discard_import_copy($copy);
-			return false;
+		$seen = array();
+		foreach ($db_tables as $table) {
+			if (!is_string($table) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $table) || isset($seen[$table])) {
+				return false;
+			}
+			$seen[$table] = true;
 		}
 		return true;
 	}
 
-	private function discard_import_copy($copy) {
-		foreach (array($copy, $copy . '-journal', $copy . '-wal', $copy . '-shm') as $path) {
-			if (is_file($path)) {
-				unlink($path);
-			}
+	private function open_reader() {
+		try {
+			$db = new SQLite3($this->db_loc, SQLITE3_OPEN_READONLY);
+		} catch (Exception $e) {
+			return null;
 		}
+		$db->busyTimeout(0);
+		return $db;
+	}
+
+	private function capture_one_table($db, $table) {
+		$info = $db->query('PRAGMA table_info("' . $table . '")');
+		if ($info === false) {
+			return false;
+		}
+		$names = array();
+		while ($col = $info->fetchArray(SQLITE3_ASSOC)) {
+			$names[] = $col['name'];
+		}
+		if ($names === array()) {
+			return false;
+		}
+		$result = $db->query('SELECT "' . implode('","', $names) . '" FROM "' . $table . '"');
+		if ($result === false) {
+			return false;
+		}
+		$rows = array();
+		while ($row = $result->fetchArray(SQLITE3_NUM)) {
+			$values = array();
+			foreach ($row as $value) {
+				if ($value === null) {
+					$values[] = array('null', null);
+				} elseif (is_int($value)) {
+					$values[] = array('number', (string) $value);
+				} elseif (is_float($value)) {
+					$values[] = array('number', (string) $value);
+				} elseif (is_string($value) && strpos($value, "\0") !== false) {
+					$values[] = array('blob', $value);
+				} else {
+					$values[] = array('string', (string) $value);
+				}
+			}
+			$rows[] = array('columns' => $names, 'values' => $values);
+		}
+		return $rows;
+	}
+
+	private function bind_backup_value($stmt, $name, $value) {
+		if (!is_array($value) || !isset($value[0])) {
+			return false;
+		}
+		if ($value[0] === 'null') {
+			$stmt->bindValue($name, null, SQLITE3_NULL);
+			return true;
+		}
+		if ($value[0] === 'string') {
+			$stmt->bindValue($name, $value[1], SQLITE3_TEXT);
+			return true;
+		}
+		if ($value[0] === 'blob') {
+			$stmt->bindValue($name, $value[1], SQLITE3_BLOB);
+			return true;
+		}
+		if ($value[0] === 'number' && is_string($value[1]) && preg_match('/^-?[0-9]+$/', $value[1])) {
+			$stmt->bindValue($name, (int) $value[1], SQLITE3_INTEGER);
+			return true;
+		}
+		if ($value[0] === 'number' && is_string($value[1]) && is_numeric($value[1])) {
+			$stmt->bindValue($name, (float) $value[1], SQLITE3_FLOAT);
+			return true;
+		}
+		return false;
 	}
 
 
