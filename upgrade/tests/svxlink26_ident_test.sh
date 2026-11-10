@@ -4,8 +4,11 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 # shellcheck source=lib/native_layout.sh
 . "$ROOT_DIR/upgrade/tests/lib/native_layout.sh"
+orp_use_fixture_tmpdir
 fixture="$ROOT_DIR/upgrade/tests/fixtures/svxlink-26.05"
 python3 - <<PY
 import hashlib, pathlib, sys
@@ -26,7 +29,7 @@ print("ok: pinned 26.05 Logic.tcl, LogicBase.tcl, locale.tcl, RepeaterLogicType.
 PY
 tclsh "$ROOT_DIR/upgrade/tests/svxlink26_ident_test.tcl" "$fixture"
 
-tmp=$(mktemp -d)
+tmp=$(orp_mktemp_dir)
 trap 'rm -rf "$tmp"' EXIT
 live="$tmp/live"
 db="$tmp/openrepeater.db"

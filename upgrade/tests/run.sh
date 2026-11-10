@@ -4,6 +4,9 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$ROOT_DIR"
+# shellcheck source=upgrade/tests/lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
+orp_use_fixture_tmpdir
 # Tests name their own mode file, marker, hostname, and root. They do not
 # read the installed operating-mode token or the live svxlink config.
 export ORP_BENCH_TEST_HARNESS=1
@@ -27,6 +30,7 @@ if [ "$fail" -ne 0 ]; then
 fi
 echo "ok: php -l"
 
+bash "$ROOT_DIR/upgrade/tests/fixture_tmpdir_test.sh"
 php "$ROOT_DIR/upgrade/tests/php_safety_test.php"
 bash "$ROOT_DIR/upgrade/tests/install_and_helper_test.sh"
 bash "$ROOT_DIR/upgrade/tests/anchor_chmod_race_test.sh"

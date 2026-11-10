@@ -3,7 +3,10 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-tmp=$(mktemp -d)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
+orp_use_fixture_tmpdir
+tmp=$(orp_mktemp_dir)
 trap 'rm -rf "$tmp"' EXIT
 host="$tmp/hostname"
 marker="$tmp/bench-mode"

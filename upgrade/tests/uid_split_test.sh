@@ -7,8 +7,12 @@ if ! sudo -n true; then
 	exit 1
 fi
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
+orp_use_fixture_tmpdir
+orp_require_fixture_space
 INSTALL="$ROOT_DIR/upgrade/install-orp-ui.sh"
-base=$(mktemp -d)
+base=$(orp_mktemp_dir)
 chmod 755 "$base"
 trap 'sudo rm -rf "$base"' EXIT
 root="$base/fixture"
@@ -94,8 +98,8 @@ fi
 echo "ok: database file is root:www-data 660 in a sticky directory"
 
 before_canary=$(stat_line "$canary")
-sudo -n -u www-data php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" create "$preview" "$hostfile"
-sudo -n -u www-data php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" overwrite "$preview" "$hostfile"
+sudo -n -u www-data env TMPDIR="$(orp_fixture_root)" ORP_TEST_TMPDIR="$(orp_fixture_root)" php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" create "$preview" "$hostfile"
+sudo -n -u www-data env TMPDIR="$(orp_fixture_root)" ORP_TEST_TMPDIR="$(orp_fixture_root)" php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" overwrite "$preview" "$hostfile"
 if [ "$(sudo stat -c '%u' "$preview/svxlink.conf")" != "33" ]; then
 	echo "FAIL: preview file owner is $(sudo stat -c '%u' "$preview/svxlink.conf"), expected www-data" >&2
 	exit 1
@@ -106,27 +110,27 @@ if [ "$(sudo cat "$preview/svxlink.conf")" != "overwritten-by-www-data" ]; then
 fi
 echo "ok: www-data created and overwrote a preview in the installed directory"
 
-work="${TMPDIR:-/tmp}/orp-preview-uidwork-$$"
+work="$(orp_fixture_root)/orp-preview-uidwork-$$"
 sudo mkdir -m 1770 "$work"
 sudo chown root:www-data "$work"
-sudo -n -u www-data php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" publish "$work" "$hostfile"
+sudo -n -u www-data env TMPDIR="$(orp_fixture_root)" ORP_TEST_TMPDIR="$(orp_fixture_root)" php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" publish "$work" "$hostfile"
 echo "ok: write_config reports success and disarms PTT"
 
-locked="${TMPDIR:-/tmp}/orp-preview-uidlocked-$$"
+locked="$(orp_fixture_root)/orp-preview-uidlocked-$$"
 sudo mkdir -m 755 "$locked"
 sudo chown root:root "$locked"
-sudo -n -u www-data php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" fail-locked "$locked" "$hostfile"
+sudo -n -u www-data env TMPDIR="$(orp_fixture_root)" ORP_TEST_TMPDIR="$(orp_fixture_root)" php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" fail-locked "$locked" "$hostfile"
 if sudo test -e "$locked/svxlink.conf"; then
 	echo "FAIL: locked preview gained a file" >&2
 	exit 1
 fi
 echo "ok: unwritable preview is reported as failure"
 
-linkdir="${TMPDIR:-/tmp}/orp-preview-uidlink-$$"
+linkdir="$(orp_fixture_root)/orp-preview-uidlink-$$"
 sudo mkdir -m 1770 "$linkdir"
 sudo chown root:www-data "$linkdir"
 sudo ln -s "$canary" "$linkdir/svxlink.conf"
-sudo -n -u www-data php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" fail-symlink "$linkdir" "$hostfile"
+sudo -n -u www-data env TMPDIR="$(orp_fixture_root)" ORP_TEST_TMPDIR="$(orp_fixture_root)" php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" fail-symlink "$linkdir" "$hostfile"
 after_canary=$(stat_line "$canary")
 if [ "$before_canary" != "$after_canary" ]; then
 	echo "FAIL: symlink write changed the canary" >&2
@@ -135,7 +139,7 @@ if [ "$before_canary" != "$after_canary" ]; then
 fi
 echo "ok: failed symlink write did not change the root canary"
 
-sudo -n -u www-data php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" sqlite "$db"
+sudo -n -u www-data env TMPDIR="$(orp_fixture_root)" ORP_TEST_TMPDIR="$(orp_fixture_root)" php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" sqlite "$db"
 echo "ok: www-data SQLite CRUD kept the root-owned database inode"
 
 preview_file_before=$(sudo stat -c '%u %g %a' "$preview/svxlink.conf")

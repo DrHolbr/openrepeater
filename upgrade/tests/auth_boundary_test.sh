@@ -4,9 +4,12 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 # shellcheck source=lib/http_session.sh
 . "$ROOT_DIR/upgrade/tests/lib/http_session.sh"
-tmp=$(mktemp -d)
+orp_use_fixture_tmpdir
+tmp=$(orp_mktemp_dir)
 trap 'kill "$server" >/dev/null 2>&1 || true; rm -rf "$tmp"' EXIT
 db="$tmp/openrepeater.db"
 jar="$tmp/cookies"

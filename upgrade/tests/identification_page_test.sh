@@ -5,12 +5,15 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 # shellcheck source=lib/http_session.sh
 . "$ROOT_DIR/upgrade/tests/lib/http_session.sh"
-tmp=$(mktemp -d)
+orp_use_fixture_tmpdir
+tmp=$(orp_mktemp_dir)
 db="$tmp/openrepeater.db"
-preview=$(mktemp -d "${TMPDIR:-/tmp}/orp-preview-id.XXXXXX")
-audio=$(mktemp -d "${TMPDIR:-/tmp}/orp-audio.XXXXXX")
+preview=$(mktemp -d "$(orp_fixture_root)/orp-preview-id.XXXXXX")
+audio=$(mktemp -d "$(orp_fixture_root)/orp-audio.XXXXXX")
 marker="$tmp/bench-mode"
 hostfile="$tmp/hostname"
 jar="$tmp/cookies"

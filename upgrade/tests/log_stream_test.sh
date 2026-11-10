@@ -3,13 +3,16 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 # shellcheck source=lib/http_session.sh
 . "$ROOT_DIR/upgrade/tests/lib/http_session.sh"
-tmp=$(mktemp -d)
+orp_use_fixture_tmpdir
+tmp=$(orp_mktemp_dir)
 trap 'chmod 644 "$log" 2>/dev/null || true; kill "$server" >/dev/null 2>&1 || true; rm -rf "$tmp"' EXIT
 db="$tmp/openrepeater.db"
 jar="$tmp/cookies"
-log="/tmp/orp-log-svxlink-$$"
+log="$(orp_fixture_root)/orp-log-svxlink-$$"
 host="$tmp/hostname"
 marker="$tmp/bench-mode"
 port=8773

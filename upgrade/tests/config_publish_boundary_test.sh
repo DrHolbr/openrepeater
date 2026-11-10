@@ -4,9 +4,12 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 # shellcheck source=lib/native_layout.sh
 . "$ROOT_DIR/upgrade/tests/lib/native_layout.sh"
-tmp=$(mktemp -d)
+orp_use_fixture_tmpdir
+tmp=$(orp_mktemp_dir)
 trap 'rm -rf "$tmp"' EXIT
 live="$tmp/live"
 db="$tmp/openrepeater.db"

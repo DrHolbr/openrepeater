@@ -5,6 +5,10 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
+orp_use_fixture_tmpdir
+orp_require_fixture_space
 real=$(readlink -f "$ROOT_DIR")
 case "$real" in
 	/|/etc|/etc/*|/var/www|/var/www/*|/usr/local|/usr/local/*|/usr/sbin|/usr/sbin/*)
@@ -14,6 +18,7 @@ case "$real" in
 esac
 unset ORP_ROOT ORP_DB_PATH ORP_LIVE_CONFIG_ROOT ORP_OPERATING_MODE_FILE
 export ORP_BENCH_TEST_HARNESS=1
+echo "fixture=$(orp_fixture_root)"
 
 echo "kernel=$(uname -srm)"
 echo "python=$(python3 --version 2>&1)"

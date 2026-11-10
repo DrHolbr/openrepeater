@@ -3,11 +3,12 @@
 # root attribute change. The outside canary must keep mode 0600.
 set -euo pipefail
 
-if [ "$(id -u)" -ne 0 ]; then
-	exec sudo -n bash "$0" "$@"
-fi
-
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
+orp_reexec_root_if_needed "$@"
+orp_use_fixture_tmpdir
+orp_require_fixture_space
 # shellcheck source=../lib/bench-target.sh
 . "$ROOT_DIR/upgrade/lib/bench-target.sh"
 # shellcheck source=lib/native_layout.sh
@@ -41,7 +42,7 @@ canary_intact() {
 	[ "$(stat -c %a "$canary")" = "600" ] && [ "$(cat "$canary")" = "SECRET" ]
 }
 
-tmp=$(mktemp -d)
+tmp=$(orp_mktemp_dir)
 chmod 755 "$tmp"
 trap 'rm -rf "$tmp"' EXIT
 

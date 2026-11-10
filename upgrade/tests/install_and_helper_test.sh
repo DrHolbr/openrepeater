@@ -4,8 +4,12 @@ set -euo pipefail
 
 export ORP_BENCH_TEST_HARNESS=1
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 # shellcheck source=lib/native_layout.sh
 . "$ROOT_DIR/upgrade/tests/lib/native_layout.sh"
+orp_use_fixture_tmpdir
+orp_require_fixture_space
 INSTALL="$ROOT_DIR/upgrade/install-orp-ui.sh"
 HELPER="$ROOT_DIR/install/scripts/orp_helper"
 fail=0
@@ -95,7 +99,7 @@ EOF
 
 checksum() { sha256sum "$1" | awk '{print $1}'; }
 
-tmp=$(mktemp -d)
+tmp=$(orp_mktemp_dir)
 trap 'rm -rf "$tmp"' EXIT
 bin="$tmp/bin"
 mkdir -p "$bin"

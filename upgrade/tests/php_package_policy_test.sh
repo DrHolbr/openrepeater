@@ -3,10 +3,13 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 # shellcheck source=../lib/bench-target.sh
 . "$ROOT_DIR/upgrade/lib/bench-target.sh"
+orp_use_fixture_tmpdir
 
-tmp=$(mktemp -d)
+tmp=$(orp_mktemp_dir)
 trap 'rm -rf "$tmp"' EXIT
 state="$tmp/state"
 log="$tmp/apt.log"

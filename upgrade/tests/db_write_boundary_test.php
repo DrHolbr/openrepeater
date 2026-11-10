@@ -416,7 +416,7 @@ if ($partialSetup !== 0) {
 }
 $partialOut = array();
 $partialRc = 1;
-exec('sudo -n setpriv --reuid=33 --regid=33 --clear-groups --inh-caps=-all -- php ' . escapeshellarg(__FILE__) . ' ' . escapeshellarg($root) . ' --partial-copy ' . escapeshellarg($partial), $partialOut, $partialRc);
+exec('sudo -n setpriv --reuid=33 --regid=33 --clear-groups --inh-caps=-all -- env ORP_TEST_TMPDIR=' . escapeshellarg(sys_get_temp_dir()) . ' TMPDIR=' . escapeshellarg(sys_get_temp_dir()) . ' php ' . escapeshellarg(__FILE__) . ' ' . escapeshellarg($root) . ' --partial-copy ' . escapeshellarg($partial), $partialOut, $partialRc);
 $partialText = implode("\n", $partialOut);
 if ($partialRc !== 0 || strpos($partialText, 'live_keep=keep') === false || strpos($partialText, 'stash_count=0') === false || strpos($partialText, 'left unchanged') === false) {
 	fwrite(STDERR, $partialText . "\n");
@@ -694,7 +694,7 @@ $inodeBefore = trim(shell_exec('sudo -n stat -c %i ' . escapeshellarg($stickyDb)
 $usersBefore = trim(shell_exec('sudo -n sqlite3 ' . escapeshellarg($stickyDb) . ' ' . escapeshellarg('SELECT COUNT(*) FROM users;')));
 $childOut = array();
 $childRc = 1;
-exec('sudo -n setpriv --reuid=33 --regid=33 --clear-groups --inh-caps=-all -- php ' . escapeshellarg(__FILE__) . ' ' . escapeshellarg($root) . ' --as-web ' . escapeshellarg($layout), $childOut, $childRc);
+exec('sudo -n setpriv --reuid=33 --regid=33 --clear-groups --inh-caps=-all -- env ORP_TEST_TMPDIR=' . escapeshellarg(sys_get_temp_dir()) . ' TMPDIR=' . escapeshellarg(sys_get_temp_dir()) . ' php ' . escapeshellarg(__FILE__) . ' ' . escapeshellarg($root) . ' --as-web ' . escapeshellarg($layout), $childOut, $childRc);
 $childText = implode("\n", $childOut);
 if ($childRc !== 0 || strpos($childText, 'rename_replaced=0') === false || strpos($childText, 'rename_error=EPERM') === false || strpos($childText, 'good_import=1') === false || strpos($childText, 'inode_same=1') === false || strpos($childText, 'callSign=RESTORED') === false) {
 	fwrite(STDERR, $childText . "\n");

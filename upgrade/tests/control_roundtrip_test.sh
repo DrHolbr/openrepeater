@@ -3,13 +3,16 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 # shellcheck source=lib/http_session.sh
 . "$ROOT_DIR/upgrade/tests/lib/http_session.sh"
 # shellcheck source=lib/native_layout.sh
 . "$ROOT_DIR/upgrade/tests/lib/native_layout.sh"
+orp_use_fixture_tmpdir
 
-tmp=$(mktemp -d)
-preview="/tmp/orp-preview-controls-$$"
+tmp=$(orp_mktemp_dir)
+preview="$(orp_fixture_root)/orp-preview-controls-$$"
 trap 'kill "$server" >/dev/null 2>&1 || true; rm -rf "$tmp" "$preview"' EXIT
 db="$tmp/openrepeater.db"
 jar="$tmp/admin.cookies"
@@ -333,7 +336,7 @@ code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/mod.body" -w '%{ht
 	-F 'upload_file=1' -F 'file[]=@'"$tmp/probe.zip" \
 	"$base/modules.php")
 if ! grep -q 'successfully installed' "$tmp/mod.body"; then
-	cp "$tmp/mod.body" /tmp/mod-body.html
+	cp "$tmp/mod.body" "$tmp/mod-body.html"
 	echo "FAIL: module upload was not accepted" >&2
 	exit 1
 fi

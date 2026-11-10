@@ -3,9 +3,14 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 # shellcheck source=lib/http_session.sh
 . "$ROOT_DIR/upgrade/tests/lib/http_session.sh"
-db=$(mktemp)
+orp_use_fixture_tmpdir
+work=$(orp_mktemp_dir)
+db="$work/openrepeater.db"
+: > "$db"
 cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 php -r '
 $db = new SQLite3($argv[1]);
@@ -26,11 +31,11 @@ export ORP_FLAG_STORE=sqlite
 export ORP_BENCH_MARKER="/no/such/orp-bench-mode"
 export ORP_BENCH_HOSTNAME_FILE="/no/such-orp-hostname"
 port=8766
-php -S 127.0.0.1:${port} -t "$ROOT_DIR" >/tmp/orp-login-server.log 2>&1 &
+php -S 127.0.0.1:${port} -t "$ROOT_DIR" >"$work/server.log" 2>&1 &
 server=$!
 cleanup() {
 	kill "$server" >/dev/null 2>&1 || true
-	rm -f "$db"
+	rm -rf "$work"
 }
 trap cleanup EXIT
 
@@ -44,12 +49,12 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 if [ "$ready" -ne 1 ]; then
 	echo "FAIL: login server did not start" >&2
-	cat /tmp/orp-login-server.log >&2 || true
+	cat "$work/server.log" >&2 || true
 	exit 1
 fi
 
-code=$(curl -s -o /tmp/orp-gpio-anon.html -w '%{http_code}' "http://127.0.0.1:${port}/gpio.php")
-if [ "$code" = "302" ] && grep -q 'login.php' /tmp/orp-gpio-anon.html; then
+code=$(curl -s -o "$work/gpio-anon.html" -w '%{http_code}' "http://127.0.0.1:${port}/gpio.php")
+if [ "$code" = "302" ] && grep -q 'login.php' "$work/gpio-anon.html"; then
 	echo "ok: anonymous GPIO page redirects to login"
 else
 	# PHP header() redirects have an empty body and a Location header.
@@ -61,7 +66,7 @@ fi
 bad_jar=$(mktemp)
 login_page=$(curl -s -c "$bad_jar" -b "$bad_jar" "http://127.0.0.1:${port}/login.php")
 bad_token=$(http_token "$login_page")
-code=$(curl -s -c "$bad_jar" -b "$bad_jar" -o /tmp/orp-bad-login.html -w '%{http_code}' \
+code=$(curl -s -c "$bad_jar" -b "$bad_jar" -o "$work/bad-login.html" -w '%{http_code}' \
 	--data-urlencode 'username=admin' \
 	--data-urlencode 'password=wrong-password' \
 	--data-urlencode "csrf_token=${bad_token}" \
