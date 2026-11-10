@@ -18,10 +18,22 @@ server {
 		deny all;
 	}
 
-	# Uploaded trees. This regex is before \.php$ and is case-insensitive,
-	# so /MODULES/Foo.PHTML is not executed.
-	location ~* ^/(modules|sounds|backup)/ {
-		location ~* \.(php|php[0-9]|pht|phtml|phps|phar|inc|cgi|pl|py|rb|sh)$ {
+	# backup.php links only to /backup/<name>.orp. Nothing else in that
+	# tree is served. This regex is before \.php$ and the dotfile deny.
+	location ~* ^/backup/ {
+		location ~* ^/backup/[A-Za-z0-9][A-Za-z0-9._-]*\.orp$ {
+		}
+		deny all;
+	}
+
+	# Module uploads and the sounds anchor. Audio under /sounds/ is served.
+	# Dotfiles, databases, and archives are denied here because this regex
+	# is matched before the server-wide dotfile and database locations.
+	location ~* ^/(modules|sounds)/ {
+		location ~ /\. {
+			deny all;
+		}
+		location ~* \.(php|php[0-9]|pht|phtml|phps|phar|inc|cgi|pl|py|rb|sh|db|sqlite|sqlite3|sql|tar|gz|tgz|zip|bak)$ {
 			deny all;
 		}
 	}

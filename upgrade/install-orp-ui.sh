@@ -484,18 +484,38 @@ bench_chmod 644 "$svx_log"
 bench_chown svxlink:svxlink "$(p /var/lib/svxlink)"
 bench_chown svxlink:svxlink "$(p /var/spool/svxlink)"
 bench_chown svxlink:svxlink "$svx_log"
-unit_body=$(mktemp)
-env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native unit > "$unit_body"
-bench_place_file "$unit_body" "$(p /usr/local/lib/systemd/system/svxlink.service)"
-rm -f "$unit_body"
-bench_chmod 644 "$(p /usr/local/lib/systemd/system/svxlink.service)"
-bench_chown root:root "$(p /usr/local/lib/systemd/system/svxlink.service)"
+# A masked bench receives the reviewed vendor unit and keeps its /dev/null
+# symlinks. A functional-test bench does not get that file installed over
+# anything, and its /etc unit files are not replaced or enabled.
+write_vendor_unit=1
 for unit in svxlink.service remotetrx.service svxreflector.service; do
 	link=$(p "/etc/systemd/system/${unit}")
-	if [ ! -L "$link" ] || [ "$(readlink "$link")" != "/dev/null" ]; then
-		echo "refused: ${unit} mask changed while writing the vendor unit" >&2
-		exit 4
+	if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
+		continue
 	fi
+	write_vendor_unit=0
+	break
+done
+if [ "$write_vendor_unit" -eq 1 ]; then
+	unit_body=$(mktemp)
+	env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native unit > "$unit_body"
+	bench_place_file "$unit_body" "$(p /usr/local/lib/systemd/system/svxlink.service)"
+	rm -f "$unit_body"
+	bench_chmod 644 "$(p /usr/local/lib/systemd/system/svxlink.service)"
+	bench_chown root:root "$(p /usr/local/lib/systemd/system/svxlink.service)"
+fi
+for unit in svxlink.service remotetrx.service svxreflector.service; do
+	link=$(p "/etc/systemd/system/${unit}")
+	if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
+		continue
+	fi
+	enabled=$(unit_enabled_state "$unit")
+	active=$(unit_active_state "$unit")
+	if bench_mode_is_functional_test && [ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]; then
+		continue
+	fi
+	echo "refused: ${unit} is not a /dev/null mask, and it is not inactive and disabled under a functional-test token. It was not replaced." >&2
+	exit 4
 done
 if ! env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native preflight; then
 	echo "refused: native preflight failed after the vendor unit was written" >&2
@@ -545,7 +565,11 @@ echo "OpenRepeater UI files are staged for orp-test."
 echo "Radio units were not started and their masks were checked again."
 echo "The bench marker remains at /etc/openrepeater/bench-mode and is not web-writable."
 echo "Bootstrap binary, share tree, and /etc/svxlink/svxlink.conf were not modified."
-echo "The reviewed unit is /usr/local/lib/systemd/system/svxlink.service. The /dev/null masks were left in place."
+if [ "$write_vendor_unit" -eq 1 ]; then
+	echo "The reviewed unit is /usr/local/lib/systemd/system/svxlink.service. The /dev/null masks were left in place."
+else
+	echo "Radio units stayed inactive and disabled. No vendor unit was installed and no unit was enabled."
+fi
 echo "No GPIO output, audio, or RF test was run."
 if [ -d "$backup_root" ]; then
 	echo "Backup of previous mutable files: ${backup_root}"

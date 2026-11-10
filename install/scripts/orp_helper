@@ -473,8 +473,12 @@ function native_runtime() {
 	native_service_path /var/log/svxlink file || rc=1
 	path=$(native_path /usr/local/lib/systemd/system/svxlink.service)
 	if [ -L "$path" ] || [ ! -f "$path" ]; then
-		echo "missing: /usr/local/lib/systemd/system/svxlink.service is not a regular file"
-		rc=1
+		if native_functional_token && native_unit_disabled svxlink.service && native_unit_disabled remotetrx.service && native_unit_disabled svxreflector.service; then
+			echo "ok: vendor unit left uninstalled on a functional-test bench"
+		else
+			echo "missing: /usr/local/lib/systemd/system/svxlink.service is not a regular file"
+			rc=1
+		fi
 	elif ! native_root_owned "$path" || native_open_mode "$path"; then
 		echo "missing: vendor svxlink.service is not a root-owned private file"
 		rc=1
@@ -492,16 +496,55 @@ function native_runtime() {
 	return "$rc"
 }
 
+function native_systemctl() {
+	if [ -n "${ORP_SYSTEMCTL:-}" ]; then
+		"${ORP_SYSTEMCTL}" "$@"
+	else
+		systemctl "$@"
+	fi
+}
+
+function native_functional_token() {
+	local file perm token
+	file=$(native_path /etc/openrepeater/operating-mode)
+	[ -f "$file" ] && [ ! -L "$file" ] || return 1
+	perm=$(stat -c %a "$file")
+	case "$perm" in
+		''|*[!0-7]*) return 1 ;;
+	esac
+	[ $((8#$perm & 022)) -eq 0 ] || return 1
+	if command -v getfacl >/dev/null 2>&1; then
+		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
+			return 1
+		fi
+	fi
+	token=$(tr -d '[:space:]' < "$file")
+	[ "$token" = "functional-test" ]
+}
+
+function native_unit_disabled() {
+	local enabled active
+	set +e
+	enabled=$(native_systemctl is-enabled "$1" 2>/dev/null)
+	active=$(native_systemctl is-active "$1" 2>/dev/null)
+	set -e
+	[ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]
+}
+
 function native_masks() {
 	local rc=0 unit path
 	for unit in svxlink.service remotetrx.service svxreflector.service; do
 		path=$(native_path "/etc/systemd/system/${unit}")
 		if [ -L "$path" ] && [ "$(readlink "$path")" = "/dev/null" ]; then
 			echo "ok: ${unit} -> /dev/null"
-		else
-			echo "missing: ${unit} is not a /dev/null mask"
-			rc=1
+			continue
 		fi
+		if native_functional_token && native_unit_disabled "$unit" && [ -f "$path" ] && [ ! -L "$path" ]; then
+			echo "ok: ${unit} stays disabled"
+			continue
+		fi
+		echo "missing: ${unit} is not a /dev/null mask"
+		rc=1
 	done
 	return "$rc"
 }

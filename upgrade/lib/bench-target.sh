@@ -259,7 +259,10 @@ bench_render_nginx() {
 		echo "refused: nginx site still contains legacy TLS or PHP 5" >&2
 		return 5
 	fi
-	if ! grep -F -q 'location ~* ^/(modules|sounds|backup)/' "$dest"; then
+	if ! grep -F -q 'location ~* ^/(modules|sounds)/' "$dest" \
+		|| ! grep -F -q 'location ~* ^/backup/' "$dest" \
+		|| ! grep -F -q 'deny all;' "$dest"
+	then
 		echo "refused: nginx site does not keep uploaded scripts out of PHP" >&2
 		return 5
 	fi

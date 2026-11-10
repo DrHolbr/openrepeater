@@ -250,9 +250,11 @@ site="$good/etc/nginx/sites-available/openrepeater"
 if grep -q 'unix:/run/php/php8.4-fpm.sock' "$site" \
 	&& ! grep -E -q 'php5-fpm|ssl[[:space:]]+on|listen[[:space:]]+443' "$site" \
 	&& grep -q 'server_name orp-test' "$site" \
-	&& grep -F -q 'location ~* ^/(modules|sounds|backup)/' "$site" \
+	&& grep -F -q 'location ~* ^/(modules|sounds)/' "$site" \
+	&& grep -F -q 'location ~* ^/backup/' "$site" \
 	&& grep -q 'phtml' "$site" \
 	&& grep -q 'phps' "$site" \
+	&& grep -F -q 'zip|bak' "$site" \
 	&& grep -q 'deny all;' "$site"
 then
 	ok "nginx site uses the PHP 8 socket and has no legacy TLS redirect"
@@ -928,18 +930,27 @@ orp_mkdir "$with_token/etc/openrepeater"
 printf 'functional-test\n' > "$with_token/etc/openrepeater/operating-mode"
 chmod 644 "$with_token/etc/openrepeater/operating-mode"
 : > "$tmp/ft-token.log"
+unit_before=$(sha256sum \
+	"$with_token/etc/systemd/system/svxlink.service" \
+	"$with_token/etc/systemd/system/remotetrx.service" \
+	"$with_token/etc/systemd/system/svxreflector.service")
 set +e
 ORP_INSTALL_OFFLINE=1 ORP_ROOT="$with_token" ORP_SYSTEMCTL="$ft_ctl" ORP_SYSTEMCTL_LOG="$tmp/ft-token.log" \
-	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/ft-token.out" 2>"$tmp/ft-token.err"
+	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	"$INSTALL" >"$tmp/ft-token.out" 2>"$tmp/ft-token.err"
 rc=$?
 set -e
-if [ "$rc" -eq 4 ] \
-	&& ! grep -q 'is not a /dev/null mask, and it is not inactive' "$tmp/ft-token.err" \
-	&& grep -q 'mask changed while writing the vendor unit' "$tmp/ft-token.err" \
-	&& [ -d "$with_token/var/www/openrepeater" ] \
-	&& [ ! -L "$with_token/etc/systemd/system/svxlink.service" ]
+unit_after=$(sha256sum \
+	"$with_token/etc/systemd/system/svxlink.service" \
+	"$with_token/etc/systemd/system/remotetrx.service" \
+	"$with_token/etc/systemd/system/svxreflector.service")
+if [ "$rc" -eq 0 ] \
+	&& [ "$unit_before" = "$unit_after" ] \
+	&& [ ! -L "$with_token/etc/systemd/system/svxlink.service" ] \
+	&& [ ! -e "$with_token/usr/local/lib/systemd/system/svxlink.service" ] \
+	&& ! grep -E '^(enable|unmask|start) ' "$tmp/ft-token.log" | grep -E -q 'svxlink|remotetrx|svxreflector'
 then
-	ok "a functional-test token lets an unmasked inactive bench pass the early mask loop"
+	ok "a functional-test token install finishes without replacing or enabling units"
 else
 	bad "functional-test unmasked install rc=$rc"
 	cat "$tmp/ft-token.err" >&2 || true
