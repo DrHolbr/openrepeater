@@ -23,6 +23,8 @@ class Modules {
 		if (is_string($modulesOverride) && $modulesOverride !== '' && $modulesOverride[0] === '/'
 			&& strpos($modulesOverride, '..') === false && is_dir($modulesOverride) && !is_link($modulesOverride)) {
 			$this->modules_path = rtrim($modulesOverride, '/') . '/';
+		} elseif (is_string($modulesOverride) && $modulesOverride !== '') {
+			$this->modules_path = rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-modules/';
 		} else {
 			$this->modules_path = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/modules/';
 		}
@@ -30,8 +32,9 @@ class Modules {
 		$this->modulesUploadTempDir = $this->modules_path . 'tempModuleDir/';
 		$guard = BenchGuard::detect();
 		if ($guard->isBench()) {
-			$preview = rtrim($guard->previewDir(), '/');
-			if (BenchGuard::previewAllowed($preview) && !is_link($preview)) {
+			$preview = $guard->previewDir();
+			if (is_string($preview) && BenchGuard::previewAllowed($preview) && !is_link($preview)) {
+				$preview = rtrim($preview, '/');
 				$this->svxlink_events_d_path = $preview . '/events.d/';
 				$this->svxlink_modules_d_path = $preview . '/modules.d/';
 				$this->svxlink_sounds = $preview . '/sounds/en_US/';

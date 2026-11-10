@@ -21,8 +21,11 @@ function log_stream_path() {
 		return $fixed;
 	}
 	$override = getenv('ORP_SVXLINK_LOG');
-	if (!is_string($override) || $override === '' || $override[0] !== '/') {
+	if (!is_string($override) || $override === '') {
 		return $fixed;
+	}
+	if ($override[0] !== '/') {
+		log_stream_fail(403, "SvxLink log path is not available.\n");
 	}
 	if (strpos($override, "\0") !== false || strpos($override, '..') !== false) {
 		log_stream_fail(403, "SvxLink log path is not available.\n");

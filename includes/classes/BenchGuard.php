@@ -187,15 +187,42 @@ class BenchGuard {
 		if (!preg_match($pattern, $dir)) {
 			return false;
 		}
-		return self::componentsAreReal($dir);
+		if (!self::componentsAreReal($dir)) {
+			return false;
+		}
+		if (!is_dir($dir)) {
+			return true;
+		}
+		$mode = fileperms($dir);
+		if ($mode !== false && ($mode & 0002) !== 0) {
+			return false;
+		}
+		if (function_exists('posix_geteuid') && function_exists('fileowner')) {
+			$owner = fileowner($dir);
+			$euid = posix_geteuid();
+			if ($owner !== false && $owner !== $euid && (int) $owner !== 0) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	public function previewDir() {
 		// The marker file is not a path authority. A preview= line is ignored.
-		// ORP_BENCH_PREVIEW works only in the cloud harness, never on hostname orp-test.
+		// A set but invalid ORP_BENCH_PREVIEW does not fall back to the live
+		// bench-preview directory. That directory exists on the bench.
 		$env = getenv('ORP_BENCH_PREVIEW');
-		if (self::testHarnessActive() && is_string($env) && self::previewAllowed($env)) {
-			return $env;
+		if (self::testHarnessActive() && is_string($env) && $env !== '') {
+			if (self::previewAllowed($env)) {
+				return $env;
+			}
+			return null;
+		}
+		if (self::testHarnessActive()) {
+			$standIn = getenv('ORP_BENCH_DEFAULT_PREVIEW');
+			if (is_string($standIn) && $standIn !== '' && self::previewAllowed($standIn)) {
+				return $standIn;
+			}
 		}
 		return self::DEFAULT_PREVIEW;
 	}

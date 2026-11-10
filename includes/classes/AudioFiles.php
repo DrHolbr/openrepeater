@@ -11,8 +11,11 @@ class AudioFiles {
 
 	public function __construct() {
 		$override = getenv('ORP_AUDIO_PATH');
-		if (is_string($override) && $override !== '' && $override[0] === '/') {
+		if (is_string($override) && $override !== '' && $override[0] === '/'
+			&& strpos($override, "\0") === false && strpos($override, '..') === false) {
 			$this->path = rtrim($override, '/') . '/';
+		} elseif (is_string($override) && $override !== '') {
+			$this->path = rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-audio/';
 		}
 	}
 

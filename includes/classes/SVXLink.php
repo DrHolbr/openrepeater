@@ -126,8 +126,11 @@ class SVXLink {
 
 	public static function svxlinkPrefix() {
 		$override = getenv('ORP_SVXLINK_PREFIX');
-		if (BenchGuard::testHarnessActive() && is_string($override) && $override !== '' && $override[0] === '/') {
-			return rtrim($override, '/');
+		if (BenchGuard::testHarnessActive() && is_string($override) && $override !== '') {
+			if ($override[0] === '/' && strpos($override, "\0") === false && strpos($override, '..') === false) {
+				return rtrim($override, '/');
+			}
+			return '/orp-no-such-svxlink-prefix';
 		}
 		if (is_file('/usr/local/share/svxlink/events.tcl')) {
 			return '/usr/local';
@@ -497,8 +500,11 @@ class SVXLink {
 				return null;
 			}
 			$root = getenv('ORP_LIVE_CONFIG_ROOT');
-			if ($guard->testHarnessActive() && is_string($root) && $root !== '' && $root[0] === '/') {
-				return rtrim($root, '/') . '/etc/svxlink/svxlink.conf';
+			if ($guard->testHarnessActive() && is_string($root) && $root !== '') {
+				if (BenchGuard::harnessPathAllowed($root) && !is_link($root)) {
+					return rtrim($root, '/') . '/etc/svxlink/svxlink.conf';
+				}
+				return null;
 			}
 			return '/etc/svxlink/svxlink.conf';
 		}
@@ -507,7 +513,7 @@ class SVXLink {
 				return null;
 			}
 			$dir = $guard->previewDir();
-			if (!BenchGuard::previewAllowed($dir) || is_link($dir)) {
+			if (!is_string($dir) || !BenchGuard::previewAllowed($dir) || is_link($dir)) {
 				return null;
 			}
 			return rtrim($dir, '/') . '/' . $filename;
@@ -749,6 +755,9 @@ class SVXLink {
 		}
 		if ($guard->operatingMode() === 'functional-test') {
 			$stageDir = $guard->previewDir();
+			if (!is_string($stageDir) || !BenchGuard::previewAllowed($stageDir) || is_link($stageDir)) {
+				return $this->publishFailure();
+			}
 			if (!is_dir($stageDir) && !mkdir($stageDir, 0770, true) && !is_dir($stageDir)) {
 				return $this->publishFailure();
 			}

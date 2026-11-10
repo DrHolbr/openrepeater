@@ -33,11 +33,15 @@ class BackupRestore {
 		if (is_string($backupOverride) && $backupOverride !== '' && $backupOverride[0] === '/'
 			&& strpos($backupOverride, '..') === false && is_dir($backupOverride) && !is_link($backupOverride)) {
 			$this->backupPath = rtrim($backupOverride, '/') . '/';
+		} elseif (is_string($backupOverride) && $backupOverride !== '') {
+			$this->backupPath = rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-backup/';
 		}
 		$soundsOverride = getenv('ORP_SOUNDS_PATH');
 		if (is_string($soundsOverride) && $soundsOverride !== '' && $soundsOverride[0] === '/'
 			&& strpos($soundsOverride, '..') === false && is_dir($soundsOverride) && !is_link($soundsOverride)) {
 			$this->orp_sounds_dir = rtrim($soundsOverride, '/') . '/';
+		} elseif (is_string($soundsOverride) && $soundsOverride !== '') {
+			$this->orp_sounds_dir = rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-sounds/';
 		}
 
 		$this->dateString = date('Y/m/d H:i:s');
