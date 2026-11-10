@@ -505,21 +505,21 @@ function native_systemctl() {
 }
 
 function native_functional_token() {
-	local file perm token
-	file=$(native_path /etc/openrepeater/operating-mode)
-	[ -f "$file" ] && [ ! -L "$file" ] || return 1
-	perm=$(stat -c %a "$file")
-	case "$perm" in
-		''|*[!0-7]*) return 1 ;;
-	esac
-	[ $((8#$perm & 022)) -eq 0 ] || return 1
-	if command -v getfacl >/dev/null 2>&1; then
-		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
-			return 1
-		fi
+	local lib dir
+	dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+	lib=$(cd "$dir/../../upgrade/lib" 2>/dev/null && pwd)/bench-target.sh || true
+	if [ ! -f "${lib:-}" ]; then
+		lib="${ORP_ROOT:-}/var/www/openrepeater/upgrade/lib/bench-target.sh"
 	fi
-	token=$(tr -d '[:space:]' < "$file")
-	[ "$token" = "functional-test" ]
+	if [ ! -f "$lib" ]; then
+		lib=/var/www/openrepeater/upgrade/lib/bench-target.sh
+	fi
+	[ -f "$lib" ] || return 1
+	ROOT=${ORP_ROOT:-}
+	ROOT=${ROOT%/}
+	# shellcheck source=upgrade/lib/bench-target.sh
+	. "$lib"
+	bench_mode_is_functional_test
 }
 
 function native_unit_disabled() {
@@ -539,7 +539,9 @@ function native_masks() {
 			echo "ok: ${unit} -> /dev/null"
 			continue
 		fi
-		if native_functional_token && native_unit_disabled "$unit" && [ -f "$path" ] && [ ! -L "$path" ]; then
+		# Same predicate as the installer: systemd says disabled and
+		# inactive. The unit file does not have to exist under /etc.
+		if native_functional_token && native_unit_disabled "$unit"; then
 			echo "ok: ${unit} stays disabled"
 			continue
 		fi
@@ -1274,6 +1276,10 @@ function info_os {
 ###############################################################################
 # READ COMMAND LINE OPTIONS AND EXECUTE (Calls Functions Above)
 ###############################################################################
+
+if [ "${ORP_HELPER_SOURCE_ONLY:-0}" = 1 ]; then
+	return 0
+fi
 
 while :; do
     if [ "${2:-}" = "unmask" ]; then

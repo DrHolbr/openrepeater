@@ -28,6 +28,7 @@ if ($size !== false) {
 $defaultRoot = '/var/www/openrepeater/backup/';
 if (strpos($path, $defaultRoot) === 0) {
 	header('X-Accel-Redirect: /internal-backup/' . $name);
+	exit;
 }
 readfile($path);
 exit;

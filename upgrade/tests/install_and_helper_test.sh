@@ -834,8 +834,10 @@ chmod 755 "$tmp/mask-systemctl"
 		exit 1
 	fi
 ) || bad "disabled units were accepted without a functional-test token"
+printf 'orp-test\n' > "$mask_root/etc/hostname"
 printf 'functional-test\n' > "$mask_root/etc/openrepeater/operating-mode"
 chmod 644 "$mask_root/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$mask_root/etc/openrepeater/operating-mode"
 (
 	export ROOT="$mask_root"
 	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
@@ -858,7 +860,7 @@ chmod 644 "$mask_root/etc/openrepeater/operating-mode"
 		exit 1
 	fi
 ) || bad "a running unit was accepted in functional-test"
-chmod 666 "$mask_root/etc/openrepeater/operating-mode"
+sudo chmod 666 "$mask_root/etc/openrepeater/operating-mode"
 (
 	export ROOT="$mask_root"
 	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
@@ -869,9 +871,10 @@ chmod 666 "$mask_root/etc/openrepeater/operating-mode"
 ) || bad "a group-writable functional-test token was accepted"
 ok "masks stay fail-closed and functional-test may be inactive and disabled"
 if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; then
-	chmod 644 "$mask_root/etc/openrepeater/operating-mode"
-	printf 'functional-test\n' > "$mask_root/etc/openrepeater/operating-mode"
-	setfacl -m u:nobody:r "$mask_root/etc/openrepeater/operating-mode"
+	printf 'functional-test\n' | sudo tee "$mask_root/etc/openrepeater/operating-mode" >/dev/null
+	sudo chown 0:0 "$mask_root/etc/openrepeater/operating-mode"
+	sudo chmod 644 "$mask_root/etc/openrepeater/operating-mode"
+	sudo setfacl -m u:nobody:r "$mask_root/etc/openrepeater/operating-mode"
 	(
 		export ROOT="$mask_root"
 		export ORP_SYSTEMCTL="$tmp/mask-systemctl"
@@ -880,9 +883,32 @@ if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; the
 			exit 1
 		fi
 	) || bad "a functional-test token with an ACL was accepted"
-	setfacl -b "$mask_root/etc/openrepeater/operating-mode" || true
+	sudo setfacl -b "$mask_root/etc/openrepeater/operating-mode" || true
 	ok "a functional-test token with an ACL is refused"
 fi
+user_token=$(orp_mktemp_dir)
+orp_mkdir "$user_token/etc/openrepeater"
+printf 'orp-test\n' > "$user_token/etc/hostname"
+printf 'functional-test\n' > "$user_token/etc/openrepeater/operating-mode"
+chmod 644 "$user_token/etc/openrepeater/operating-mode"
+sudo chown 1000:1000 "$user_token/etc/openrepeater/operating-mode"
+(
+	export ROOT="$user_token"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	if bench_mode_is_functional_test; then
+		exit 1
+	fi
+) || bad "the installer accepted a uid-1000 mode 0644 token"
+(
+	export ORP_HELPER_SOURCE_ONLY=1
+	export ORP_ROOT="$user_token"
+	# shellcheck source=../../install/scripts/orp_helper
+	. "$ROOT_DIR/install/scripts/orp_helper"
+	if native_functional_token; then
+		exit 1
+	fi
+) || bad "the helper accepted a uid-1000 mode 0644 token"
+ok "a uid-1000 mode 0644 token is refused by the installer and the helper"
 
 ft_ctl="$tmp/ft-systemctl"
 cat > "$ft_ctl" <<'EOF'
@@ -903,6 +929,32 @@ case "$1" in
 esac
 EOF
 chmod 755 "$ft_ctl"
+lib_only=$(orp_mktemp_dir)
+orp_mkdir "$lib_only/etc/openrepeater" "$lib_only/usr/lib/systemd/system"
+printf 'orp-test\n' > "$lib_only/etc/hostname"
+printf 'functional-test\n' > "$lib_only/etc/openrepeater/operating-mode"
+chmod 644 "$lib_only/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$lib_only/etc/openrepeater/operating-mode"
+for unit in svxlink.service remotetrx.service svxreflector.service; do
+	printf '%s\n' '[Unit]' 'Description=library' > "$lib_only/usr/lib/systemd/system/$unit"
+done
+: > "$tmp/lib-only.log"
+(
+	export ROOT="$lib_only"
+	export ORP_SYSTEMCTL="$ft_ctl"
+	export ORP_SYSTEMCTL_LOG="$tmp/lib-only.log"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_assert_masks
+) || bad "the installer refused a unit that exists only under /usr/lib"
+(
+	export ORP_HELPER_SOURCE_ONLY=1
+	export ORP_ROOT="$lib_only"
+	export ORP_SYSTEMCTL="$ft_ctl"
+	export ORP_SYSTEMCTL_LOG="$tmp/lib-only.log"
+	. "$ROOT_DIR/install/scripts/orp_helper"
+	native_masks
+) || bad "the helper refused a unit that exists only under /usr/lib"
+ok "a disabled inactive unit that exists only under /usr/lib is accepted"
 unmask_units() {
 	local root=$1 unit
 	for unit in svxlink.service remotetrx.service svxreflector.service; do
@@ -931,15 +983,18 @@ unmask_units "$with_token"
 orp_mkdir "$with_token/etc/openrepeater"
 printf 'functional-test\n' > "$with_token/etc/openrepeater/operating-mode"
 chmod 644 "$with_token/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$with_token/etc/openrepeater/operating-mode"
+sudo chown -R 0:0 "$with_token"
 : > "$tmp/ft-token.log"
 unit_before=$(sha256sum \
 	"$with_token/etc/systemd/system/svxlink.service" \
 	"$with_token/etc/systemd/system/remotetrx.service" \
 	"$with_token/etc/systemd/system/svxreflector.service")
 set +e
-ORP_INSTALL_OFFLINE=1 ORP_ROOT="$with_token" ORP_SYSTEMCTL="$ft_ctl" ORP_SYSTEMCTL_LOG="$tmp/ft-token.log" \
-	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
-	"$INSTALL" >"$tmp/ft-token.out" 2>"$tmp/ft-token.err"
+sudo -n env ORP_INSTALL_OFFLINE=1 ORP_ROOT="$with_token" ORP_SYSTEMCTL="$ft_ctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/ft-token.log" ORP_BOOTSTRAP_ACTIVE=0 \
+	ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock ORP_BENCH_TEST_HARNESS=1 \
+	bash "$INSTALL" >"$tmp/ft-token.out" 2>"$tmp/ft-token.err"
 rc=$?
 set -e
 unit_after=$(sha256sum \
@@ -957,6 +1012,7 @@ else
 	bad "functional-test unmasked install rc=$rc"
 	cat "$tmp/ft-token.err" >&2 || true
 fi
+sudo chown -R "$(id -u):$(id -g)" "$with_token" || true
 
 if [ "$fail" -ne 0 ]; then
 	echo "shell checks failed" >&2

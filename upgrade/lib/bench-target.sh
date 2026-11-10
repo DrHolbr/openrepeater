@@ -111,13 +111,21 @@ bench_assert_bootstrap_idle() {
 	return 0
 }
 
-# A trusted functional-test token is a regular file, not a symlink, not
-# group or world writable, and owned by root. A fixture ROOT may be owned
-# by the user running the installer. Anything else is not a token.
+# Shared by the installer and orp_helper. A trusted functional-test token
+# is a regular file on hostname orp-test, owned by uid 0, not a symlink,
+# not group or world writable, and without an extended ACL when getfacl
+# is installed. The contents are exactly functional-test.
 bench_mode_is_functional_test() {
-	local file perm owner token
+	local file perm owner host token
 	file=$(p /etc/openrepeater/operating-mode)
 	if [ ! -f "$file" ] || [ -L "$file" ]; then
+		return 1
+	fi
+	host=$(p /etc/hostname)
+	if [ ! -f "$host" ] || [ -L "$host" ]; then
+		return 1
+	fi
+	if [ "$(tr -d '[:space:]' < "$host")" != "orp-test" ]; then
 		return 1
 	fi
 	perm=$(stat -c %a "$file")
@@ -128,26 +136,24 @@ bench_mode_is_functional_test() {
 		return 1
 	fi
 	owner=$(stat -c %u "$file")
+	if [ "$owner" != "0" ]; then
+		return 1
+	fi
 	if command -v getfacl >/dev/null 2>&1; then
 		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
 			return 1
 		fi
-	fi
-	if [ -z "${ROOT}" ]; then
-		if [ "$owner" != "0" ]; then
-			return 1
-		fi
-	elif [ "$owner" != "0" ] && [ "$owner" != "$(id -u)" ]; then
-		return 1
 	fi
 	token=$(tr -d '[:space:]' < "$file")
 	[ "$token" = "functional-test" ]
 }
 
 # Masked units are the install state. Functional-test may instead be
-# inactive and disabled, and only when the mode token is trusted. An
-# enabled unit, a running unit, or a disabled unit without that token
-# is refused.
+# inactive and disabled, and only when the mode token is trusted. That
+# state is systemd's report (is-enabled=disabled, is-active=inactive).
+# The unit file may live only under /usr/lib/systemd/system. No file
+# under /etc/systemd/system is required. An enabled unit, a running unit,
+# or a disabled unit without that token is refused.
 bench_assert_masks() {
 	local unit enabled active
 	for unit in svxlink.service remotetrx.service svxreflector.service; do
