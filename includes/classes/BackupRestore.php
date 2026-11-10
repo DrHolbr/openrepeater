@@ -591,7 +591,9 @@ PY;
 					return false;
 				}
 				if (is_dir($discard) && !is_link($discard)) {
-					exec('rm -R ' . escapeshellarg($discard), $unused, $rc);
+					if (BenchGuard::removeTreeConfined($discard, dirname($discard)) !== true) {
+						return false;
+					}
 				}
 			}
 			if (is_string($item['stash']) && file_exists($item['stash'])) {
@@ -609,7 +611,7 @@ PY;
 		}
 		foreach ($done as $item) {
 			if (isset($item['stash']) && is_string($item['stash']) && file_exists($item['stash']) && !is_link($item['stash'])) {
-				exec('rm -R ' . escapeshellarg($item['stash']), $unused, $rc);
+				BenchGuard::removeTreeConfined($item['stash'], dirname($item['stash']));
 			}
 		}
 	}
@@ -620,7 +622,7 @@ PY;
 		}
 		foreach ($stages as $stage) {
 			if (is_string($stage) && is_dir($stage) && !is_link($stage)) {
-				exec('rm -R ' . escapeshellarg($stage), $unused, $rc);
+				BenchGuard::removeTreeConfined($stage, dirname($stage));
 			}
 		}
 	}
@@ -1054,7 +1056,10 @@ PY;
 		}
 		rmdir($path);
 */
-		exec('rm ' . $path . ' -R');
+		$path = rtrim((string) $path, '/');
+		if ($path !== '') {
+			BenchGuard::removeTreeConfined($path, dirname($path));
+		}
 		return;
 	}
 

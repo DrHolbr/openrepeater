@@ -499,14 +499,11 @@ class SVXLink {
 			if ($filename !== 'svxlink.conf') {
 				return null;
 			}
-			$root = getenv('ORP_LIVE_CONFIG_ROOT');
-			if ($guard->testHarnessActive() && is_string($root) && $root !== '') {
-				if (BenchGuard::harnessPathAllowed($root) && !is_link($root)) {
-					return rtrim($root, '/') . '/etc/svxlink/svxlink.conf';
-				}
+			$dir = $guard->previewDir();
+			if (!is_string($dir) || !BenchGuard::previewAllowed($dir) || is_link($dir)) {
 				return null;
 			}
-			return '/etc/svxlink/svxlink.conf';
+			return rtrim($dir, '/') . '/svxlink.conf';
 		}
 		if ($guard->isBench()) {
 			if (basename($filename) !== $filename) {

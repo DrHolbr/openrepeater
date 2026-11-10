@@ -227,6 +227,89 @@ class BenchGuard {
 		return self::DEFAULT_PREVIEW;
 	}
 
+	public static function pathInside($root, $path) {
+		$root = rtrim((string) $root, '/');
+		$path = rtrim((string) $path, '/');
+		return $path === $root || strpos($path, $root . '/') === 0;
+	}
+
+	// Delete a file or directory only when it is a real child of $parent.
+	// A symlink is unlinked and is not followed.
+	public static function removeTreeConfined($path, $parent) {
+		if (!is_string($path) || !is_string($parent) || $path === '' || $parent === '') {
+			return false;
+		}
+		if (is_link($parent) || !is_dir($parent)) {
+			return false;
+		}
+		$parentReal = realpath($parent);
+		if ($parentReal === false) {
+			return false;
+		}
+		if (!file_exists($path) && !is_link($path)) {
+			return true;
+		}
+		if (is_link($path)) {
+			$dir = dirname($path);
+			if (is_link($dir) || !is_dir($dir)) {
+				return false;
+			}
+			$dirReal = realpath($dir);
+			if ($dirReal === false || !self::pathInside($parentReal, $dirReal)) {
+				return false;
+			}
+			return unlink($path);
+		}
+		if (!is_dir($path)) {
+			$dirReal = realpath(dirname($path));
+			$fileReal = realpath($path);
+			if ($dirReal === false || $fileReal === false || !self::pathInside($parentReal, $dirReal) || !self::pathInside($parentReal, $fileReal) || $fileReal === $parentReal) {
+				return false;
+			}
+			return unlink($path);
+		}
+		$real = realpath($path);
+		if ($real === false || !self::pathInside($parentReal, $real) || $real === $parentReal) {
+			return false;
+		}
+		return self::removeTreeWalk($real, $parentReal);
+	}
+
+	private static function removeTreeWalk($dir, $root) {
+		if (is_link($dir)) {
+			return unlink($dir);
+		}
+		if (!is_dir($dir) || !self::pathInside($root, $dir) || $dir === $root) {
+			return false;
+		}
+		$list = scandir($dir);
+		if (!is_array($list)) {
+			return false;
+		}
+		foreach ($list as $name) {
+			if ($name === '.' || $name === '..') {
+				continue;
+			}
+			$child = $dir . '/' . $name;
+			if (is_link($child)) {
+				if (!unlink($child)) {
+					return false;
+				}
+				continue;
+			}
+			if (is_dir($child)) {
+				if (!self::removeTreeWalk($child, $root)) {
+					return false;
+				}
+				continue;
+			}
+			if (!unlink($child)) {
+				return false;
+			}
+		}
+		return rmdir($dir);
+	}
+
 	public static function writeContained($path, $data) {
 		if (!self::componentsAreReal($path) || is_link($path)) {
 			return false;

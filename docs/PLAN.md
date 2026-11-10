@@ -1,6 +1,6 @@
 # Stage 2 plan: bench UI on Debian Trixie
 
-**Status: `143d5e7e7fc235d34ead677f2383b02c69e23da0` is installed.** The earlier `adda19c` page gate passed, and that commit is not the installed tree. Nine authenticated pages closed `</html>`, including long identification controls and the empty courtesy library. Seventy-two assets passed. The settings GET added only the three missing CTCSS defaults 10, 5, and 9. Radios stayed masked. SvxLink's binary digest did not change. That page pass is not a completed UI audit, preset translation, FCC gate, or functional-test deployment. The next commit is not installed and is not authorized for this agent to deploy. Production is untouched. This change does not merge.
+**Status: `04d7dbe15ac2832b27c600e69eb094027bfaf611` is installed on orp-test.** It was installed 1:58–2:01 AM EST on November 10, 2026, through `upgrade/install-orp-ui.sh`. svxlink was masked for that install and then returned to inactive and disabled. `remotetrx` and `svxreflector` were not left running. The rollback tree is `/var/backups/orp-rollback-143d5e7-04d7dbe`. The Pi has `php8.4-zip` `8.4.27-1~deb13u1`, `libzip5`, and `nodejs` `20.19.2`. `run.sh` passed natively at this commit, which supersedes the unfinished native run of `78112bf`. The earlier `143d5e7` page pass is the previous installed tree, not the current one. Production is untouched. This change does not merge.
 
 The user goal is to make the existing OpenRepeater web UI usable on the bench Raspberry Pi 3B+ (Raspberry Pi OS / Debian Trixie arm64, PHP 8.x, nginx, SvxLink 26.05.2) without transmitting and without disturbing the image that is already building.
 
@@ -179,9 +179,11 @@ For each of the six packages, the apt candidate must be PHP 8.4 and every origin
 
 A package that is missing or older than that candidate is installed or upgraded with `apt-get install` of that package list only. `--no-upgrade` is not applied to those packages. `nginx`, `gpiod`, `sudo`, and `sqlite3` still use `--no-upgrade`. There is no `dist-upgrade` and no `full-upgrade`. After that install, the same comparison is repeated. The nginx site accepts only a `php8.4-fpm` socket.
 
-This is a package-origin and freshness rule for the distro runtime. It does not name a vulnerability and it does not claim that moving to the candidate closes one. The cloud harness still typechecks with the image's PHP 8.3 CLI; that is not the runtime the installer selects for the Pi. Commit `10c4df4` is what is installed on the bench. This origin rule is not installed there.
+This is a package-origin and freshness rule for the distro runtime. It does not name a vulnerability and it does not claim that moving to the candidate closes one. The cloud harness still typechecks with the image's PHP 8.3 CLI; that is not the runtime the installer selects for the Pi. Commit `04d7dbe` is what is installed on the bench, including this origin rule and `php8.4-zip`.
 
-`upgrade/tests/run.sh` requires the Debian package `nodejs` (the `node` binary) for `upgrade/tests/logtail_client_test.js`. That package is test-only. The station install does not install it. If `node` is missing, the harness stops and names `nodejs`.
+The installer still refuses svxlink, remotetrx, and svxreflector unless each unit is masked. That is the state used for the 04d7dbe install. Functional-test is a different safe state: the operating-mode token is exactly `functional-test`, the file is not a symlink and not group or world writable, and on the bench it is owned by root. In that state each unit may instead be `inactive` and `disabled`. An enabled unit, a running unit, or a disabled unit without that token is still refused. The installer does not unmask anything.
+
+`upgrade/tests/run.sh` requires the Debian package `nodejs` (the `node` binary) for `upgrade/tests/logtail_client_test.js`. That package is test-only. The station install does not install it. The Pi already has `nodejs` `20.19.2` for that test. If `node` is missing, the harness stops and names `nodejs`.
 
 ## Wizard save without the Memcached extension
 
@@ -243,6 +245,6 @@ These need the parent, on the Pi, after review:
 ## Tracked follow-ups
 
 6. The station database hash moved from `ae65ca06` to `54ff78f7`. The change is still unattributed. Investigation is pending. Do not treat either hash as a new baseline until that is explained.
-7. Restore stays undeployable on the installed `143d5e7` layout because `/var/www/openrepeater/sounds` is absent. It stays that way until a head that contains the `4d37337` sound and backup anchors is installed.
+7. The `143d5e7` tree had no `/var/www/openrepeater/sounds` directory, so restore could not use that anchor. `04d7dbe` is the installed tree and includes the real-directory sounds and backup anchors. The suite restores courtesy files into a real directory, not a symlink. A live restore of the station backup was not part of the install report.
 8. `login.php` still builds the password check with `SQLite3::escapeString` inside SQL and a double SHA-256. A later change may store `password_hash` and rehash on login. It must keep accepting the existing bench account. That migration is not in this commit.
 - `nginx -t` and `gpioinfo` on real hardware.

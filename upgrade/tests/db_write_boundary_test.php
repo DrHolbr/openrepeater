@@ -720,4 +720,62 @@ if ($usersBefore !== $usersAfter || $attacker !== '0' || $victimSign !== 'VICTIM
 	fail('untrusted backup SQL changed a database or wrote a file');
 }
 echo "ok: www-data restores in place on a root-owned sticky database and confined SQL has no side effects\n";
+
+$anchor = sys_get_temp_dir() . '/orp-real-sounds-' . getmypid();
+$anchorDb = $anchor . '/openrepeater.db';
+$anchorSounds = $anchor . '/sounds';
+$anchorBackup = $anchor . '/backup';
+$anchorModules = $anchor . '/modules';
+foreach (array(
+	$anchorSounds . '/courtesy_tones',
+	$anchorSounds . '/identification',
+	$anchorBackup . '/restore/courtesy_tones',
+	$anchorModules,
+) as $dir) {
+	if (!mkdir($dir, 0755, true)) {
+		fail('could not build the real sounds anchor');
+	}
+}
+if (!copy($root . '/install/sql/openrepeater.db', $anchorDb) || !chmod($anchorDb, 0600)) {
+	fail('could not copy the database for the sounds anchor');
+}
+putenv('ORP_DB_PATH=' . $anchorDb);
+putenv('ORP_FLAG_STORE=sqlite');
+putenv('ORP_SOUNDS_PATH=' . $anchorSounds);
+putenv('ORP_BACKUP_PATH=' . $anchorBackup);
+putenv('ORP_MODULES_PATH=' . $anchorModules);
+putenv('ORP_RESTORE_FAULT');
+$anchorDatabase = new Database();
+$exportedSign = (new SQLite3($anchorDb))->querySingle("SELECT value FROM settings WHERE keyID='callSign'");
+$anchorSql = $anchor . '/backup.sql';
+if ($anchorDatabase->db_export(array('settings', 'gpio_pins', 'ports', 'modules'), $anchorSql) !== true) {
+	fail('could not export the sounds-anchor backup');
+}
+if ($anchorDatabase->update_existing_settings(array('callSign' => 'BEFORE')) !== true) {
+	fail('could not mark the sounds-anchor database');
+}
+copy($anchorSql, $anchorBackup . '/restore/backup.sql');
+file_put_contents($anchorSounds . '/courtesy_tones/keep.wav', 'keep');
+file_put_contents($anchorSounds . '/identification/voice.wav', 'voice');
+file_put_contents($anchorBackup . '/restore/courtesy_tones/new.wav', 'new');
+$anchorRestore = new BackupRestore();
+$anchorResult = $anchorRestore->restore_backup();
+$anchorMsg = is_array($anchorResult) && isset($anchorResult['msgText']) ? $anchorResult['msgText'] : '';
+if (!is_array($anchorResult) || $anchorResult['msgType'] !== 'success' || strpos($anchorMsg, 'successfully restored') === false) {
+	fail('a real-directory sounds anchor was not restored: ' . $anchorMsg);
+}
+if (is_link($anchorSounds) || is_link($anchorSounds . '/courtesy_tones') || is_link($anchorSounds . '/identification')) {
+	fail('the sounds anchor became a symlink');
+}
+if (file_get_contents($anchorSounds . '/courtesy_tones/new.wav') !== 'new' || is_file($anchorSounds . '/courtesy_tones/keep.wav')) {
+	fail('the real courtesy directory was not replaced from the backup');
+}
+if (!is_dir($anchorSounds . '/identification') || file_get_contents($anchorSounds . '/identification/voice.wav') !== 'voice') {
+	fail('the real identification directory was not left in place');
+}
+$restoredSign = (new SQLite3($anchorDb))->querySingle("SELECT value FROM settings WHERE keyID='callSign'");
+if ($restoredSign === 'BEFORE' || $restoredSign !== $exportedSign) {
+	fail('the real sounds restore did not put the database rows back');
+}
+echo "ok: a real-directory sounds anchor restores courtesy files and database rows\n";
 echo "database write boundary checks passed\n";

@@ -10,7 +10,8 @@ function fail($msg) {
 $cases = array(
 	array('../dashboard.php', '../dashboard.php'),
 	array('../courtesy_tone.php?preview_failed=1', '../courtesy_tone.php'),
-	array('dashboard.php', 'dashboard.php'),
+	array('dashboard.php', '../dashboard.php'),
+	array('not-a-page.php', '../dashboard.php'),
 	array('https://evil.example/phish', '../dashboard.php'),
 	array('//evil.example/phish', '../dashboard.php'),
 	array('\\\\evil.example\\share', '../dashboard.php'),

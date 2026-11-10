@@ -42,8 +42,11 @@ putenv('ORP_FLAG_STORE=sqlite');
 
 $db = new Database();
 $svx = new SVXLink($db->get_settings(), $db->get_ports(), array());
-if ($svx->configDestination('svxlink.conf') !== $liveFile) {
-	fail('the destination string was not the fixture live path');
+if ($svx->configDestination('svxlink.conf') !== $preview . '/svxlink.conf') {
+	fail('functional-test destination was not the stage path');
+}
+if ($svx->configDestination('svxlink.conf') === $liveFile) {
+	fail('functional-test destination named the live svxlink.conf');
 }
 if ($svx->write_config($svx->disconnectedRuntimeConfig(), 'svxlink.conf', 'ini') !== true) {
 	fail('staging the disconnected runtime failed');

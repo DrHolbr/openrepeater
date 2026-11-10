@@ -147,9 +147,11 @@ class RequestGuard {
 		return isset($allowed[$service]) && in_array($option, $allowed[$service], true);
 	}
 
-	// A rebuild form may name the page to reopen. Only a same-site relative
-	// PHP path is accepted. A scheme, a protocol-relative URL, a backslash,
-	// or a control character falls back to the dashboard.
+	// A rebuild form may name the page to reopen. The result is always
+	// ../<page>.php from functions/, and only for a page at the web root.
+	// A bare name.php is not left relative to functions/. A scheme, a
+	// protocol-relative URL, a backslash, or a control character falls
+	// back to the dashboard.
 	public static function safeReturnUrl($value) {
 		$fallback = '../dashboard.php';
 		if (!is_string($value) || $value === '') {
@@ -165,10 +167,31 @@ class RequestGuard {
 		if (strpos($path, '//') !== false || strpos($path, ':') !== false) {
 			return $fallback;
 		}
-		if (!preg_match('#^(?:\.\./)?[A-Za-z0-9][A-Za-z0-9._-]*\.php$#', $path)) {
+		if (!preg_match('#^(?:\.\./)?([A-Za-z0-9][A-Za-z0-9._-]*\.php)$#', $path, $match)) {
 			return $fallback;
 		}
-		return $path;
+		if (!in_array($match[1], self::returnPages(), true)) {
+			return $fallback;
+		}
+		return '../' . $match[1];
+	}
+
+	private static function returnPages() {
+		return array(
+			'404.php',
+			'advanced.php',
+			'backup.php',
+			'courtesy_tone.php',
+			'dashboard.php',
+			'dtmf.php',
+			'gpio.php',
+			'identification.php',
+			'index.php',
+			'log.php',
+			'modules.php',
+			'ports.php',
+			'settings.php',
+		);
 	}
 
 	public static function readUpdateAllowed($name) {

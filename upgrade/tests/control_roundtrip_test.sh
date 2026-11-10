@@ -344,8 +344,25 @@ fi
 [ ! -e "$canary" ]
 [ "$(sqlite3 "$db" "SELECT moduleEnabled || ' ' || svxlinkID FROM modules WHERE svxlinkName='ProbeMod';")" = "0 3" ]
 [ "$(sqlite3 "$db" "SELECT moduleKey FROM modules WHERE svxlinkName='Help';")" = "1" ]
-[ -L "$preview/events.d/ModuleProbe.tcl" ]
+[ ! -e "$preview/events.d/ModuleProbe.tcl" ]
 [ ! -e /usr/local/share/svxlink/events.d/ModuleProbe.tcl ]
+[ ! -e /usr/share/svxlink/events.d/ModuleProbe.tcl ]
+mkdir -p "$preview/sounds/en_US/ProbeMod"
+printf 'KEEP\n' > "$preview/sounds/en_US/ProbeMod/keep"
+module_key=$(sqlite3 "$db" "SELECT moduleKey FROM modules WHERE svxlinkName='ProbeMod';")
+php -r '
+$_SERVER["DOCUMENT_ROOT"] = $argv[2];
+putenv("ORP_OPERATING_MODE_FILE=" . $argv[3]);
+require $argv[2] . "/includes/classes/BenchGuard.php";
+require $argv[2] . "/includes/classes/Database.php";
+require $argv[2] . "/includes/classes/Modules.php";
+$m = new Modules();
+$r = $m->activateMod($argv[1]);
+if (!is_array($r) || $r["msgType"] !== "success") { fwrite(STDERR, "activation did not link the module: " . (isset($r["msgText"]) ? $r["msgText"] : "no-result") . "\n"); exit(1); }
+' "$module_key" "$ROOT_DIR" "$mode"
+[ "$(cat "$preview/sounds/en_US/ProbeMod/keep")" = "KEEP" ]
+[ ! -L "$preview/sounds/en_US/ProbeMod" ]
+[ -L "$preview/events.d/ModuleProbe.tcl" ]
 [ ! -e /usr/share/svxlink/events.d/ModuleProbe.tcl ]
 if grep -q 'ProbeMod' "$cfg"; then
 	echo "FAIL: uploaded module was copied into the root runtime" >&2

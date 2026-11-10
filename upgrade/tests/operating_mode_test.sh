@@ -79,9 +79,12 @@ putenv("ORP_BENCH_HOSTNAME_FILE=" . $argv[2]);
 putenv("ORP_BENCH_MARKER=" . $argv[3]);
 putenv("ORP_OPERATING_MODE_FILE=" . $argv[4]);
 chmod($argv[4], 0644);
-$live = (new SVXLink(array("callSign" => "FIXTURE", "ID_Short_Mode" => "morse", "ID_Short_IntervalMin" => "5", "ID_Long_Mode" => "disabled", "ID_Morse_WPM" => "20", "ID_Short_IdentOnlyAfterTX" => "False"), array(array("rxGPIO" => "26", "txGPIO" => "498")), array()))->configDestination("svxlink.conf");
-if ($live !== "/etc/svxlink/svxlink.conf") fail("functional-test publication target was " . $live);
-echo "ok: functional-test publishes to /etc/svxlink, allows start/stop, and still blocks GPIO\n";
+$svx = new SVXLink(array("callSign" => "FIXTURE", "ID_Short_Mode" => "morse", "ID_Short_IntervalMin" => "5", "ID_Long_Mode" => "disabled", "ID_Morse_WPM" => "20", "ID_Short_IdentOnlyAfterTX" => "False"), array(array("rxGPIO" => "26", "txGPIO" => "498")), array());
+$live = $svx->configDestination("svxlink.conf");
+$stageDir = BenchGuard::detect()->previewDir();
+$expected = (is_string($stageDir) && BenchGuard::previewAllowed($stageDir) && !is_link($stageDir)) ? rtrim($stageDir, "/") . "/svxlink.conf" : null;
+if ($live === "/etc/svxlink/svxlink.conf" || $live !== $expected) fail("functional-test publication target was " . var_export($live, true));
+echo "ok: functional-test stages svxlink.conf outside /etc, allows start/stop, and still blocks GPIO\n";
 ' "$ROOT_DIR" "$host" "$marker" "$mode" "$missing" "$tmp/other-host"
 
 printf 'functional-test\n' > "$mode"

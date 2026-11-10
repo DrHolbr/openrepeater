@@ -165,5 +165,82 @@ if (is_dir($modulesDir . '/tempModuleDir/Probe')) {
 if (file_get_contents($outside) !== 'KEEP') {
 	zip_fail('a valid module changed the outside file');
 }
+$upper = $modules->upload_module(array(
+	'name' => array('Probe.ZIP'),
+	'tmp_name' => array($work . '/missing.zip'),
+	'size' => array(32),
+	'error' => array(0),
+));
+$upperText = is_array($upper) && isset($upper['msgText']) ? $upper['msgText'] : '';
+if (strpos($upperText, 'supported format') !== false) {
+	zip_fail('a .ZIP upload was rejected by extension');
+}
+
+$lying = $work . '/lying.zip';
+$zip = new ZipArchive();
+if ($zip->open($lying, ZipArchive::CREATE) !== true) {
+	zip_fail('could not create the lying archive');
+}
+$zip->addFromString('bomb.txt', str_repeat('A', Modules::ZIP_MAX_ENTRY + 65536));
+$zip->setCompressionName('bomb.txt', ZipArchive::CM_DEFLATE, 9);
+$zip->close();
+$raw = file_get_contents($lying);
+$local = strpos($raw, "PK\x03\x04");
+$central = strpos($raw, "PK\x01\x02");
+if ($local === false || $central === false) {
+	zip_fail('the lying archive has no zip headers');
+}
+$raw = substr_replace($raw, pack('V', 32), $local + 22, 4);
+$raw = substr_replace($raw, pack('V', 32), $central + 24, 4);
+file_put_contents($lying, $raw);
+$check = new ZipArchive();
+if ($check->open($lying) !== true) {
+	zip_fail('the lying archive did not open');
+}
+$declared = $check->statIndex(0);
+$check->close();
+if (!is_array($declared) || (int) $declared['size'] !== 32) {
+	zip_fail('the lying archive did not publish a 32-byte size');
+}
+if ($modules->unzip_module($lying) !== false) {
+	zip_fail('a lying uncompressed size was accepted');
+}
+if (file_exists($modulesDir . '/tempModuleDir/bomb.txt') || file_get_contents($outside) !== 'KEEP') {
+	zip_fail('a lying uncompressed size wrote past the cap');
+}
+
+$db = $work . '/modules.db';
+if (!copy($root . '/install/sql/openrepeater.db', $db) || !chmod($db, 0600)) {
+	zip_fail('could not copy the module database');
+}
+putenv('ORP_DB_PATH=' . $db);
+$marker = $work . '/bench-marker';
+file_put_contents($marker, "bench\n");
+putenv('ORP_BENCH_MARKER=' . $marker);
+$preview = rtrim($fixture, '/') . '/orp-preview-mod-' . getmypid();
+mkdir($preview, 0755);
+putenv('ORP_BENCH_PREVIEW=' . $preview);
+$modSounds = $modulesDir . '/SoundMod/svxlink/sounds/en_US';
+mkdir($modSounds, 0755, true);
+file_put_contents($modSounds . '/clip.wav', 'clip');
+$soundsReal = $preview . '/sounds/en_US/SoundMod';
+mkdir($soundsReal, 0755, true);
+file_put_contents($soundsReal . '/keep', 'KEEP');
+$linked = new Modules();
+if ($linked->initialize_module('SoundMod', 0) !== true) {
+	zip_fail('inactive install failed');
+}
+if (is_link($soundsReal) || file_get_contents($soundsReal . '/keep') !== 'KEEP') {
+	zip_fail('inactive install changed the sounds directory');
+}
+if ($linked->initialize_module('SoundMod', 1) !== false || file_get_contents($soundsReal . '/keep') !== 'KEEP') {
+	zip_fail('activation replaced a real sounds directory');
+}
+if (BenchGuard::removeTreeConfined($soundsReal, dirname($soundsReal)) !== true) {
+	zip_fail('could not remove the sounds fixture');
+}
+if ($linked->initialize_module('SoundMod', 1) !== true || !is_link($preview . '/sounds/en_US/SoundMod')) {
+	zip_fail('activation did not link sounds');
+}
 echo "ok: hostile module archives stay inside the upload directory\n";
 exit(0);

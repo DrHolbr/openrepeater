@@ -18,6 +18,26 @@ server {
 		deny all;
 	}
 
+	# Module uploads, the sounds anchor, and backup extracts live in the
+	# docroot. ^~ keeps the PHP location below from executing them.
+	location ^~ /modules/ {
+		location ~* \.(php|php[0-9]|phtml|phar|cgi|pl|py|rb|sh)$ {
+			deny all;
+		}
+	}
+
+	location ^~ /sounds/ {
+		location ~* \.(php|php[0-9]|phtml|phar|cgi|pl|py|rb|sh)$ {
+			deny all;
+		}
+	}
+
+	location ^~ /backup/ {
+		location ~* \.(php|php[0-9]|phtml|phar|cgi|pl|py|rb|sh)$ {
+			deny all;
+		}
+	}
+
 	location ~* \.(db|sqlite|sqlite3)$ {
 		deny all;
 	}

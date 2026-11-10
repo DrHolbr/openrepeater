@@ -111,14 +111,51 @@ bench_assert_bootstrap_idle() {
 	return 0
 }
 
-bench_assert_masks() {
-	local unit state
-	for unit in svxlink.service remotetrx.service svxreflector.service; do
-		state=$(unit_enabled_state "$unit")
-		if [ "$state" != "masked" ]; then
-			echo "refused: ${unit} is '${state}', expected masked" >&2
-			return 4
+# A trusted functional-test token is a regular file, not a symlink, not
+# group or world writable, and owned by root. A fixture ROOT may be owned
+# by the user running the installer. Anything else is not a token.
+bench_mode_is_functional_test() {
+	local file perm owner token
+	file=$(p /etc/openrepeater/operating-mode)
+	if [ ! -f "$file" ] || [ -L "$file" ]; then
+		return 1
+	fi
+	perm=$(stat -c %a "$file")
+	case "$perm" in
+		''|*[!0-7]*) return 1 ;;
+	esac
+	if [ $((8#$perm & 022)) -ne 0 ]; then
+		return 1
+	fi
+	owner=$(stat -c %u "$file")
+	if [ -z "${ROOT}" ]; then
+		if [ "$owner" != "0" ]; then
+			return 1
 		fi
+	elif [ "$owner" != "0" ] && [ "$owner" != "$(id -u)" ]; then
+		return 1
+	fi
+	token=$(tr -d '[:space:]' < "$file")
+	[ "$token" = "functional-test" ]
+}
+
+# Masked units are the install state. Functional-test may instead be
+# inactive and disabled, and only when the mode token is trusted. An
+# enabled unit, a running unit, or a disabled unit without that token
+# is refused.
+bench_assert_masks() {
+	local unit enabled active
+	for unit in svxlink.service remotetrx.service svxreflector.service; do
+		enabled=$(unit_enabled_state "$unit")
+		active=$(unit_active_state "$unit")
+		if [ "$enabled" = "masked" ]; then
+			continue
+		fi
+		if bench_mode_is_functional_test && [ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]; then
+			continue
+		fi
+		echo "refused: ${unit} is enabled '${enabled}' active '${active}', expected masked, or inactive and disabled with a functional-test token" >&2
+		return 4
 	done
 	return 0
 }
@@ -215,6 +252,13 @@ bench_render_nginx() {
 	fi
 	if grep -E -q 'php5-fpm|ssl[[:space:]]+on|listen[[:space:]]+443' "$dest"; then
 		echo "refused: nginx site still contains legacy TLS or PHP 5" >&2
+		return 5
+	fi
+	if ! grep -q 'location \^~ /modules/' "$dest" \
+		|| ! grep -q 'location \^~ /sounds/' "$dest" \
+		|| ! grep -q 'location \^~ /backup/' "$dest"
+	then
+		echo "refused: nginx site does not keep uploaded scripts out of PHP" >&2
 		return 5
 	fi
 	return 0

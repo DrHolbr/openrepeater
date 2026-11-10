@@ -28,8 +28,8 @@ $db = new Database();
 $settings = $db->get_settings();
 $ports = $db->get_ports();
 $svx = new SVXLink($settings, $ports, array());
-if ($svx->configDestination('svxlink.conf') !== '/etc/svxlink/svxlink.conf') {
-	fail('config destination was not the live svxlink.conf');
+if ($svx->configDestination('svxlink.conf') !== $preview . '/svxlink.conf') {
+	fail('config destination was not the stage file');
 }
 if ($svx->configDestination('gpio.conf') !== null) {
 	fail('functional-test still has a gpio.conf destination');
@@ -47,4 +47,4 @@ foreach (array('PTT_TYPE=NONE', 'SQL_DET=SIGLEV', 'udp:127.0.0.1:17001', 'udp:12
 if (preg_match('/^[^#].*(PTT_PIN|GPIO_SQL_PIN|GPIO_PATH|PTT_TYPE=GPIO)/m', $staged)) {
 	fail('staged config contains GPIO or PTT hardware');
 }
-echo "ok: staged no-PTT config targets /etc/svxlink/svxlink.conf\n";
+echo "ok: staged no-PTT config targets the preview file\n";

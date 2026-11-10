@@ -249,7 +249,11 @@ fi
 site="$good/etc/nginx/sites-available/openrepeater"
 if grep -q 'unix:/run/php/php8.4-fpm.sock' "$site" \
 	&& ! grep -E -q 'php5-fpm|ssl[[:space:]]+on|listen[[:space:]]+443' "$site" \
-	&& grep -q 'server_name orp-test' "$site"
+	&& grep -q 'server_name orp-test' "$site" \
+	&& grep -q 'location \^~ /modules/' "$site" \
+	&& grep -q 'location \^~ /sounds/' "$site" \
+	&& grep -q 'location \^~ /backup/' "$site" \
+	&& grep -q 'deny all;' "$site"
 then
 	ok "nginx site uses the PHP 8 socket and has no legacy TLS redirect"
 else
@@ -792,6 +796,74 @@ else
 	bad "read-only source rc=$rc web=$(stat -c %a "$ro_web" 2>/dev/null || echo missing)"
 	cat "$tmp/ro.err" >&2 || true
 fi
+
+mask_root=$(orp_mktemp_dir)
+orp_mkdir "$mask_root/etc/openrepeater"
+cat > "$tmp/mask-systemctl" <<'EOF'
+#!/bin/bash
+unit=${2:-}
+case "$1" in
+	is-enabled)
+		printf '%s\n' "${MASK_ENABLED:-masked}"
+		exit 1
+		;;
+	is-active)
+		printf '%s\n' "${MASK_ACTIVE:-inactive}"
+		exit 3
+		;;
+esac
+exit 0
+EOF
+chmod 755 "$tmp/mask-systemctl"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	MASK_ENABLED=masked MASK_ACTIVE=inactive bench_assert_masks
+) || bad "masked units were refused"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	if MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks; then
+		exit 1
+	fi
+) || bad "disabled units were accepted without a functional-test token"
+printf 'functional-test\n' > "$mask_root/etc/openrepeater/operating-mode"
+chmod 644 "$mask_root/etc/openrepeater/operating-mode"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks
+) || bad "inactive disabled functional-test was refused"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	if MASK_ENABLED=enabled MASK_ACTIVE=inactive bench_assert_masks; then
+		exit 1
+	fi
+) || bad "an enabled unit was accepted in functional-test"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	if MASK_ENABLED=disabled MASK_ACTIVE=active bench_assert_masks; then
+		exit 1
+	fi
+) || bad "a running unit was accepted in functional-test"
+chmod 666 "$mask_root/etc/openrepeater/operating-mode"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	if MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks; then
+		exit 1
+	fi
+) || bad "a group-writable functional-test token was accepted"
+ok "masks stay fail-closed and functional-test may be inactive and disabled"
 
 if [ "$fail" -ne 0 ]; then
 	echo "shell checks failed" >&2
