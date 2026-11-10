@@ -1005,29 +1005,53 @@ bench_install_php84() {
 # Remove symlinks under the SvxLink share trees that point at an uploaded
 # module. Those links are how 04d7dbe and older trees put www-data-owned Tcl
 # on the path svxlink loads. The link is removed. The target is not.
-bench_lexical_join() {
-	python3 -c 'import os, sys; print(os.path.normpath(os.path.join(sys.argv[1], sys.argv[2])))' "$1" "$2"
+#
+# Matching is lexical. The link text is normalized (. and .. removed) and is
+# not resolved through the filesystem. A chain through another symlink, which
+# then points into the module tree, is not caught.
+#
+# The share root and every parent must be real directories. A symlink there
+# is refused and nothing is deleted.
+bench_ancestors_are_real() {
+	local path=$1
+	while [ -n "$path" ] && [ "$path" != "/" ]; do
+		if [ -L "$path" ]; then
+			echo "refused: ${path} is a symlink" >&2
+			return 1
+		fi
+		path=$(dirname "$path")
+	done
+	return 0
 }
 
 bench_remove_legacy_module_symlinks() {
-	local modules share path target logical
+	local modules share
 	modules=$(p /var/www/openrepeater/modules)
 	modules=${modules%/}
 	for share in "$(p /usr/share/svxlink)" "$(p /usr/local/share/svxlink)"; do
-		[ -d "$share" ] && [ ! -L "$share" ] || continue
-		while IFS= read -r path; do
-			[ -n "$path" ] || continue
-			target=$(readlink "$path") || continue
+		if [ ! -e "$share" ] && [ ! -L "$share" ]; then
+			continue
+		fi
+		bench_ancestors_are_real "$share" || return 1
+		[ -d "$share" ] || {
+			echo "refused: ${share} is not a directory" >&2
+			return 1
+		}
+		find -P "$share" -xdev -type l -exec sh -c '
+			path=$1
+			modules=$2
+			target=$(readlink "$path") || exit 1
 			case "$target" in
 				/*) logical=$target ;;
-				*) logical=$(bench_lexical_join "$(dirname "$path")" "$target") ;;
+				*) logical=$(python3 -c "import os, sys; print(os.path.normpath(os.path.join(sys.argv[1], sys.argv[2])))" "$(dirname "$path")" "$target") ;;
 			esac
 			case "$logical" in
 				"$modules"|"$modules"/*)
-					rm -f -- "$path"
-					echo "removed legacy module symlink ${path} -> ${target}"
+					printf "removed legacy module symlink %s -> %s\n" "$path" "$target"
+					exit 0
 					;;
 			esac
-		done < <(find -P "$share" -xdev -type l -print)
+			exit 1
+		' sh {} "$modules" \; -delete
 	done
 }

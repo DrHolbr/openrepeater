@@ -1258,6 +1258,30 @@ else
 	bad "legacy module symlinks were not removed"
 	cat "$tmp/legacy.log" >&2 || true
 fi
+swapped=$(orp_mktemp_dir)
+orp_mkdir "$swapped/real/share/svxlink/events.d" "$swapped/var/www/openrepeater/modules/Foo/svxlink/events.d"
+printf 'tcl\n' > "$swapped/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl"
+ln -s "$swapped/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl" \
+	"$swapped/real/share/svxlink/events.d/ModuleFoo.tcl"
+ln -s "$swapped/real" "$swapped/usr"
+set +e
+(
+	export ROOT="$swapped"
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_remove_legacy_module_symlinks
+) >"$tmp/swapped.out" 2>"$tmp/swapped.err"
+swapped_rc=$?
+set -e
+if [ "$swapped_rc" -ne 0 ] \
+	&& grep -q 'is a symlink' "$tmp/swapped.err" \
+	&& [ -L "$swapped/real/share/svxlink/events.d/ModuleFoo.tcl" ]
+then
+	ok "a symlinked share parent is refused and its links stay"
+else
+	bad "a symlinked share parent was not refused"
+	cat "$tmp/swapped.err" >&2 || true
+fi
 
 if [ "$fail" -ne 0 ]; then
 	echo "shell checks failed" >&2

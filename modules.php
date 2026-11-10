@@ -21,13 +21,14 @@ require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/autoloadClasses.
 $Database = new Database();
 $ModulesClass = new Modules();
 
+// Before any HTML. A query-string activate or deactivate is not a mutation.
+if (isset($_GET['activate']) || isset($_GET['deactivate'])) {
+	RequestGuard::deny(405);
+}
+
 ?>
 
 		<?php
-		if (isset($_GET['activate']) || isset($_GET['deactivate'])) {
-			RequestGuard::deny(405);
-		}
-
 		if ( isset($_POST['updateModuleSettings']) ) {
 			$results = $ModulesClass->save_module_settings($_POST);
 			$alert = '<div class="alert alert-'.$results['msgType'].'">'.$results['msgText'].'</div>';

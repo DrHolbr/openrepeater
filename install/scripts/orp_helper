@@ -1496,7 +1496,10 @@ try:
         if os.path.lexists(dest):
             fail("refused: module destination already exists")
     # The manifest is an intent journal. It is written before any module
-    # file is created, so a crash is recovered by the next activate or deactivate.
+    # file is created. If this process stops after the journal and before
+    # the copies finish, the next activate or deactivate removes every
+    # listed path. A file created at one of those paths after the crash,
+    # and before that cleanup, is removed too. That outcome is accepted.
     lines = [rel for _src, rel in planned]
     blob = "".join(line + "\n" for line in lines).encode()
     man_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
