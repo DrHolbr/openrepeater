@@ -210,15 +210,21 @@ bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/bench-preview)"
 bench_chmod 1770 "$(p /var/lib/openrepeater/bench-preview)"
 bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/db)"
 
-# The source install has no systemd unit, only the administrative masks.
-# Refuse before packages or the web tree if that layout is incomplete.
+# Same rule as bench_assert_masks. A /dev/null mask is accepted. A trusted
+# functional-test token may instead leave the unit inactive and disabled.
 # Do not create a mask and do not replace one.
 for unit in svxlink.service remotetrx.service svxreflector.service; do
 	link=$(p "/etc/systemd/system/${unit}")
-	if [ ! -L "$link" ] || [ "$(readlink "$link")" != "/dev/null" ]; then
-		echo "refused: ${unit} is not a /dev/null mask. It was not replaced." >&2
-		exit 4
+	if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
+		continue
 	fi
+	enabled=$(unit_enabled_state "$unit")
+	active=$(unit_active_state "$unit")
+	if bench_mode_is_functional_test && [ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]; then
+		continue
+	fi
+	echo "refused: ${unit} is not a /dev/null mask, and it is not inactive and disabled under a functional-test token. It was not replaced." >&2
+	exit 4
 done
 if ! env ORP_ROOT="$ROOT" "$REPO_ROOT/install/scripts/orp_helper" native inputs; then
 	echo "refused: native SvxLink layout is incomplete. No unit was written and no service was unmasked." >&2

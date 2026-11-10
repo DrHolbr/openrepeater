@@ -209,6 +209,35 @@ if (file_exists($modulesDir . '/tempModuleDir/bomb.txt') || file_get_contents($o
 	zip_fail('a lying uncompressed size wrote past the cap');
 }
 
+$small = $work . '/lying-small.zip';
+$zip = new ZipArchive();
+if ($zip->open($small, ZipArchive::CREATE) !== true) {
+	zip_fail('could not create the short lying archive');
+}
+$zip->addFromString('note.txt', 'abcdefghijklmnopqrstuvwxyz0123456789');
+$zip->close();
+$raw = file_get_contents($small);
+$local = strpos($raw, "PK\x03\x04");
+$central = strpos($raw, "PK\x01\x02");
+if ($local === false || $central === false) {
+	zip_fail('the short lying archive has no zip headers');
+}
+$raw = substr_replace($raw, pack('V', 8), $local + 22, 4);
+$raw = substr_replace($raw, pack('V', 8), $central + 24, 4);
+file_put_contents($small, $raw);
+$check = new ZipArchive();
+if ($check->open($small) !== true) {
+	zip_fail('the short lying archive did not open');
+}
+$declared = $check->statIndex(0);
+$check->close();
+if (!is_array($declared) || (int) $declared['size'] !== 8 || (int) $declared['size'] >= 36) {
+	zip_fail('the short lying archive did not publish an 8-byte size');
+}
+if ($modules->unzip_module($small) !== false || file_exists($modulesDir . '/tempModuleDir/note.txt')) {
+	zip_fail('a declared size smaller than the streamed bytes was accepted');
+}
+
 $db = $work . '/modules.db';
 if (!copy($root . '/install/sql/openrepeater.db', $db) || !chmod($db, 0600)) {
 	zip_fail('could not copy the module database');

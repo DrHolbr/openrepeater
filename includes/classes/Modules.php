@@ -435,7 +435,7 @@ class Modules {
 				$this->discardUploadedArchive($selected_archive);
 				return false;
 			}
-			if (!$this->writeMemberCapped($zip, $plan[0], $target, $root)) {
+			if (!$this->writeMemberCapped($zip, $plan[0], $target, $root, $expected)) {
 				$zip->close();
 				$this->discardChildren($root, $root);
 				$this->discardUploadedArchive($selected_archive);
@@ -614,7 +614,7 @@ class Modules {
 		return BenchGuard::removeTreeConfined($path, dirname($path));
 	}
 
-	private function writeMemberCapped($zip, $index, $target, $root) {
+	private function writeMemberCapped($zip, $index, $target, $root, $expected) {
 		$stream = $zip->getStreamIndex($index);
 		if (!is_resource($stream)) {
 			return false;
@@ -653,6 +653,10 @@ class Modules {
 		}
 		fclose($stream);
 		fclose($out);
+		if ($written !== $expected) {
+			@unlink($tmpName);
+			return false;
+		}
 		if (is_link($tmpName) || !rename($tmpName, $target) || is_link($target)) {
 			@unlink($tmpName);
 			return false;

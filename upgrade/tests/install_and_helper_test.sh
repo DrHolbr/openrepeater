@@ -250,9 +250,9 @@ site="$good/etc/nginx/sites-available/openrepeater"
 if grep -q 'unix:/run/php/php8.4-fpm.sock' "$site" \
 	&& ! grep -E -q 'php5-fpm|ssl[[:space:]]+on|listen[[:space:]]+443' "$site" \
 	&& grep -q 'server_name orp-test' "$site" \
-	&& grep -q 'location \^~ /modules/' "$site" \
-	&& grep -q 'location \^~ /sounds/' "$site" \
-	&& grep -q 'location \^~ /backup/' "$site" \
+	&& grep -F -q 'location ~* ^/(modules|sounds|backup)/' "$site" \
+	&& grep -q 'phtml' "$site" \
+	&& grep -q 'phps' "$site" \
 	&& grep -q 'deny all;' "$site"
 then
 	ok "nginx site uses the PHP 8 socket and has no legacy TLS redirect"
@@ -864,6 +864,86 @@ chmod 666 "$mask_root/etc/openrepeater/operating-mode"
 	fi
 ) || bad "a group-writable functional-test token was accepted"
 ok "masks stay fail-closed and functional-test may be inactive and disabled"
+if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; then
+	chmod 644 "$mask_root/etc/openrepeater/operating-mode"
+	printf 'functional-test\n' > "$mask_root/etc/openrepeater/operating-mode"
+	setfacl -m u:nobody:r "$mask_root/etc/openrepeater/operating-mode"
+	(
+		export ROOT="$mask_root"
+		export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+		. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+		if MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks; then
+			exit 1
+		fi
+	) || bad "a functional-test token with an ACL was accepted"
+	setfacl -b "$mask_root/etc/openrepeater/operating-mode" || true
+	ok "a functional-test token with an ACL is refused"
+fi
+
+ft_ctl="$tmp/ft-systemctl"
+cat > "$ft_ctl" <<'EOF'
+#!/bin/bash
+echo "$*" >> "${ORP_SYSTEMCTL_LOG:?}"
+case "$1" in
+	is-enabled)
+		echo disabled
+		exit 1
+		;;
+	is-active)
+		echo inactive
+		exit 3
+		;;
+	*)
+		exit 0
+		;;
+esac
+EOF
+chmod 755 "$ft_ctl"
+unmask_units() {
+	local root=$1 unit
+	for unit in svxlink.service remotetrx.service svxreflector.service; do
+		rm -f "$root/etc/systemd/system/$unit"
+		printf '%s\n' '[Unit]' 'Description=fixture' > "$root/etc/systemd/system/$unit"
+	done
+}
+no_token="$tmp/ft-notoken"
+seed_identity "$no_token"
+unmask_units "$no_token"
+: > "$tmp/ft-notoken.log"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$no_token" ORP_SYSTEMCTL="$ft_ctl" ORP_SYSTEMCTL_LOG="$tmp/ft-notoken.log" \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/ft-notoken.out" 2>"$tmp/ft-notoken.err"
+rc=$?
+set -e
+if [ "$rc" -eq 4 ] && grep -q 'refused:' "$tmp/ft-notoken.err" && [ ! -d "$no_token/var/www/openrepeater" ]; then
+	ok "an unmasked inactive bench without a functional-test token is refused"
+else
+	bad "unmasked install without a token rc=$rc"
+	cat "$tmp/ft-notoken.err" >&2 || true
+fi
+with_token="$tmp/ft-token"
+seed_identity "$with_token"
+unmask_units "$with_token"
+orp_mkdir "$with_token/etc/openrepeater"
+printf 'functional-test\n' > "$with_token/etc/openrepeater/operating-mode"
+chmod 644 "$with_token/etc/openrepeater/operating-mode"
+: > "$tmp/ft-token.log"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$with_token" ORP_SYSTEMCTL="$ft_ctl" ORP_SYSTEMCTL_LOG="$tmp/ft-token.log" \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/ft-token.out" 2>"$tmp/ft-token.err"
+rc=$?
+set -e
+if [ "$rc" -eq 4 ] \
+	&& ! grep -q 'is not a /dev/null mask, and it is not inactive' "$tmp/ft-token.err" \
+	&& grep -q 'mask changed while writing the vendor unit' "$tmp/ft-token.err" \
+	&& [ -d "$with_token/var/www/openrepeater" ] \
+	&& [ ! -L "$with_token/etc/systemd/system/svxlink.service" ]
+then
+	ok "a functional-test token lets an unmasked inactive bench pass the early mask loop"
+else
+	bad "functional-test unmasked install rc=$rc"
+	cat "$tmp/ft-token.err" >&2 || true
+fi
 
 if [ "$fail" -ne 0 ]; then
 	echo "shell checks failed" >&2

@@ -128,6 +128,11 @@ bench_mode_is_functional_test() {
 		return 1
 	fi
 	owner=$(stat -c %u "$file")
+	if command -v getfacl >/dev/null 2>&1; then
+		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
+			return 1
+		fi
+	fi
 	if [ -z "${ROOT}" ]; then
 		if [ "$owner" != "0" ]; then
 			return 1
@@ -254,10 +259,7 @@ bench_render_nginx() {
 		echo "refused: nginx site still contains legacy TLS or PHP 5" >&2
 		return 5
 	fi
-	if ! grep -q 'location \^~ /modules/' "$dest" \
-		|| ! grep -q 'location \^~ /sounds/' "$dest" \
-		|| ! grep -q 'location \^~ /backup/' "$dest"
-	then
+	if ! grep -F -q 'location ~* ^/(modules|sounds|backup)/' "$dest"; then
 		echo "refused: nginx site does not keep uploaded scripts out of PHP" >&2
 		return 5
 	fi

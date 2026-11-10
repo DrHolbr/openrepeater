@@ -18,22 +18,10 @@ server {
 		deny all;
 	}
 
-	# Module uploads, the sounds anchor, and backup extracts live in the
-	# docroot. ^~ keeps the PHP location below from executing them.
-	location ^~ /modules/ {
-		location ~* \.(php|php[0-9]|phtml|phar|cgi|pl|py|rb|sh)$ {
-			deny all;
-		}
-	}
-
-	location ^~ /sounds/ {
-		location ~* \.(php|php[0-9]|phtml|phar|cgi|pl|py|rb|sh)$ {
-			deny all;
-		}
-	}
-
-	location ^~ /backup/ {
-		location ~* \.(php|php[0-9]|phtml|phar|cgi|pl|py|rb|sh)$ {
+	# Uploaded trees. This regex is before \.php$ and is case-insensitive,
+	# so /MODULES/Foo.PHTML is not executed.
+	location ~* ^/(modules|sounds|backup)/ {
+		location ~* \.(php|php[0-9]|pht|phtml|phps|phar|inc|cgi|pl|py|rb|sh)$ {
 			deny all;
 		}
 	}
