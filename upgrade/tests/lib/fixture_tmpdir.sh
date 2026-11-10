@@ -87,6 +87,30 @@ orp_private() {
 	chmod 644 "$@"
 }
 
+# Remove a fixture tree even when an install left it mode 0555.
+# chmod stays inside the fixture root.
+orp_cleanup_fixture() {
+	local root path
+	root=$(orp_fixture_root) || return 0
+	for path in "$@"; do
+		[ -n "$path" ] || continue
+		if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+			continue
+		fi
+		case "$path" in
+			"$root"|"$root"/*) ;;
+			*)
+				echo "refused: not cleaning outside the fixture: $path" >&2
+				continue
+				;;
+		esac
+		if [ -d "$path" ] && [ ! -L "$path" ]; then
+			find -P "$path" -xdev -exec chmod u+w {} + 2>/dev/null || true
+		fi
+		rm -rf "$path"
+	done
+}
+
 # Tests that run the installer need 512 MiB on the fixture filesystem.
 # This fails before the installer, and it does not change the installer.
 orp_require_fixture_space() {

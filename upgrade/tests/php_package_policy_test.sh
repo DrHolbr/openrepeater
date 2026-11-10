@@ -10,7 +10,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 orp_use_fixture_tmpdir
 
 tmp=$(orp_mktemp_dir)
-trap 'rm -rf "$tmp"' EXIT
+trap 'orp_cleanup_fixture "$tmp"' EXIT
 state="$tmp/state"
 log="$tmp/apt.log"
 : > "$state"

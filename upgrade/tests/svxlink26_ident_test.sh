@@ -30,7 +30,7 @@ PY
 tclsh "$ROOT_DIR/upgrade/tests/svxlink26_ident_test.tcl" "$fixture"
 
 tmp=$(orp_mktemp_dir)
-trap 'rm -rf "$tmp"' EXIT
+trap 'orp_cleanup_fixture "$tmp"' EXIT
 live="$tmp/live"
 db="$tmp/openrepeater.db"
 host="$tmp/hostname"

@@ -449,6 +449,76 @@ finally:
 PY
 }
 
+# The published tree must not keep the source tree's mode. A read-only
+# payload is 0555, and tar applies that to the destination directory.
+# Walk with O_NOFOLLOW and fchmod the opened descriptor.
+bench_publish_tree_modes() {
+	local root=$1
+	python3 - "$root" \
+		install/scripts/orp_helper \
+		upgrade/install-orp-ui.sh \
+		upgrade/install-svxlink-sounds.sh \
+		upgrade/install_heather_sounds.py \
+		upgrade/set-operating-mode.sh \
+		upgrade/lib/bench-target.sh <<'PY'
+import os
+import stat
+import sys
+
+root = sys.argv[1]
+intended = set(sys.argv[2:])
+if not root.startswith("/") or "\0" in root or "//" in root:
+    sys.stderr.write("refused: unsafe tree %s\n" % root)
+    sys.exit(1)
+parts = [part for part in root.split("/") if part]
+if not parts or any(part in (".", "..") for part in parts):
+    sys.stderr.write("refused: unsafe tree %s\n" % root)
+    sys.exit(1)
+
+def open_at(parent, name, directory):
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    if directory:
+        flags |= os.O_DIRECTORY
+    return os.open(name, flags, dir_fd=parent)
+
+def walk(fd, rel):
+    os.fchmod(fd, 0o755)
+    for name in os.listdir(fd):
+        if name in (".", "..") or "/" in name or name in (".", ".."):
+            continue
+        info = os.lstat(name, dir_fd=fd)
+        child_rel = name if rel == "" else rel + "/" + name
+        if stat.S_ISLNK(info.st_mode):
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            child = open_at(fd, name, True)
+            try:
+                walk(child, child_rel)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(info.st_mode):
+            opened = open_at(fd, name, False)
+            try:
+                os.fchmod(opened, 0o755 if child_rel in intended else 0o644)
+            finally:
+                os.close(opened)
+
+dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+fd = os.open("/", dir_flags)
+try:
+    for part in parts:
+        nxt = os.open(part, dir_flags, dir_fd=fd)
+        os.close(fd)
+        fd = nxt
+    walk(fd, "")
+except OSError as exc:
+    sys.stderr.write("refused: no-follow tree mode %s: %s\n" % (root, exc.strerror))
+    sys.exit(1)
+finally:
+    os.close(fd)
+PY
+}
+
 bench_mkdir_nofollow() {
 	local path=$1
 	bench_require_real_components "$path" || return 1

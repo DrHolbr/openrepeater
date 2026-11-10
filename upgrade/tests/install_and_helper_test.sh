@@ -100,7 +100,7 @@ EOF
 checksum() { sha256sum "$1" | awk '{print $1}'; }
 
 tmp=$(orp_mktemp_dir)
-trap 'rm -rf "$tmp"' EXIT
+trap 'orp_cleanup_fixture "$tmp"' EXIT
 bin="$tmp/bin"
 orp_mkdir "$bin"
 log="$tmp/systemctl.log"
@@ -763,6 +763,35 @@ else
 	cat "$tmp/preview.err" >&2 || true
 fi
 assert_canary "$preview_canary" "$preview_before"
+
+# A read-only source tree is a supported install source. tar must not
+# leave the web root mode 0555.
+ro_src="$(orp_mktemp_dir)/src"
+orp_mkdir "$ro_src"
+tar -C "$ROOT_DIR" --exclude=.git --exclude=dev -cf - . | tar -C "$ro_src" -xf -
+chmod -R a-w "$ro_src"
+ro_dest="$tmp/readonly-source"
+seed_identity "$ro_dest"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$ro_dest" ORP_SYSTEMCTL="$bin/systemctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/ro.log" ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	ORP_BOOTSTRAP_ACTIVE=0 "$ro_src/upgrade/install-orp-ui.sh" >"$tmp/ro.out" 2>"$tmp/ro.err"
+rc=$?
+set -e
+ro_web="$ro_dest/var/www/openrepeater"
+if [ "$rc" -eq 0 ] \
+	&& [ "$(stat -c %a "$ro_web")" = "755" ] \
+	&& [ "$(stat -c %a "$ro_web/index.php")" = "644" ] \
+	&& [ "$(stat -c %a "$ro_web/install/scripts/orp_helper")" = "755" ] \
+	&& [ -d "$ro_web/sounds" ] && [ ! -L "$ro_web/sounds" ] \
+	&& [ -d "$ro_web/sounds/courtesy_tones" ] \
+	&& [ -d "$ro_web/backup/restore" ]
+then
+	ok "a read-only source installs with explicit directory and file modes"
+else
+	bad "read-only source rc=$rc web=$(stat -c %a "$ro_web" 2>/dev/null || echo missing)"
+	cat "$tmp/ro.err" >&2 || true
+fi
 
 if [ "$fail" -ne 0 ]; then
 	echo "shell checks failed" >&2

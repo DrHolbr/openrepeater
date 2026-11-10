@@ -10,7 +10,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 . "$ROOT_DIR/upgrade/tests/lib/native_layout.sh"
 orp_use_fixture_tmpdir
 tmp=$(orp_mktemp_dir)
-trap 'rm -rf "$tmp"' EXIT
+trap 'orp_cleanup_fixture "$tmp"' EXIT
 live="$tmp/live"
 db="$tmp/openrepeater.db"
 host="$tmp/hostname"

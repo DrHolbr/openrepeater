@@ -310,8 +310,14 @@ if [ "$(bench_lstat_kind "$stage")" = dir ]; then
 fi
 mkdir "$stage"
 bench_chmod 755 "$stage"
-tar -C "$REPO_ROOT" --exclude=.git --exclude=dev -cf - . | tar -C "$stage" -xf -
-tar -C "$stage" -cf - . | tar -C "$web" -xf -
+# Do not copy the source mode or owner. A read-only payload would leave
+# the web root mode 0555, and the sounds directory could not be created.
+tar -C "$REPO_ROOT" --exclude=.git --exclude=dev -cf - . \
+	| tar -C "$stage" --no-same-permissions --no-same-owner -xf -
+bench_publish_tree_modes "$stage"
+tar -C "$stage" --exclude=.git --exclude=dev -cf - . \
+	| tar -C "$web" --no-same-permissions --no-same-owner -xf -
+bench_publish_tree_modes "$web"
 if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
 	find -P "$web" -xdev ! -type l -exec chown -h www-data:www-data {} +
 fi

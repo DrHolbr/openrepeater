@@ -11,7 +11,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 orp_use_fixture_tmpdir
 tmp=$(orp_mktemp_dir)
 preview=$(mktemp -d "$(orp_fixture_root)/orp-preview-runtime.XXXXXX")
-trap 'rm -rf "$tmp" "$preview"' EXIT
+trap 'orp_cleanup_fixture "$tmp" "$preview"' EXIT
 live="$tmp/live"
 db="$tmp/openrepeater.db"
 host="$tmp/hostname"

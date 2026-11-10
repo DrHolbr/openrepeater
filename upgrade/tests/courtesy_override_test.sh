@@ -14,7 +14,7 @@ helper="$ROOT_DIR/install/scripts/orp_helper"
 tcl="$ROOT_DIR/upgrade/tests/courtesy_override_test.tcl"
 
 tmp=$(orp_mktemp_dir)
-trap 'rm -rf "$tmp"' EXIT
+trap 'orp_cleanup_fixture "$tmp"' EXIT
 live="$tmp/live"
 db="$tmp/openrepeater.db"
 host="$tmp/hostname"

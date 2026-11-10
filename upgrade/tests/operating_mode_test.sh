@@ -7,7 +7,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 . "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 orp_use_fixture_tmpdir
 tmp=$(orp_mktemp_dir)
-trap 'rm -rf "$tmp"' EXIT
+trap 'orp_cleanup_fixture "$tmp"' EXIT
 host="$tmp/hostname"
 marker="$tmp/bench-mode"
 mode="$tmp/operating-mode"

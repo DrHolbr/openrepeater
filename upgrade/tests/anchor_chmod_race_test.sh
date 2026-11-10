@@ -44,7 +44,7 @@ canary_intact() {
 
 tmp=$(orp_mktemp_dir)
 chmod 755 "$tmp"
-trap 'rm -rf "$tmp"' EXIT
+trap 'orp_cleanup_fixture "$tmp"' EXIT
 
 # bench_chmod: checks see a real directory, then uid 33 swaps the name.
 direct=$tmp/direct
