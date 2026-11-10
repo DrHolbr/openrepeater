@@ -16,7 +16,7 @@ jar="$tmp/cookies"
 log="$tmp/helper.log"
 hostfile="$tmp/hostname"
 port=8771
-cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
+orp_copy_writable "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 php -r '
 $db = new SQLite3($argv[1]);
 $salt = "testhost";
@@ -35,7 +35,7 @@ printf 'orp-test\n' > "$hostfile"
 gate_db="$tmp/gate.db"
 gate_sessions="$tmp/sessions"
 orp_mkdir "$gate_sessions"
-cp "$db" "$gate_db"
+orp_copy_writable "$db" "$gate_db"
 php "$ROOT_DIR/upgrade/tests/auth_account_gate_test.php" "$gate_db" "$gate_sessions"
 password_before=$(php -r 'echo (new SQLite3($argv[1]))->querySingle("SELECT password FROM users WHERE username=\"admin\"");' "$db")
 

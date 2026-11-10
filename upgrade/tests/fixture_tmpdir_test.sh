@@ -76,4 +76,25 @@ fi
 printf '%s\n' "$out" | grep -q 'ORP_TEST_TMPDIR'
 printf '%s\n' "$out" | grep -q '512 MiB'
 echo "ok: a small fixture filesystem names ORP_TEST_TMPDIR before the installer runs"
+ro_src="$mine/orp-readonly-source"
+printf 'sqlite' > "$ro_src"
+chmod 0444 "$ro_src"
+ro_dest="$mine/orp-fixture-copy/db"
+mkdir -p "$ro_dest"
+ORP_TEST_TMPDIR="$mine" orp_copy_writable "$ro_src" "$ro_dest/openrepeater.db"
+if [ "$(stat -c %a "$ro_dest/openrepeater.db")" != "600" ]; then
+	echo "FAIL: a 0444 source was not copied as mode 0600" >&2
+	exit 1
+fi
+printf 'still' > "$ro_dest/openrepeater.db"
+set +e
+out=$(ORP_TEST_TMPDIR="$mine" orp_copy_writable "$ro_src" "/tmp/orp-outside-copy-$$" 2>&1)
+rc=$?
+set -e
+if [ "$rc" -eq 0 ]; then
+	echo "FAIL: a copy outside the fixture was accepted" >&2
+	exit 1
+fi
+printf '%s\n' "$out" | grep -q 'outside the fixture'
+echo "ok: a read-only source becomes a mode 0600 copy inside the fixture"
 echo "fixture tmpdir checks passed"

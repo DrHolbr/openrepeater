@@ -16,7 +16,7 @@ log="$(orp_fixture_root)/orp-log-svxlink-$$"
 host="$tmp/hostname"
 marker="$tmp/bench-mode"
 port=8773
-cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
+orp_copy_writable "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 php -r '
 $db = new SQLite3($argv[1]);
 $salt = "testhost";

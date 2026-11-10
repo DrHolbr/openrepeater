@@ -34,7 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
+orp_copy_writable "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 printf 'orp-test\n' > "$hostfile"
 : > "$marker"
 : > "$cmdlog"

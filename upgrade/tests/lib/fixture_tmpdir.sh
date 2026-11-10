@@ -87,6 +87,82 @@ orp_private() {
 	chmod 644 "$@"
 }
 
+# Copy a repo file into the fixture and make the copy writable. cp keeps
+# the source mode, so a chmod -R a-w payload leaves the copy at 0444 and
+# SQLite cannot update it. install -m 0600 ignores that mode and umask.
+# The destination has to be a real path inside the fixture directory.
+orp_copy_writable() {
+	local src dest root parent real_root real_parent
+	if [ "$#" -ne 2 ]; then
+		echo "refused: orp_copy_writable needs a source and a destination" >&2
+		return 2
+	fi
+	src=$1
+	dest=$2
+	root=$(orp_fixture_root) || return $?
+	if [ -L "$src" ] || [ ! -f "$src" ]; then
+		echo "refused: writable copy source is not a regular file" >&2
+		return 2
+	fi
+	case "$dest" in
+		..|../*|*/..|*/../*)
+			echo "refused: writable copy destination contains .." >&2
+			return 2
+			;;
+	esac
+	case "$dest" in
+		"$root"/*) ;;
+		*)
+			echo "refused: writable copy is outside the fixture: $dest" >&2
+			return 2
+			;;
+	esac
+	parent=$(dirname "$dest")
+	if [ -L "$parent" ] || [ ! -d "$parent" ]; then
+		echo "refused: writable copy parent is not a real directory" >&2
+		return 2
+	fi
+	if [ -e "$dest" ] && [ -L "$dest" ]; then
+		echo "refused: writable copy destination is a symlink" >&2
+		return 2
+	fi
+	real_root=$(readlink -f "$root")
+	real_parent=$(readlink -f "$parent")
+	case "$real_parent" in
+		"$real_root"|"$real_root"/*) ;;
+		*)
+			echo "refused: writable copy is outside the fixture: $dest" >&2
+			return 2
+			;;
+	esac
+	install -m 0600 -- "$src" "$dest"
+}
+
+# A read-only copy of the repo. Modes stay searchable and readable after
+# write bits are removed. A different owner means the suite cannot chmod
+# the payload back to writable. Symlinks are not followed.
+orp_readonly_payload() {
+	local src dest
+	if [ "$#" -ne 1 ] || [ ! -d "$1" ] || [ -L "$1" ]; then
+		echo "refused: read-only payload source is not a real directory" >&2
+		return 2
+	fi
+	src=$1
+	dest=$(orp_mktemp_dir)
+	tar -C "$src" --exclude=.git --exclude=dev --exclude=__pycache__ -cf - . | tar -C "$dest" -xf -
+	find -P "$dest" -xdev ! -type l -type d -exec chmod 0755 {} +
+	find -P "$dest" -xdev ! -type l -type f -perm /111 -exec chmod 0755 {} +
+	find -P "$dest" -xdev ! -type l -type f ! -perm /111 -exec chmod 0644 {} +
+	find -P "$dest" -xdev ! -type l -exec chmod a-w {} +
+	if sudo -n true >/dev/null 2>&1; then
+		sudo -n chown -R --no-dereference nobody:nogroup "$dest"
+		echo "read-only payload owned by nobody: $dest" >&2
+	else
+		echo "read-only payload stays owned by $(id -un); sudo is not available" >&2
+	fi
+	printf '%s' "$dest"
+}
+
 # Remove a fixture tree even when an install left it mode 0555.
 # chmod stays inside the fixture root.
 orp_cleanup_fixture() {

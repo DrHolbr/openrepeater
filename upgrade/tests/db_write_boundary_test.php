@@ -155,10 +155,9 @@ function port_row($label, $rx, $tx) {
 }
 
 $copy = sys_get_temp_dir() . '/orp-write-boundary-' . getmypid() . '.db';
-if (!copy($root . '/install/sql/openrepeater.db', $copy)) {
-	fail('could not copy the stock database');
+if (!copy($root . '/install/sql/openrepeater.db', $copy) || !chmod($copy, 0600)) {
+	fail('could not make a writable copy of the stock database');
 }
-chmod($copy, 0644);
 putenv('ORP_DB_PATH=' . $copy);
 putenv('ORP_FLAG_STORE=sqlite');
 $db = new Database();
@@ -664,6 +663,11 @@ $written = sys_get_temp_dir() . '/orp-written-' . getmypid() . '.txt';
 $vacuum = sys_get_temp_dir() . '/orp-vacuum-' . getmypid() . '.db';
 if (!mkdir($layout . '/db', 0755, true) || !copy($root . '/install/sql/openrepeater.db', $stickyDb) || !copy($stickyDb, $victim) || !copy($stickyDb, $goodDb)) {
 	fail('could not build the sticky database layout');
+}
+foreach (array($stickyDb, $victim, $goodDb) as $dbFile) {
+	if (!chmod($dbFile, 0600)) {
+		fail('could not make a sticky database copy writable');
+	}
 }
 exec('sqlite3 ' . escapeshellarg($stickyDb) . ' ' . escapeshellarg("UPDATE settings SET value='STICKY' WHERE keyID='callSign';"));
 exec('sqlite3 ' . escapeshellarg($victim) . ' ' . escapeshellarg("UPDATE settings SET value='VICTIM' WHERE keyID='callSign';"));

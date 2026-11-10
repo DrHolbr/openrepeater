@@ -10,8 +10,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 orp_use_fixture_tmpdir
 work=$(orp_mktemp_dir)
 db="$work/openrepeater.db"
-: > "$db"
-cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
+orp_copy_writable "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 php -r '
 $db = new SQLite3($argv[1]);
 $salt = "testhost";

@@ -26,7 +26,7 @@ printf 'orp-test\n' > "$host"
 printf 'functional-test\n' > "$mode"
 orp_private "$mode"
 chmod 644 "$mode"
-cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
+orp_copy_writable "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 php "$ROOT_DIR/upgrade/tests/functional_runtime_prepare.php" "$ROOT_DIR" "$db" "$host" "$tmp/no-marker" "$mode" "$preview" "$tmp/stored-tx"
 apply_ident_profile "$db"
 before=$(sha256sum "$db" | awk '{print $1}')

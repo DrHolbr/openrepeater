@@ -6,14 +6,31 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$ROOT_DIR"
 if [ "${ORP_UMASK_MATRIX:-0}" != 1 ]; then
 	export ORP_UMASK_MATRIX=1
+	# shellcheck source=upgrade/tests/lib/fixture_tmpdir.sh
+	. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
+	orp_use_fixture_tmpdir
+	payload=$(orp_readonly_payload "$ROOT_DIR")
+	cleanup_payload() {
+		local root
+		root=$(orp_fixture_root) || return 0
+		case "$payload" in
+			"$root"/orp-fixture.*) ;;
+			*)
+				echo "refused: not removing a payload outside the fixture" >&2
+				return 0
+				;;
+		esac
+		sudo -n rm -rf -- "$payload" 2>/dev/null || rm -rf -- "$payload"
+	}
+	trap cleanup_payload EXIT
 	matrix_fail=0
 	for mask in 0022 0002; do
-		echo "=== umask ${mask} ==="
-		if ! (umask "$mask" && bash "$0"); then
+		echo "=== umask ${mask} read-only payload ==="
+		if ! (umask "$mask" && bash "$payload/upgrade/tests/run.sh"); then
 			echo "FAIL: suite failed under umask ${mask}" >&2
 			matrix_fail=1
 		fi
-		if ! (umask "$mask" && bash "$ROOT_DIR/upgrade/tests/offline_anchor_harness.sh"); then
+		if ! (umask "$mask" && bash "$payload/upgrade/tests/offline_anchor_harness.sh"); then
 			echo "FAIL: offline anchor harness failed under umask ${mask}" >&2
 			matrix_fail=1
 		fi
@@ -30,6 +47,7 @@ orp_use_fixture_tmpdir
 # Tests name their own mode file, marker, hostname, and root. They do not
 # read the installed operating-mode token or the live svxlink config.
 export ORP_BENCH_TEST_HARNESS=1
+export PYTHONDONTWRITEBYTECODE=1
 
 if ! command -v php >/dev/null 2>&1; then
 	echo "php is required" >&2

@@ -203,8 +203,12 @@ $refused = GpioMap::readOnlyChipInfo($set);
 check(strpos($refused, 'refused:') === 0, 'a binary that is not gpioinfo is refused');
 check(!file_exists($stamp), 'the refused binary was not executed');
 
-$dbCopy = sys_get_temp_dir() . '/openrepeater-' . getmypid() . '.db';
-copy($root . '/install/sql/openrepeater.db', $dbCopy);
+$fixture = getenv('ORP_TEST_TMPDIR');
+if (!is_string($fixture) || $fixture === '' || $fixture[0] !== '/') {
+	$fixture = sys_get_temp_dir();
+}
+$dbCopy = rtrim($fixture, '/') . '/orp-safety-' . getmypid() . '.db';
+check(copy($root . '/install/sql/openrepeater.db', $dbCopy) && chmod($dbCopy, 0600), 'the stock database copy is writable');
 putenv('ORP_DB_PATH=' . $dbCopy);
 putenv('ORP_FLAG_STORE=sqlite');
 $db = new Database();

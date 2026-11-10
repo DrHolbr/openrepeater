@@ -21,7 +21,9 @@ $before = file_get_contents($liveFile);
 $inode = fileinode($liveFile);
 
 $dbPath = $tmp . '/app.db';
-copy($root . '/install/sql/openrepeater.db', $dbPath);
+if (!copy($root . '/install/sql/openrepeater.db', $dbPath) || !chmod($dbPath, 0600)) {
+	fail('could not make a writable copy of the stock database');
+}
 $host = $tmp . '/hostname';
 $marker = $tmp . '/no-marker';
 $mode = $tmp . '/operating-mode';

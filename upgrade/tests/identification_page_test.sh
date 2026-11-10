@@ -30,7 +30,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
+orp_copy_writable "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 php -r '
 $db = new SQLite3($argv[1]);
 $salt = "testhost";
