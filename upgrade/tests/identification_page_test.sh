@@ -56,7 +56,7 @@ $set("txTone", "88.5");
 ' "$db"
 printf 'orp-test\n' > "$hostfile"
 : > "$marker"
-mkdir -p "$audio/identification" "$audio/courtesy_tones"
+orp_mkdir "$audio/identification" "$audio/courtesy_tones"
 printf 'keep\n' > "$tmp/canary"
 
 php -r '

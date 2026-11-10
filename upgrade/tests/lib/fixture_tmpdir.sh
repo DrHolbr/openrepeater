@@ -72,6 +72,21 @@ orp_mktemp_dir() {
 	mktemp -d "${root}/orp-fixture.XXXXXX"
 }
 
+# mkdir -p -m only modes the last component. install -d -m 0755 modes
+# every component and ignores umask, so a 0002 umask cannot make a
+# fixture root group-writable.
+orp_mkdir() {
+	local dir
+	for dir in "$@"; do
+		install -d -m 0755 -- "$dir"
+	done
+}
+
+# A mode or marker file is ignored when it is group or world writable.
+orp_private() {
+	chmod 644 "$@"
+}
+
 # Tests that run the installer need 512 MiB on the fixture filesystem.
 # This fails before the installer, and it does not change the installer.
 orp_require_fixture_space() {

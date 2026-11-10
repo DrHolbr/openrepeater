@@ -48,7 +48,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 # bench_chmod: checks see a real directory, then uid 33 swaps the name.
 direct=$tmp/direct
-mkdir -p "$direct/parent" "$direct/outside"
+orp_mkdir "$direct/parent" "$direct/outside"
 chmod 755 "$direct" "$direct/outside"
 parent=$direct/parent
 child=$parent/child
@@ -145,7 +145,7 @@ fi
 
 # Installer reaches install_web_child, then the same swap happens.
 root=$tmp/install
-mkdir -p "$root/etc" "$root/var/lib/orp-test" "$root/usr/local/bin" "$root/usr/local/share/svxlink" \
+orp_mkdir "$root" "$root/etc" "$root/var/lib/orp-test" "$root/usr/local/bin" "$root/usr/local/share/svxlink" \
 	"$root/usr/local/sbin" "$root/opt/orp-test" "$root/etc/svxlink" "$root/etc/nginx/sites-enabled" \
 	"$root/outside" "$root/var/www/openrepeater/sounds/courtesy_tones" \
 	"$root/usr/local/share/svxlink/sounds/en_US"
@@ -173,7 +173,7 @@ chown 33:33 "$root/var/www/openrepeater/sounds/courtesy_tones"
 chmod 755 "$root/var/www/openrepeater/sounds/courtesy_tones"
 printf 'user-clip\n' > "$root/var/www/openrepeater/sounds/courtesy_tones/keep.wav"
 chown 33:33 "$root/var/www/openrepeater/sounds/courtesy_tones/keep.wav"
-mkdir -p "$root/var/lib/openrepeater/db"
+orp_mkdir "$root/var/lib/openrepeater/db"
 printf 'db-sentinel\n' > "$root/var/lib/openrepeater/db/openrepeater.db"
 chmod 600 "$root/var/lib/openrepeater/db/openrepeater.db"
 printf 'SECRET\n' > "$root/outside/canary"

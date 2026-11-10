@@ -44,7 +44,7 @@ chmod 755 "$sys"
 
 sudo mkdir -m 755 "$root"
 sudo chown root:root "$root"
-sudo mkdir -p "$root/etc/nginx/sites-enabled" "$root/var/lib/orp-test/build" \
+sudo install -d -m 0755 "$root/etc/nginx/sites-enabled" "$root/var/lib/orp-test/build" \
 	"$root/usr/local/bin" "$root/usr/local/share/svxlink" "$root/usr/local/sbin" \
 	"$root/opt/orp-test" "$root/etc/svxlink"
 sudo tee "$root/etc/hostname" >/dev/null <<<'orp-test'

@@ -39,6 +39,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+contains() {
+	grep -q -F -e "$1" <<< "$2"
+}
+
 ready=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
 	if curl -sf -o /dev/null "http://127.0.0.1:${port}/login.php"; then
@@ -59,7 +63,7 @@ if [ "$code" = "302" ] && grep -q 'login.php' "$work/gpio-anon.html"; then
 else
 	# PHP header() redirects have an empty body and a Location header.
 	headers=$(curl -s -D - -o /dev/null "http://127.0.0.1:${port}/gpio.php")
-	printf '%s\n' "$headers" | grep -q '302' && printf '%s\n' "$headers" | grep -q 'login.php'
+	contains 302 "$headers" && contains 'login.php' "$headers"
 	echo "ok: anonymous GPIO page redirects to login"
 fi
 
@@ -76,9 +80,9 @@ headers=$(curl -s -D - -c "$bad_jar" -b "$bad_jar" -o /dev/null \
 	--data-urlencode 'password=wrong-password' \
 	--data-urlencode "csrf_token=${bad_token}" \
 	"http://127.0.0.1:${port}/login.php")
-printf '%s\n' "$headers" | grep -q 'incorrectLogin'
+contains 'incorrectLogin' "$headers"
 gpio_headers=$(curl -s -D - -b "$bad_jar" -o /dev/null "http://127.0.0.1:${port}/gpio.php")
-printf '%s\n' "$gpio_headers" | grep -q 'login.php'
+contains 'login.php' "$gpio_headers"
 echo "ok: wrong password does not open a protected page"
 
 unknown_jar=$(mktemp)
@@ -89,8 +93,8 @@ unknown_headers=$(curl -s -D - -c "$unknown_jar" -b "$unknown_jar" -o /dev/null 
 	--data-urlencode 'password=wrong-password' \
 	--data-urlencode "csrf_token=${unknown_token}" \
 	"http://127.0.0.1:${port}/login.php")
-printf '%s\n' "$unknown_headers" | grep -q 'incorrectLogin'
-printf '%s\n' "$unknown_headers" | grep -q '302'
+contains 'incorrectLogin' "$unknown_headers"
+contains 302 "$unknown_headers"
 echo "ok: unknown user is rejected without a server error"
 
 jar=$(mktemp)
@@ -101,17 +105,17 @@ headers=$(curl -s -D - -c "$jar" -b "$jar" -o /dev/null \
 	--data-urlencode 'password=bench-only-test' \
 	--data-urlencode "csrf_token=${ok_token}" \
 	"http://127.0.0.1:${port}/login.php")
-printf '%s\n' "$headers" | grep -q '302'
-printf '%s\n' "$headers" | grep -q 'dashboard.php'
+contains 302 "$headers"
+contains 'dashboard.php' "$headers"
 page=$(curl -s -b "$jar" "http://127.0.0.1:${port}/gpio.php")
-printf '%s' "$page" | grep -q 'GPIO map'
-if printf '%s' "$page" | grep -q 'Please login'; then
+contains 'GPIO map' "$page"
+if contains 'Please login' "$page"; then
 	echo "FAIL: protected GPIO page still shows the login form" >&2
 	exit 1
 fi
 dash=$(curl -s -b "$jar" "http://127.0.0.1:${port}/dashboard.php")
-printf '%s' "$dash" | grep -q 'Core System Info'
-if printf '%s' "$dash" | grep -q 'Please login'; then
+contains 'Core System Info' "$dash"
+if contains 'Please login' "$dash"; then
 	echo "FAIL: dashboard still shows the login form" >&2
 	exit 1
 fi

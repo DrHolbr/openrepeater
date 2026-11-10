@@ -34,7 +34,7 @@ printf 'orp-test\n' > "$hostfile"
 : > "$log"
 gate_db="$tmp/gate.db"
 gate_sessions="$tmp/sessions"
-mkdir -p "$gate_sessions"
+orp_mkdir "$gate_sessions"
 cp "$db" "$gate_db"
 php "$ROOT_DIR/upgrade/tests/auth_account_gate_test.php" "$gate_db" "$gate_sessions"
 password_before=$(php -r 'echo (new SQLite3($argv[1]))->querySingle("SELECT password FROM users WHERE username=\"admin\"");' "$db")

@@ -17,7 +17,7 @@ log="$tmp/apt.log"
 : > "$log"
 
 write_pi_sources() {
-	mkdir -p "$tmp/root/etc/apt/sources.list.d"
+	orp_mkdir "$tmp/root" "$tmp/root/etc/apt/sources.list.d"
 	cat > "$tmp/root/etc/apt/sources.list.d/debian.sources" <<'EOF'
 # Raspberry Pi OS Trixie keeps Debian and Debian security as separate stanzas.
 Types: deb
@@ -225,7 +225,7 @@ fi
 echo "ok: installer --no-upgrade does not cover PHP"
 
 disabled="$tmp/disabled-root"
-mkdir -p "$disabled/etc/apt/sources.list.d"
+orp_mkdir "$disabled" "$disabled/etc/apt/sources.list.d"
 cat > "$disabled/etc/apt/sources.list.d/debian.sources" <<'EOF'
 # Suites: trixie-security
 Types: deb
@@ -245,7 +245,7 @@ if ROOT="$disabled" bench_php_security_enabled; then
 fi
 echo "ok: disabled deb822 trixie-security is not an enabled source"
 
-mkdir -p "$tmp/origins"
+orp_mkdir "$tmp/origins"
 cat > "$tmp/origins/php8.4-fpm" <<'EOF'
 http://deb.debian.org/debian-security trixie-security
 https://packages.example.com/php trixie

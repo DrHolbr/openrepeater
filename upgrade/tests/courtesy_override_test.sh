@@ -20,7 +20,7 @@ db="$tmp/openrepeater.db"
 host="$tmp/hostname"
 mode="$tmp/operating-mode"
 base="$tmp/svx"
-mkdir -p "$live/etc/svxlink" "$live/var/backups/orp-ui" "$base/events.d/local"
+orp_mkdir "$live" "$live/etc/svxlink" "$live/var/backups/orp-ui" "$base/events.d/local"
 plant_native_layout "$live"
 chmod 755 "$live" "$live/etc" "$live/etc/svxlink" "$live/var" "$live/var/backups" "$live/var/backups/orp-ui"
 for name in Logic.tcl LogicBase.tcl locale.tcl RepeaterLogicType.tcl CW.tcl squelch_timeout.tcl; do
@@ -28,6 +28,7 @@ for name in Logic.tcl LogicBase.tcl locale.tcl RepeaterLogicType.tcl CW.tcl sque
 done
 printf 'orp-test\n' > "$host"
 printf 'functional-test\n' > "$mode"
+orp_private "$mode"
 chmod 644 "$mode"
 cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 sqlite3 "$db" "UPDATE settings SET value='FIXTURE' WHERE keyID='callSign';"

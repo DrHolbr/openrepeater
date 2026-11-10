@@ -28,6 +28,7 @@ putenv("ORP_BENCH_MARKER=" . $argv[3]);
 putenv("ORP_OPERATING_MODE_FILE=" . $argv[4]);
 file_put_contents($argv[4], "functional-test\n");
 chmod($argv[4], 0644);
+chmod($argv[4], 0644);
 $guard = BenchGuard::detect();
 if ($guard->operatingMode() !== "functional-test") fail("trusted functional-test token was not read");
 if ($guard->isBench() !== false) fail("functional-test was still forced into bench publication");
@@ -84,6 +85,7 @@ echo "ok: functional-test publishes to /etc/svxlink, allows start/stop, and stil
 ' "$ROOT_DIR" "$host" "$marker" "$mode" "$missing" "$tmp/other-host"
 
 printf 'functional-test\n' > "$mode"
+orp_private "$mode"
 chmod 644 "$mode"
 export ORP_BENCH_TEST_HARNESS=1
 export ORP_BENCH_HOSTNAME_FILE="$host"
@@ -121,7 +123,7 @@ if grep -q 'start svxlink.service' "$ORP_SYSTEMCTL_LOG"; then
 fi
 echo "ok: gpio_up stays blocked and start does nothing without the root snapshot"
 
-mkdir -p "$tmp/root/etc/openrepeater"
+orp_mkdir "$tmp/root" "$tmp/root/etc/openrepeater"
 printf 'orp-test\n' > "$tmp/root/etc/hostname"
 if [ "$(id -u)" -eq 0 ]; then
 	ORP_ROOT="$tmp/root" "$ROOT_DIR/upgrade/set-operating-mode.sh" functional-test >"$tmp/switch.out"

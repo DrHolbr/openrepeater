@@ -38,7 +38,7 @@ cp "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 printf 'orp-test\n' > "$hostfile"
 : > "$marker"
 : > "$cmdlog"
-mkdir -p "$bindir"
+orp_mkdir "$bindir"
 cat > "$bindir/sudo" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "${ORP_COMMAND_LOG:?}"

@@ -32,6 +32,7 @@ $stmt->execute();
 ' "$db"
 printf 'orp-test\n' > "$host"
 printf 'bench\n' > "$marker"
+orp_private "$marker"
 : > "$log"
 export ORP_DB_PATH="$db"
 export ORP_BENCH_TEST_HARNESS=1

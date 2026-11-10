@@ -4,6 +4,26 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$ROOT_DIR"
+if [ "${ORP_UMASK_MATRIX:-0}" != 1 ]; then
+	export ORP_UMASK_MATRIX=1
+	matrix_fail=0
+	for mask in 0022 0002; do
+		echo "=== umask ${mask} ==="
+		if ! (umask "$mask" && bash "$0"); then
+			echo "FAIL: suite failed under umask ${mask}" >&2
+			matrix_fail=1
+		fi
+		if ! (umask "$mask" && bash "$ROOT_DIR/upgrade/tests/offline_anchor_harness.sh"); then
+			echo "FAIL: offline anchor harness failed under umask ${mask}" >&2
+			matrix_fail=1
+		fi
+	done
+	if [ "$matrix_fail" -ne 0 ]; then
+		exit 1
+	fi
+	echo "both umasks passed"
+	exit 0
+fi
 # shellcheck source=upgrade/tests/lib/fixture_tmpdir.sh
 . "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
 orp_use_fixture_tmpdir

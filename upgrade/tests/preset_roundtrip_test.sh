@@ -37,8 +37,9 @@ apply_ident_profile "$db"
 printf 'orp-test\n' > "$host"
 printf 'bench\n' > "$marker"
 printf 'bench\n' > "$mode"
+orp_private "$marker" "$mode"
 plant_native_layout "$live"
-mkdir -p "$live/var/backups/orp-ui"
+orp_mkdir "$live" "$live/var/backups/orp-ui"
 chmod 755 "$live" "$live/etc" "$live/etc/svxlink" "$live/var" "$live/var/backups" "$live/var/backups/orp-ui"
 export ORP_DB_PATH="$db"
 export ORP_BENCH_TEST_HARNESS=1
@@ -92,6 +93,7 @@ if ($call !== "TEST" || $wpm !== "20" || $user !== "admin " . hash("sha256", "te
 echo "ok: all five presets round-trip from the form into the copied database and leave the account and call sign unchanged"
 
 printf 'functional-test\n' > "$mode"
+orp_private "$mode"
 export ORP_OPERATING_MODE_FILE="$mode"
 export ORP_ROOT="$live"
 export ORP_DB_PATH="$db"

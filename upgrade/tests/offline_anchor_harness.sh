@@ -1,7 +1,9 @@
 #!/bin/bash
-# Offline anchor checks for one payload tree. The tree is the checkout or the
-# immutable archive of this commit, which includes the 78112bf no-follow chmod.
-# Nothing here is given a live ORP_ROOT, the station database, or /etc.
+# Offline anchor checks for one payload tree. Nothing here is given a live
+# ORP_ROOT, the station database, or /etc. On the Pi, /tmp is too small:
+#   mkdir -m 755 /var/tmp/orp-fixtures
+#   ORP_TEST_TMPDIR=/var/tmp/orp-fixtures bash upgrade/tests/offline_anchor_harness.sh
+# A umask of 0002 does not make the fixture root group-writable.
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)

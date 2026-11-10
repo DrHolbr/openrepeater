@@ -43,10 +43,22 @@ case "$made" in
 		;;
 esac
 rmdir "$made"
+saved=$(umask)
+umask 0002
+umask_dir=$(mktemp -d)
+orp_mkdir "$umask_dir/root/etc/openrepeater"
+if [ "$(stat -c %a "$umask_dir/root")" != "755" ] || [ "$(stat -c %a "$umask_dir/root/etc")" != "755" ]; then
+	echo "FAIL: umask 0002 left a fixture directory group-writable" >&2
+	stat -c '%a %n' "$umask_dir/root" "$umask_dir/root/etc" >&2
+	exit 1
+fi
+rm -rf "$umask_dir"
+umask "$saved"
+echo "ok: fixture directories stay mode 0755 under umask 0002"
 echo "ok: ORP_TEST_TMPDIR rejects live paths and symlinks"
 fake=$(mktemp -d)
 trap 'rm -rf "$mine" "$target" "$fake"' EXIT
-mkdir -p "$fake/bin"
+orp_mkdir "$fake/bin"
 cat > "$fake/bin/df" <<'EOF'
 #!/bin/bash
 echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'

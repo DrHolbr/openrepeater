@@ -74,7 +74,7 @@ EOF
 
 seed_identity() {
 	local root=$1
-	mkdir -p "$root/etc" "$root/var/lib/orp-test" "$root/usr/local/bin" "$root/usr/local/share/svxlink" \
+	orp_mkdir "$root" "$root/etc" "$root/var/lib/orp-test" "$root/usr/local/bin" "$root/usr/local/share/svxlink" \
 		"$root/usr/local/sbin" "$root/opt/orp-test" "$root/etc/svxlink" "$root/etc/nginx/sites-enabled"
 	printf 'orp-test\n' > "$root/etc/hostname"
 	printf 'aarch64\n' > "$root/etc/orp-arch"
@@ -86,7 +86,7 @@ EOF
 	printf 'guard\n' > "$root/etc/orp-test-image"
 	printf 'done\n' > "$root/var/lib/orp-test/complete"
 	printf 'sentinel-build\n' > "$root/var/lib/orp-test/build-sentinel"
-	mkdir -p "$root/var/lib/orp-test/build"
+	orp_mkdir "$root/var/lib/orp-test/build"
 	printf 'object\n' > "$root/var/lib/orp-test/build/keep.o"
 	printf 'bin\n' > "$root/usr/local/bin/svxlink"
 	printf 'share\n' > "$root/usr/local/share/svxlink/keep"
@@ -102,7 +102,7 @@ checksum() { sha256sum "$1" | awk '{print $1}'; }
 tmp=$(orp_mktemp_dir)
 trap 'rm -rf "$tmp"' EXIT
 bin="$tmp/bin"
-mkdir -p "$bin"
+orp_mkdir "$bin"
 log="$tmp/systemctl.log"
 make_systemctl "$bin/systemctl"
 
@@ -330,6 +330,7 @@ else
 	bad "first install did not write bench operating mode"
 fi
 printf 'functional-test\n' > "$mode"
+orp_private "$mode"
 for dir in \
 	"$good/var/www/openrepeater/sounds" \
 	"$good/var/www/openrepeater/sounds/courtesy_tones" \
@@ -354,7 +355,7 @@ else
 fi
 printf 'user-clip\n' > "$good/var/www/openrepeater/sounds/courtesy_tones/keep.wav"
 printf 'user-backup\n' > "$good/var/www/openrepeater/backup/user.orp"
-mkdir -p "$good/usr/local/share/svxlink/sounds/en_US"
+orp_mkdir "$good/usr/local/share/svxlink/sounds/en_US"
 printf 'heather-canary\n' > "$good/usr/local/share/svxlink/sounds/en_US/heather.wav"
 heather_before=$(checksum "$good/usr/local/share/svxlink/sounds/en_US/heather.wav")
 before=$(checksum "$db")
@@ -395,7 +396,7 @@ fi
 
 linkroot="$tmp/sounds-link"
 seed_identity "$linkroot"
-mkdir -p "$linkroot/var/www/openrepeater" "$linkroot/outside"
+orp_mkdir "$linkroot/var/www/openrepeater" "$linkroot/outside"
 printf 'secret\n' > "$linkroot/outside/secret"
 ln -s "$linkroot/outside" "$linkroot/var/www/openrepeater/sounds"
 set +e
@@ -416,7 +417,7 @@ fi
 
 ancestor="$tmp/ancestor-link"
 seed_identity "$ancestor"
-mkdir -p "$ancestor/outside/www"
+orp_mkdir "$ancestor/outside/www"
 rm -rf "$ancestor/var/www"
 ln -s "$ancestor/outside/www" "$ancestor/var/www"
 printf 'secret\n' > "$ancestor/outside/secret"
@@ -475,7 +476,7 @@ fi
 
 # Helper behavior.
 rec="$tmp/rec"
-mkdir -p "$rec"
+orp_mkdir "$rec"
 cat > "$rec/systemctl" <<'EOF'
 #!/bin/bash
 echo "systemctl $*" >> "${HELPER_LOG:?}"
@@ -511,6 +512,7 @@ chmod 755 "$rec"/*
 hlog="$tmp/helper.log"
 marker="$tmp/bench-mode"
 printf 'radio=blocked\n' > "$marker"
+orp_private "$marker"
 export PATH="$rec:$PATH"
 export HELPER_LOG="$hlog"
 export SVXLINK_GPIO_UP_BIN="$rec/gpio-up"
@@ -670,7 +672,7 @@ assert_canary() {
 # Leaf symlink where the old installer would chmod the canary.
 leaf="$tmp/leaf-link"
 seed_identity "$leaf"
-mkdir -p "$leaf/var/lib/openrepeater/db"
+orp_mkdir "$leaf/var/lib/openrepeater/db"
 leaf_canary="$leaf/protected-canary"
 leaf_before=$(plant_canary "$leaf_canary")
 ln -s "$leaf_canary" "$leaf/var/lib/openrepeater/db/openrepeater.db"
@@ -692,7 +694,7 @@ assert_canary "$leaf_canary" "$leaf_before"
 anc="$tmp/ancestor-link"
 seed_identity "$anc"
 real="$anc/real-tree"
-mkdir -p "$real"
+orp_mkdir "$real"
 anc_canary="$real/keep"
 anc_before=$(plant_canary "$anc_canary")
 ln -s "$real" "$anc/var/lib/openrepeater"
@@ -744,7 +746,7 @@ assert_canary "$re_canary" "$re_before"
 
 preview="$tmp/preview-link"
 seed_identity "$preview"
-mkdir -p "$preview/var/lib/openrepeater"
+orp_mkdir "$preview/var/lib/openrepeater"
 preview_canary="$preview/etc/svxlink/svxlink.conf"
 preview_before=$(canary_record "$preview_canary")
 ln -s "$preview/etc/svxlink" "$preview/var/lib/openrepeater/bench-preview"

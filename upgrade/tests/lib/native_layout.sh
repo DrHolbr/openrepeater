@@ -4,7 +4,8 @@
 
 plant_native_layout() {
 	local root=$1 file
-	mkdir -p \
+	install -d -m 0755 \
+		"$root" \
 		"$root/usr/local/bin" \
 		"$root/usr/local/lib/svxlink" \
 		"$root/usr/local/share/svxlink/events.d" \
