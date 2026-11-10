@@ -18,12 +18,15 @@ server {
 		deny all;
 	}
 
-	# backup.php links only to /backup/<name>.orp. Nothing else in that
-	# tree is served. This regex is before \.php$ and the dotfile deny.
+	# Archives here contain backup.sql, including password hashes.
+	# nginx does not serve this tree. The session endpoint streams a file.
 	location ~* ^/backup/ {
-		location ~* ^/backup/[A-Za-z0-9][A-Za-z0-9._-]*\.orp$ {
-		}
 		deny all;
+	}
+
+	location /internal-backup/ {
+		internal;
+		alias /var/www/openrepeater/backup/;
 	}
 
 	# Module uploads and the sounds anchor. Audio under /sounds/ is served.

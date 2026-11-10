@@ -437,6 +437,40 @@ code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/backup.body" -w '%
 grep -q 'Successfully created backup' "$tmp/backup.body"
 archive=$(find "$backup" -maxdepth 1 -name '*.orp' -printf '%f\n')
 [ -n "$archive" ]
+grep -q 'functions/backup_download.php' "$tmp/backup.body"
+if grep -q "location.href='[^']*/backup/" "$tmp/backup.body"; then
+	echo "FAIL: backup download still points at the static archive URL" >&2
+	exit 1
+fi
+code=$(curl -s -o "$tmp/anon-dl.body" -w '%{http_code}' \
+	--data-urlencode "file=${archive}" \
+	"$base/functions/backup_download.php")
+[ "$code" = "401" ]
+echo "ok: an unauthenticated backup download is refused"
+code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/slip-dl.body" -w '%{http_code}' \
+	--data-urlencode 'file=../keep.txt' \
+	"$base/functions/backup_download.php")
+[ "$code" = "403" ]
+printf 'secret\n' > "$tmp/outside-secret"
+ln -s "$tmp/outside-secret" "$backup/linked.orp"
+code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/link-dl.body" -w '%{http_code}' \
+	--data-urlencode 'file=linked.orp' \
+	"$base/functions/backup_download.php")
+[ "$code" = "403" ]
+[ "$(cat "$tmp/outside-secret")" = "secret" ]
+rm -f "$backup/linked.orp"
+echo "ok: backup download refuses traversal and a symlink"
+code=$(curl -s -D "$tmp/dl.hdr" -o "$tmp/dl.body" -w '%{http_code}' -b "$jar" -H "X-CSRF-Token: ${token}" \
+	--data-urlencode "file=${archive}" \
+	"$base/functions/backup_download.php")
+[ "$code" = "200" ]
+grep -i -q '^content-disposition: attachment' "$tmp/dl.hdr"
+grep -i -q '^x-content-type-options: nosniff' "$tmp/dl.hdr"
+cmp -s "$tmp/dl.body" "$backup/$archive"
+echo "ok: an authenticated backup download returns the archive"
+code=$(curl -s -o /dev/null -w '%{http_code}' "$base/backup/${archive}")
+[ "$code" = "403" ] || [ "$code" = "404" ]
+echo "ok: the static backup URL is not served"
 sqlite3 "$db" "UPDATE settings SET value='TEMPCS' WHERE keyID='callSign';"
 code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/validate.body" -w '%{http_code}' \
 	--data-urlencode "validate_restore=${archive}" \

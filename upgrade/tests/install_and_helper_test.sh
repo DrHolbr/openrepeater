@@ -252,6 +252,8 @@ if grep -q 'unix:/run/php/php8.4-fpm.sock' "$site" \
 	&& grep -q 'server_name orp-test' "$site" \
 	&& grep -F -q 'location ~* ^/(modules|sounds)/' "$site" \
 	&& grep -F -q 'location ~* ^/backup/' "$site" \
+	&& grep -F -q 'location /internal-backup/' "$site" \
+	&& ! grep -F -q 'location ~* ^/backup/[A-Za-z0-9]' "$site" \
 	&& grep -q 'phtml' "$site" \
 	&& grep -q 'phps' "$site" \
 	&& grep -F -q 'zip|bak' "$site" \

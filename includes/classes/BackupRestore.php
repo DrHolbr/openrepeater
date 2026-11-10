@@ -983,7 +983,10 @@ PY;
 							<button type="button" class="btn btn-success" data-toggle="modal" data-target="#restoreFile" onclick="restoreFile(\'' . $fileArray['fileName'] . '\'); return false;"><i class="icon-refresh icon-white"></i> Restore</button>
 						
 							<!-- Button triggered modal -->
-							<button class="btn" onclick="location.href=\'' . $this->baseDownloadPath . $fileArray['fileName'] . '\'"><i class="icon-download-alt"></i></button>
+							<form method="post" action="../functions/backup_download.php" style="display:inline">'
+							. '<input type="hidden" name="csrf_token" value="' . htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8') . '">'
+							. '<input type="hidden" name="file" value="' . htmlspecialchars($fileArray['fileName'], ENT_QUOTES, 'UTF-8') . '">'
+							. '<button class="btn" type="submit"><i class="icon-download-alt"></i></button></form>
 			
 							<!-- Button triggered modal -->
 							<button type="button" class="btn btn-danger" data-toggle="modal" data-target="#deleteFile" onclick="deleteFile(\'' . $fileArray['fileName'] . '\'); return false;"><i class="icon-trash icon-white"></i></button>
@@ -1010,6 +1013,29 @@ PY;
 	###############################################
 	# Delete Backup
 	###############################################
+
+	public function resolveBackupDownload($name) {
+		if (!is_string($name) || !preg_match('/^[A-Za-z0-9_.-]+\.orp$/', $name)) {
+			return null;
+		}
+		$dir = rtrim($this->backupPath, '/');
+		if ($dir === '' || is_link($dir) || !is_dir($dir)) {
+			return null;
+		}
+		$root = realpath($dir);
+		if ($root === false) {
+			return null;
+		}
+		$path = $root . '/' . $name;
+		if (is_link($path) || !is_file($path)) {
+			return null;
+		}
+		$real = realpath($path);
+		if ($real === false || $real !== $root . '/' . $name) {
+			return null;
+		}
+		return $real;
+	}
 
 	public function deleteBackup($file) {
 		if (!is_string($file) || !preg_match('/^[A-Za-z0-9._-]+\.orp$/', $file)) {
