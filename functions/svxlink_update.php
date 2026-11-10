@@ -54,11 +54,7 @@ if ($benchGuard->operatingMode() === 'functional-test') {
 	} elseif (is_string($lifecycle) && (strpos($lifecycle, 'masked') !== false || strpos($lifecycle, 'service-disabled') !== false)) {
 		$notice = 'functional_published=1&service_masked=1';
 	}
-	if (isset($_POST['return_url'])) {
-		$url = strtok($_POST['return_url'], '?');
-	} else {
-		$url = '../dashboard.php';
-	}
+	$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
 	$join = (strpos($url, '?') === false) ? '?' : '&';
 	header('Location: '.$url.$join.$notice);
 	exit;
@@ -221,13 +217,11 @@ if ($publishFailed || $onBench || $benchGuard->operatingMode() === 'functional-t
 	} else {
 		$notice = 'bench_preview_ok=1';
 	}
-	if (isset($_POST["return_url"])) {
-		$url = strtok($_POST["return_url"], '?');
-	} else if (isset($_SESSION["new_repeater_settings"])) {
+	if (isset($_SESSION["new_repeater_settings"])) {
 		session_destroy();
 		$url = '../login.php';
 	} else {
-		$url = '../dashboard.php';
+		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
 	}
 	$join = (strpos($url, '?') === false) ? '?' : '&';
 	header('Location: '.$url.$join.$notice);
@@ -243,17 +237,12 @@ $shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up');
 $shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink restart');
 
 /* WHAT PAGE TO GO BACK TO */
-if (isset($_POST["return_url"])) {
-	// Return to page that sent here
-	$url = strtok($_POST["return_url"], '?'); //Clean parameters from URL
-	header('location: '.$url);	
-} else if (isset($_SESSION["new_repeater_settings"])) {
+if (isset($_SESSION["new_repeater_settings"])) {
 	// Wizard was run. Go ahead and destroy session and logout
 	session_destroy();
-	header('location: ../login.php');		
+	header('location: ../login.php');
 } else {
-	// Otherwise just go to dashboard
-	header('location: ../dashboard.php');	
+	header('Location: ' . RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : ''));
 }	
 ?>
 

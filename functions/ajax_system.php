@@ -77,9 +77,7 @@ function exec_orp_helper($opt1, $opt2) {
 		}
 		return 'stub';
 	}
-	$command = 'sudo orp_helper';
-	$command .= ' ' . $opt1;
-	$command .= ' ' . $opt2;
+	$command = 'sudo orp_helper ' . escapeshellarg($opt1) . ' ' . escapeshellarg($opt2);
 	ob_start();
 	passthru($command);
 	return trim(ob_get_clean());

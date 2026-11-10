@@ -88,8 +88,14 @@ $benchGuard = BenchGuard::detect();
 	<!-- Server Notifications -->
 
 <?php
-	$scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-	$current_page_url = $scheme . '://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'];
+	$pageName = 'dashboard.php';
+	if (isset($_SERVER['SCRIPT_NAME']) && is_string($_SERVER['SCRIPT_NAME'])) {
+		$baseName = basename($_SERVER['SCRIPT_NAME']);
+		if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*\.php$/', $baseName)) {
+			$pageName = $baseName;
+		}
+	}
+	$current_page_url = '../' . $pageName;
 
 	/* CHECK FOR UPDATE FLAG AND NOTIFY USER IF SERVER NEEDS RESTARTED */
 	$updateFlage = $Database->get_update_flag();

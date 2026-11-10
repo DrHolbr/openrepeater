@@ -140,11 +140,35 @@ class RequestGuard {
 	public static function helperActionAllowed($service, $option) {
 		$allowed = array(
 			'svxlink' => array('start', 'stop', 'status', 'restart'),
-			'system' => array('restart', 'stop', 'uptime', 'user'),
+			'system' => array('uptime', 'user'),
 			'info' => array('timezone', 'cpu_type', 'cpu_speed', 'cpu_load', 'cpu_temp', 'uptime', 'memory_usage', 'disk_usage', 'os'),
 			'audio' => array('inputs', 'outputs', 'version'),
 		);
 		return isset($allowed[$service]) && in_array($option, $allowed[$service], true);
+	}
+
+	// A rebuild form may name the page to reopen. Only a same-site relative
+	// PHP path is accepted. A scheme, a protocol-relative URL, a backslash,
+	// or a control character falls back to the dashboard.
+	public static function safeReturnUrl($value) {
+		$fallback = '../dashboard.php';
+		if (!is_string($value) || $value === '') {
+			return $fallback;
+		}
+		$path = strtok($value, '?');
+		if (!is_string($path) || $path === '') {
+			return $fallback;
+		}
+		if (preg_match('/[\x00-\x1f\x7f\\\\]/', $path)) {
+			return $fallback;
+		}
+		if (strpos($path, '//') !== false || strpos($path, ':') !== false) {
+			return $fallback;
+		}
+		if (!preg_match('#^(?:\.\./)?[A-Za-z0-9][A-Za-z0-9._-]*\.php$#', $path)) {
+			return $fallback;
+		}
+		return $path;
 	}
 
 	public static function readUpdateAllowed($name) {

@@ -185,15 +185,30 @@ function orpCsrfToken() {
 	return meta ? meta.getAttribute('content') : '';
 }
 
+function hostActionAccepted(xhr, data) {
+	if (!xhr || xhr.status !== 200) {
+		return false;
+	}
+	if (typeof data !== 'string') {
+		return false;
+	}
+	var text = $.trim(data);
+	if (text === '' || text.indexOf('refused:') === 0) {
+		return false;
+	}
+	return text.indexOf('host-action-accepted') === 0;
+}
+
 function reboot_orp_system() {
     $.ajax({
 		type: 'POST',
 		dataType: 'text',
 		url: ajax_url,
 		data: { post_service: 'system', post_option: 'restart', csrf_token: orpCsrfToken() },
-		success: function (data) {
-			if (typeof data === 'string' && data.indexOf('refused:') === 0) {
-				window.alert(data);
+		complete: function (xhr) {
+			var data = xhr ? xhr.responseText : '';
+			if (!hostActionAccepted(xhr, data)) {
+				window.alert(data && String(data).length ? data : 'Host restart was not accepted.');
 				return;
 			}
 			clearInterval(updateTimeInterval);
@@ -233,9 +248,10 @@ function shutdown_orp_system() {
 		dataType: 'text',
 		url: ajax_url,
 		data: { post_service: 'system', post_option: 'stop', csrf_token: orpCsrfToken() },
-		success: function (data) {
-			if (typeof data === 'string' && data.indexOf('refused:') === 0) {
-				window.alert(data);
+		complete: function (xhr) {
+			var data = xhr ? xhr.responseText : '';
+			if (!hostActionAccepted(xhr, data)) {
+				window.alert(data && String(data).length ? data : 'Host shutdown was not accepted.');
 				return;
 			}
 			clearInterval(updateTimeInterval);

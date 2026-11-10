@@ -376,14 +376,40 @@ code=$(post_settings -o "$tmp/reboot.body" -w '%{http_code}' \
 	--data-urlencode 'post_option=restart' \
 	"$base/functions/ajax_system.php")
 [ "$code" = "403" ]
-grep -q 'bench mode blocks system restart' "$tmp/reboot.body"
+grep -qx 'forbidden' "$tmp/reboot.body"
 [ ! -s "$helper_log" ]
 code=$(post_settings -o "$tmp/shutdown.body" -w '%{http_code}' \
 	--data-urlencode 'post_service=system' \
 	--data-urlencode 'post_option=stop' \
 	"$base/functions/ajax_system.php")
 [ "$code" = "403" ]
+grep -qx 'forbidden' "$tmp/shutdown.body"
+[ ! -s "$helper_log" ]
+dash=$(curl -s -b "$jar" "$base/dashboard.php")
+printf '%s' "$dash" | grep -q 'Host restart blocked'
+printf '%s' "$dash" | grep -q 'Host shutdown blocked'
+if printf '%s' "$dash" | grep -q 'onclick="reboot_orp_system\|onclick="shutdown_orp_system'; then
+	echo "FAIL: dashboard still offers host restart or shutdown" >&2
+	exit 1
+fi
+if ! grep -q 'xhr.status !== 200' "$ROOT_DIR/includes/js/page-dashboard.js" \
+	|| ! grep -q "text === ''" "$ROOT_DIR/includes/js/page-dashboard.js" \
+	|| ! grep -q 'host-action-accepted' "$ROOT_DIR/includes/js/page-dashboard.js"
+then
+	echo "FAIL: dashboard script still treats a non-success helper reply as a reboot" >&2
+	exit 1
+fi
 echo "ok: host restart and shutdown stay blocked"
+code=$(curl -s -D "$tmp/redirect.hdr" -o "$tmp/redirect.body" -w '%{http_code}' -b "$jar" \
+	--data-urlencode 'return_url=https://evil.example/phish' \
+	--data-urlencode "csrf_token=${token}" \
+	"$base/functions/svxlink_update.php")
+if grep -i -q 'evil.example' "$tmp/redirect.hdr" "$tmp/redirect.body"; then
+	echo "FAIL: return_url left the site" >&2
+	exit 1
+fi
+grep -i -q '^Location: \.\./dashboard.php' "$tmp/redirect.hdr"
+echo "ok: an off-site return_url falls back to the dashboard"
 code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/backup.body" -w '%{http_code}' \
 	--data-urlencode 'createBackup=1' \
 	"$base/backup.php")

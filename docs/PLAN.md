@@ -1,6 +1,6 @@
 # Stage 2 plan: bench UI on Debian Trixie
 
-**Status: `adda19c` is installed and its page gate passed.** Nine authenticated pages closed `</html>`, including long identification controls and the empty courtesy library. Seventy-two assets passed. The settings GET added only the three missing CTCSS defaults 10, 5, and 9. Radios stayed masked. SvxLink's binary digest did not change. That page pass is not a completed UI audit, preset translation, FCC gate, or functional-test deployment. The next commit is not installed and is not authorized for this agent to deploy. Production is untouched. This change does not merge.
+**Status: `143d5e7e7fc235d34ead677f2383b02c69e23da0` is installed.** The earlier `adda19c` page gate passed, and that commit is not the installed tree. Nine authenticated pages closed `</html>`, including long identification controls and the empty courtesy library. Seventy-two assets passed. The settings GET added only the three missing CTCSS defaults 10, 5, and 9. Radios stayed masked. SvxLink's binary digest did not change. That page pass is not a completed UI audit, preset translation, FCC gate, or functional-test deployment. The next commit is not installed and is not authorized for this agent to deploy. Production is untouched. This change does not merge.
 
 The user goal is to make the existing OpenRepeater web UI usable on the bench Raspberry Pi 3B+ (Raspberry Pi OS / Debian Trixie arm64, PHP 8.x, nginx, SvxLink 26.05.2) without transmitting and without disturbing the image that is already building.
 
@@ -237,4 +237,10 @@ These need the parent, on the Pi, after review:
 - `/workspace/orp-test-image` and `/workspace/orp-test-stage2` from the bench note. They are not in this checkout. The bootstrap contract used here is the parent's written snapshot, not a re-read of that script.
 - `DrHolbr/openrepeater-modules` contents.
 - A PHP 8.4 binary in this cloud. Lint and the wizard HTTP test used the image PHP CLI. The installer asks the Pi for `php8.4-fpm` only.
+
+## Tracked follow-ups
+
+6. The station database hash moved from `ae65ca06` to `54ff78f7`. The change is still unattributed. Investigation is pending. Do not treat either hash as a new baseline until that is explained.
+7. Restore stays undeployable on the installed `143d5e7` layout because `/var/www/openrepeater/sounds` is absent. It stays that way until a head that contains the `4d37337` sound and backup anchors is installed.
+8. `login.php` still builds the password check with `SQLite3::escapeString` inside SQL and a double SHA-256. A later change may store `password_hash` and rehash on login. It must keep accepting the existing bench account. That migration is not in this commit.
 - `nginx -t` and `gpioinfo` on real hardware.

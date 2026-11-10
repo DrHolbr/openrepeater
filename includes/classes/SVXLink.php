@@ -756,11 +756,8 @@ class SVXLink {
 			if (BenchGuard::writeContained($staged, $file_output) !== true) {
 				return $this->publishFailure();
 			}
-			if (is_dir($filepath) && is_writable($filepath) && !is_link($full_file_path)) {
-				if (@file_put_contents($full_file_path, $file_output) === false) {
-					return $this->publishFailure();
-				}
-			}
+			// The live file is installed only by `orp_helper config publish`.
+			// This process does not open that path.
 			return true;
 		}
 		if (is_link($filepath) || is_link($full_file_path)) {
