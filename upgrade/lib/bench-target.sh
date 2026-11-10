@@ -668,7 +668,7 @@ bench_ensure_regular() {
 # Debian Trixie PHP 8.4 from enabled Debian archive and security suites.
 # Raspberry Pi OS also enables archive.raspberrypi.com; that archive is not
 # a Debian origin for these packages. No apt source is added or edited.
-BENCH_PHP84_PACKAGES=(php8.4-fpm php8.4-cli php8.4-common php8.4-sqlite3 php8.4-opcache)
+BENCH_PHP84_PACKAGES=(php8.4-fpm php8.4-cli php8.4-common php8.4-sqlite3 php8.4-opcache php8.4-zip)
 
 bench_apt() {
 	if [ -n "${ORP_APT_GET:-}" ]; then

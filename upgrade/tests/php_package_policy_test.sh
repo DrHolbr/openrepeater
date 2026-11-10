@@ -68,6 +68,7 @@ reset_state() {
 	seed_pkg php8.4-sqlite3 "$5" "$6"
 	seed_pkg php8.4-common "$4" "$4"
 	seed_pkg php8.4-opcache "$4" "$4"
+	seed_pkg php8.4-zip "$5" "$6"
 }
 
 cat > "$tmp/apt-get" <<'EOF'
@@ -149,6 +150,7 @@ if grep -Eq 'dist-upgrade|full-upgrade|nginx|php8\.3|php-fpm ' "$log"; then
 fi
 grep -q 'php8.4-fpm' "$log"
 grep -q 'php8.4-sqlite3' "$log"
+grep -q 'php8.4-zip' "$log"
 if grep -q 'install -y --no-install-recommends php8.4-cli' "$log"; then
 	echo "FAIL: an already-current PHP package was reinstalled" >&2
 	exit 1
@@ -250,7 +252,7 @@ cat > "$tmp/origins/php8.4-fpm" <<'EOF'
 http://deb.debian.org/debian-security trixie-security
 https://packages.example.com/php trixie
 EOF
-for pkg in php8.4-cli php8.4-common php8.4-sqlite3 php8.4-opcache; do
+for pkg in php8.4-cli php8.4-common php8.4-sqlite3 php8.4-opcache php8.4-zip; do
 	printf '%s\n' 'http://deb.debian.org/debian-security trixie-security' > "$tmp/origins/$pkg"
 done
 reset_state 8.4.27-1~deb13u1 8.4.27-1~deb13u1 8.4.27-1~deb13u1 8.4.27-1~deb13u1 8.4.27-1~deb13u1 8.4.27-1~deb13u1

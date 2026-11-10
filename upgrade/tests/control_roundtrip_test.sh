@@ -337,8 +337,8 @@ code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/mod.body" -w '%{ht
 	-F 'upload_file=1' -F 'file[]=@'"$tmp/probe.zip" \
 	"$base/modules.php")
 if ! grep -q 'successfully installed' "$tmp/mod.body"; then
-	cp "$tmp/mod.body" "$tmp/mod-body.html"
 	echo "FAIL: module upload was not accepted" >&2
+	cat "$tmp/mod.body" >&2
 	exit 1
 fi
 [ ! -e "$canary" ]

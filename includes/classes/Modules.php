@@ -188,8 +188,14 @@ class Modules {
 	###############################################
 
 	public function upload_module($fileNameArray) {
+		if (!class_exists('ZipArchive', false)) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => self::zipSupportMessage()
+			);
+		}
 
-		$maxFileSize = 500000000; // size in bytes
+		$maxFileSize = 8388608; // size in bytes
 		$allowedExts = array('zip');
 	
 		//Loop through each file
@@ -304,46 +310,150 @@ class Modules {
 	# Archive Functions
 	###############################################
 
+	public static function zipSupportMessage() {
+		return 'PHP ZipArchive is not available. Install the php8.4-zip package.';
+	}
+
 	public function unzip_module($selected_archive) {
-		try	{
-			if (!file_exists($this->modulesUploadTempDir)) {
-			    mkdir($this->modulesUploadTempDir, 0777, true);
+		if (!class_exists('ZipArchive', false)) {
+			return false;
+		}
+		if (!is_string($selected_archive) || $selected_archive === '' || is_link($selected_archive) || !is_file($selected_archive)) {
+			return false;
+		}
+		$archiveBytes = filesize($selected_archive);
+		if ($archiveBytes === false || $archiveBytes < 22 || $archiveBytes > self::ZIP_MAX_ARCHIVE) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		$temp = $this->modulesUploadTempDir;
+		if (is_link($temp)) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		if (!is_dir($temp) && !mkdir($temp, 0755, true) && !is_dir($temp)) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		if (is_link($temp)) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		$root = realpath($temp);
+		if ($root === false || !is_dir($root) || is_link($temp)) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		$this->discardChildren($root, $root);
+
+		$zip = new ZipArchive();
+		if ($zip->open($selected_archive) !== true) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		$count = $zip->numFiles;
+		if ($count < 1 || $count > self::ZIP_MAX_ENTRIES) {
+			$zip->close();
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		$plans = array();
+		$total = 0;
+		for ($i = 0; $i < $count; $i++) {
+			$name = $zip->getNameIndex($i);
+			if ($this->zipEntrySkipped($name)) {
+				continue;
 			}
-
-			// Clean up any Mac OS trash in user zip file if it exists
-			exec('zip -d ' . escapeshellarg($selected_archive) . ' "__MACOSX*"');
-
-			$zip = new ZipArchive;
-			$res = $zip->open($selected_archive);
-			if ($res === TRUE) {
-				if (!$this->zipMembersAreFiles($zip)) {
-					$zip->close();
-					unlink($selected_archive);
-					return false;
+			$stat = $zip->statIndex($i);
+			if (is_array($stat)) {
+				$opsys = 0;
+				$attr = 0;
+				if ($zip->getExternalAttributesIndex($i, $opsys, $attr)) {
+					$stat['external_attributes'] = $attr;
 				}
-				$zip->extractTo($this->modulesUploadTempDir);
+			}
+			if (!is_array($stat) || !$this->zipEntryAllowed($name, $stat)) {
 				$zip->close();
-				unlink($selected_archive);
-
-				// If zip contains parent folder, move child files and remove folder
-				$folder_list  = glob($this->modulesUploadTempDir."*", GLOB_ONLYDIR);
-				$file_count  = count( glob($this->modulesUploadTempDir."*") ) - count($folder_list);
-				if (count($folder_list) == 1 && $file_count == 0) {
-					$get_sub_dir = glob($this->modulesUploadTempDir."*", GLOB_ONLYDIR);
-					$get_sub_dir = $get_sub_dir[0];
-					exec('mv ' . $get_sub_dir . '/* ' . $this->modulesUploadTempDir);
-					exec('rm ' . $get_sub_dir . ' -R');
-				}
-
-				return true;
-
-			} else {
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
 				return false;
 			}
-
-		} catch (Exception $e) {
-		    echo "Exception : " . $e;
+			$uncompressed = (int) $stat['size'];
+			$compressed = isset($stat['comp_size']) ? (int) $stat['comp_size'] : 0;
+			$attr = isset($stat['external_attributes']) ? (int) $stat['external_attributes'] : 0;
+			$isDir = substr($name, -1) === '/' || (($attr >> 16) & 0170000) === 0040000;
+			$total += $uncompressed;
+			if ($total > self::ZIP_MAX_TOTAL) {
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
+				return false;
+			}
+			$plans[] = array($i, rtrim($name, '/'), $isDir, $uncompressed, $compressed);
 		}
+		if (count($plans) < 1) {
+			$zip->close();
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		foreach ($plans as $plan) {
+			$relative = $plan[1];
+			$isDir = $plan[2];
+			$expected = $plan[3];
+			$parent = $isDir ? $relative : dirname($relative);
+			if ($parent !== '.' && !$this->mkdirInside($root, $parent)) {
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
+				return false;
+			}
+			$target = $root . '/' . $relative;
+			if ($isDir) {
+				if (!$this->mkdirInside($root, $relative)) {
+					$zip->close();
+					$this->discardChildren($root, $root);
+					$this->discardUploadedArchive($selected_archive);
+					return false;
+				}
+				continue;
+			}
+			if (is_link($target) || is_dir($target)) {
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
+				return false;
+			}
+			$data = $zip->getFromIndex($plan[0]);
+			if (!is_string($data) || strlen($data) !== $expected) {
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
+				return false;
+			}
+			$tmpName = $root . '/.orp-member-' . bin2hex(random_bytes(6));
+			if (file_put_contents($tmpName, $data) !== $expected || is_link($tmpName)) {
+				@unlink($tmpName);
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
+				return false;
+			}
+			if (!rename($tmpName, $target) || is_link($target) || realpath($target) === false || !$this->pathIsInside($root, realpath($target))) {
+				@unlink($tmpName);
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
+				return false;
+			}
+			chmod($target, 0644);
+		}
+		$zip->close();
+		$this->discardUploadedArchive($selected_archive);
+		if (!$this->flattenSingleFolder($root)) {
+			$this->discardChildren($root, $root);
+			return false;
+		}
+		return true;
 	}
 
 
@@ -993,19 +1103,179 @@ class Modules {
 	# Read Directory and Generate Paths to Files
 	###############################################
 
-	private function zipMembersAreFiles($zip) {
-		for ($i = 0; $i < $zip->numFiles; $i++) {
-			$name = $zip->getNameIndex($i);
-			if (!is_string($name) || $name === '' || $name[0] === '/' || strpos($name, '\\') !== false || strpos($name, '..') !== false) {
-				return false;
-			}
-			$stat = $zip->statIndex($i);
-			$attr = is_array($stat) && isset($stat['external_attributes']) ? (int) $stat['external_attributes'] : 0;
-			if ((($attr >> 16) & 0170000) === 0120000) {
+	const ZIP_MAX_ARCHIVE = 8388608;
+	const ZIP_MAX_ENTRIES = 500;
+	const ZIP_MAX_ENTRY = 8388608;
+	const ZIP_MAX_TOTAL = 33554432;
+
+	private function zipEntrySkipped($name) {
+		return $name === '__MACOSX' || (is_string($name) && strpos($name, '__MACOSX/') === 0);
+	}
+
+	private function zipEntryAllowed($name, $stat) {
+		if (!is_string($name) || $name === '' || strlen($name) > 240) {
+			return false;
+		}
+		if (strpos($name, "\0") !== false || strpos($name, '\\') !== false || strpos($name, ':') !== false) {
+			return false;
+		}
+		if ($name[0] === '/' || $name[0] === '.') {
+			return false;
+		}
+		$trimmed = rtrim($name, '/');
+		if ($trimmed === '' || strpos($trimmed, '//') !== false) {
+			return false;
+		}
+		$parts = explode('/', $trimmed);
+		if (count($parts) > 8) {
+			return false;
+		}
+		foreach ($parts as $part) {
+			if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/', $part)) {
 				return false;
 			}
 		}
+		$attr = isset($stat['external_attributes']) ? (int) $stat['external_attributes'] : 0;
+		$mode = ($attr >> 16) & 0170000;
+		if ($mode === 0120000) {
+			return false;
+		}
+		$uncompressed = isset($stat['size']) ? (int) $stat['size'] : -1;
+		$compressed = isset($stat['comp_size']) ? (int) $stat['comp_size'] : 0;
+		if ($uncompressed < 0 || $uncompressed > self::ZIP_MAX_ENTRY) {
+			return false;
+		}
+		if ($compressed < 0 || $compressed > self::ZIP_MAX_ARCHIVE) {
+			return false;
+		}
+		if ($compressed > 0 && $uncompressed > ($compressed * 100)) {
+			return false;
+		}
+		if ($compressed === 0 && $uncompressed > 1048576) {
+			return false;
+		}
+		if (!empty($stat['encryption_method'])) {
+			return false;
+		}
 		return true;
+	}
+
+	private function pathIsInside($root, $path) {
+		$root = rtrim($root, '/');
+		$path = rtrim($path, '/');
+		return $path === $root || strpos($path, $root . '/') === 0;
+	}
+
+	private function mkdirInside($root, $relative) {
+		$relative = trim($relative, '/');
+		if ($relative === '' || $relative === '.') {
+			return $this->pathIsInside($root, $root);
+		}
+		$current = $root;
+		foreach (explode('/', $relative) as $part) {
+			if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/', $part)) {
+				return false;
+			}
+			$next = $current . '/' . $part;
+			if (is_link($next)) {
+				return false;
+			}
+			if (!is_dir($next) && !mkdir($next, 0755) && !is_dir($next)) {
+				return false;
+			}
+			if (is_link($next)) {
+				return false;
+			}
+			$real = realpath($next);
+			if ($real === false || !$this->pathIsInside($root, $real)) {
+				return false;
+			}
+			$current = $real;
+		}
+		return true;
+	}
+
+	private function flattenSingleFolder($root) {
+		$list = scandir($root);
+		if (!is_array($list)) {
+			return false;
+		}
+		$dirs = array();
+		$files = 0;
+		foreach ($list as $name) {
+			if ($name === '.' || $name === '..') {
+				continue;
+			}
+			$path = $root . '/' . $name;
+			if (is_link($path)) {
+				return false;
+			}
+			if (is_dir($path)) {
+				$dirs[] = $name;
+			} else {
+				$files++;
+			}
+		}
+		if (count($dirs) !== 1 || $files !== 0) {
+			return true;
+		}
+		$sub = $root . '/' . $dirs[0];
+		$children = scandir($sub);
+		if (!is_array($children)) {
+			return false;
+		}
+		foreach ($children as $child) {
+			if ($child === '.' || $child === '..') {
+				continue;
+			}
+			$from = $sub . '/' . $child;
+			$to = $root . '/' . $child;
+			if (is_link($from) || file_exists($to) || is_link($to)) {
+				return false;
+			}
+			if (!rename($from, $to)) {
+				return false;
+			}
+		}
+		return rmdir($sub);
+	}
+
+	private function discardUploadedArchive($path) {
+		if (is_string($path) && is_file($path) && !is_link($path)) {
+			unlink($path);
+		}
+	}
+
+	private function discardChildren($dir, $root) {
+		if (!is_string($dir) || is_link($dir) || !is_dir($dir)) {
+			return;
+		}
+		$real = realpath($dir);
+		if ($real === false || !$this->pathIsInside($root, $real)) {
+			return;
+		}
+		$list = scandir($real);
+		if (!is_array($list)) {
+			return;
+		}
+		foreach ($list as $name) {
+			if ($name === '.' || $name === '..') {
+				continue;
+			}
+			$path = $real . '/' . $name;
+			if (is_link($path)) {
+				unlink($path);
+				continue;
+			}
+			if (is_dir($path)) {
+				$this->discardChildren($path, $root);
+				rmdir($path);
+				continue;
+			}
+			if (is_file($path)) {
+				unlink($path);
+			}
+		}
 	}
 
 	private function read_dir($path) {

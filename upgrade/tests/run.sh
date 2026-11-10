@@ -53,6 +53,10 @@ if ! command -v php >/dev/null 2>&1; then
 	echo "php is required" >&2
 	exit 1
 fi
+if ! command -v node >/dev/null 2>&1; then
+	echo "refused: the Debian package nodejs is required for upgrade/tests/logtail_client_test.js" >&2
+	exit 1
+fi
 
 echo "PHP $(php -r 'echo PHP_VERSION;')"
 fail=0
@@ -84,6 +88,7 @@ bash "$ROOT_DIR/upgrade/tests/courtesy_override_test.sh"
 bash "$ROOT_DIR/upgrade/tests/heather_sounds_test.sh"
 bash "$ROOT_DIR/upgrade/tests/log_stream_test.sh"
 bash "$ROOT_DIR/upgrade/tests/preset_roundtrip_test.sh"
+bash "$ROOT_DIR/upgrade/tests/module_zip_test.sh"
 bash "$ROOT_DIR/upgrade/tests/control_roundtrip_test.sh"
 php "$ROOT_DIR/upgrade/tests/db_write_boundary_test.php" "$ROOT_DIR"
 php "$ROOT_DIR/upgrade/tests/return_url_test.php"
