@@ -58,7 +58,11 @@ if (isset($updates['orp_Mode'])) {
 }
 if (isset($updates['courtesyMode']) || isset($updates['courtesy'])) {
 	if (isset($updates['courtesyMode']) && $updates['courtesyMode'] === 'custom') {
-		echo "unsupported: a custom courtesy file is not a SvxLink 26.05 setting and is not published.\n";
+		echo "unsupported: a custom courtesy file is not published. The previous runtime was not changed.\n";
+	} elseif (isset($updates['courtesyMode']) && ($updates['courtesyMode'] === 'disabled' || $updates['courtesyMode'] === 'beep')) {
+		echo "stored-for-publish: courtesyMode=" . $updates['courtesyMode'] . " is in the database. The root publisher writes events.d/local/Logic.tcl on the next publish. It is not executed here.\n";
 	}
-	echo "stored-not-applied: courtesy stays in the database. The installed Logic.tcl send_rgr_sound is what runs.\n";
+	if (isset($updates['courtesy'])) {
+		echo "stored-not-applied: the courtesy filename is not published.\n";
+	}
 }

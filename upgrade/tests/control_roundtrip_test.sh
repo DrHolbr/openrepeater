@@ -181,7 +181,14 @@ export ORP_OPERATING_MODE_FILE="$funct"
 pub=$(ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish)
 cfg="$live/etc/svxlink/svxlink.conf"
 printf '%s\n' "$pub" | grep -q '^logic=Simplex$'
-printf '%s\n' "$pub" | grep -q '^courtesy=not-applied$'
+printf '%s\n' "$pub" | grep -q '^courtesy=applied$'
+printf '%s\n' "$pub" | grep -q '^courtesy_mode=beep$'
+printf '%s\n' "$pub" | grep -q '^courtesy_executed=not-run$'
+grep -q 'playTone 660 500 200' "$live/usr/local/share/svxlink/events.d/local/Logic.tcl"
+if grep -q 'playFile\|source \|exec ' "$live/usr/local/share/svxlink/events.d/local/Logic.tcl"; then
+	echo "FAIL: courtesy override contains a path or a command" >&2
+	exit 1
+fi
 grep -q '^PTT_TYPE=NONE$' "$cfg"
 grep -q '^SHORT_IDENT_INTERVAL=7$' "$cfg"
 grep -q '^LOGICS=SimplexLogic$' "$cfg"
@@ -253,16 +260,17 @@ code=$(post_settings -o "$tmp/courtesy.body" -w '%{http_code}' \
 	"$base/functions/ajax_db_update.php")
 [ "$code" = "200" ]
 [ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='courtesyMode';")" = "beep" ]
-grep -q 'stored-not-applied' "$tmp/courtesy.body"
+grep -q 'stored-for-publish: courtesyMode=beep' "$tmp/courtesy.body"
 page=$(curl -s -b "$jar" "$base/courtesy_tone.php")
 printf '%s' "$page" | grep -q 'Unsupported'
-printf '%s' "$page" | grep -q 'not applied'
+printf '%s' "$page" | grep -q 'Stored for publish'
+printf '%s' "$page" | grep -q 'left unchanged'
 code=$(post_settings -o "$tmp/courtesy-custom.body" -w '%{http_code}' \
 	--data-urlencode 'courtesyMode=custom' \
 	"$base/functions/ajax_db_update.php")
 [ "$code" = "200" ]
 grep -q '^unsupported:' "$tmp/courtesy-custom.body"
-grep -q 'stored-not-applied' "$tmp/courtesy-custom.body"
+grep -q 'previous runtime was not changed' "$tmp/courtesy-custom.body"
 sqlite3 "$db" "UPDATE settings SET value='beep' WHERE keyID='courtesyMode';"
 printf 'not-audio' > "$tmp/note.php"
 code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/audio-bad.body" -w '%{http_code}' \

@@ -79,17 +79,17 @@ include('includes/header.php');
 			</div><!--/row-->
 			</form>
 
-			<p id="courtesyStatus">Stored only. Not applied. This runtime keeps the installed Logic.tcl send_rgr_sound.</p>
+			<p id="courtesyStatus">Stored for publish. Disabled and beep are applied by the root publisher to events.d/local/Logic.tcl. This page does not play audio.</p>
 			<div id="disabled" style="display: none;"> <!-- Expand Setting -->
-				<div class="alert alert-error"><strong>Stored, not applied.</strong> Disabling the courtesy tone does not change the installed send_rgr_sound.</div>
+				<div class="alert alert-info"><strong>Stored for publish.</strong> send_rgr_sound plays silence. The root publish writes it. It is not executed on this page.</div>
 			</div>
 			
 			<div id="beep" style="display: none;"> <!-- Expand Setting -->
-				<div class="alert alert-error"><strong>Stored, not applied.</strong> The basic beep is not what Logic.tcl plays.</div>
+				<div class="alert alert-info"><strong>Stored for publish.</strong> send_rgr_sound plays a 660 Hz beep. The root publish writes it. It is not executed on this page.</div>
 			</div>
 			
 			<div id="custom" style="display: none;"> <!-- Expand Setting -->
-				<div class="alert alert-error"><strong>Unsupported.</strong> A custom courtesy file is not a SvxLink 26.05 setting. It is not published and it is not played.</div>
+				<div class="alert alert-error"><strong>Unsupported.</strong> A custom courtesy file is not published and is not played. The previous runtime file is left unchanged.</div>
 
 			<div class="row-fluid sortable">
 

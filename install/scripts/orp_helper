@@ -756,6 +756,140 @@ function config_ident_load() {
 	return 0
 }
 
+# disabled and beep are the only courtesy values published. The file is a
+# fixed procedure. It does not contain a database path, a source command,
+# or a custom clip. custom and any other value leave the previous file.
+function config_courtesy_load() {
+	local mode
+	mode=$(config_db_value courtesyMode) || return 1
+	case "$mode" in
+		disabled|beep)
+			courtesy_mode=$mode
+			;;
+		custom)
+			echo "refused: custom courtesy is unsupported and was not published. The previous runtime was not changed." >&2
+			return 1
+			;;
+		*)
+			echo "refused: courtesyMode is not disabled or beep. The previous runtime was not changed." >&2
+			return 1
+			;;
+	esac
+	return 0
+}
+
+function config_courtesy_body() {
+	case "$courtesy_mode" in
+		disabled)
+			cat <<'EOF'
+namespace eval Logic {
+proc send_rgr_sound {} {
+  playSilence 100
+}
+}
+EOF
+			;;
+		beep)
+			cat <<'EOF'
+namespace eval Logic {
+proc send_rgr_sound {} {
+  playTone 660 500 200
+  playSilence 200
+}
+}
+EOF
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+function config_install_courtesy() {
+	local events body
+	events=$(native_path /usr/local/share/svxlink/events.d)
+	if [ -L "$events" ] || [ ! -d "$events" ]; then
+		echo "refused: events.d is not a real directory" >&2
+		return 1
+	fi
+	if ! config_ancestors_real "$events"; then
+		return 1
+	fi
+	if native_open_mode "$events"; then
+		echo "refused: events.d is group or world writable" >&2
+		return 1
+	fi
+	body=$(mktemp)
+	config_courtesy_body > "$body" || {
+		rm -f "$body"
+		return 1
+	}
+	if grep -E -q 'playFile|source[[:space:]]|exec[[:space:]]|\$|\[' "$body"; then
+		rm -f "$body"
+		echo "refused: courtesy override contains a path or a command" >&2
+		return 1
+	fi
+	python3 - "$events" "$body" <<'PY'
+import os, stat, sys
+events, src = sys.argv[1], sys.argv[2]
+if not events.startswith("/") or "\0" in events or "//" in events:
+    sys.stderr.write("refused: unsafe events.d path\n")
+    sys.exit(1)
+parts = [part for part in events.split("/") if part]
+if not parts or any(part in (".", "..") for part in parts):
+    sys.stderr.write("refused: unsafe events.d path\n")
+    sys.exit(1)
+dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+fd = os.open("/", dir_flags)
+try:
+    for part in parts:
+        nxt = os.open(part, dir_flags, dir_fd=fd)
+        os.close(fd)
+        fd = nxt
+    try:
+        local = os.open("local", dir_flags, dir_fd=fd)
+    except FileNotFoundError:
+        os.mkdir("local", 0o755, dir_fd=fd)
+        local = os.open("local", dir_flags, dir_fd=fd)
+    os.close(fd)
+    fd = local
+    data = open(src, "rb").read()
+    leaf = "Logic.tcl"
+    try:
+        info = os.lstat(leaf, dir_fd=fd)
+    except FileNotFoundError:
+        info = None
+    if info is not None and stat.S_ISLNK(info.st_mode):
+        sys.stderr.write("refused: events.d/local/Logic.tcl is a symbolic link\n")
+        sys.exit(1)
+    flags = os.O_WRONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        if info is None:
+            out = os.open(leaf, flags | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=fd)
+        else:
+            out = os.open(leaf, flags | os.O_TRUNC, dir_fd=fd)
+    except OSError as exc:
+        sys.stderr.write("refused: no-follow courtesy write: %s\n" % exc.strerror)
+        sys.exit(1)
+    try:
+        written = os.write(out, data)
+        if written != len(data):
+            sys.stderr.write("refused: courtesy override was not fully written\n")
+            sys.exit(1)
+        os.fchmod(out, 0o644)
+    finally:
+        os.close(out)
+except OSError as exc:
+    sys.stderr.write("refused: no-follow courtesy path: %s\n" % exc.strerror)
+    sys.exit(1)
+finally:
+    os.close(fd)
+PY
+	local rc=$?
+	rm -f "$body"
+	return "$rc"
+}
+
 function config_render() {
 	local out=$1 callsign events modules cw_lines
 	callsign=$(config_callsign) || return 1
@@ -768,6 +902,7 @@ function config_render() {
 		cw_block="CW_WPM=${ident_cw_wpm}
 CW_PITCH=${ident_cw_pitch}"
 	fi
+	config_courtesy_load || return 1
 	cat > "$out" <<EOF
 [GLOBAL]
 MODULE_PATH=${modules}
@@ -789,6 +924,7 @@ SHORT_VOICE_ID_ENABLE=${ident_short_voice}
 SHORT_CW_ID_ENABLE=${ident_short_cw}
 LONG_VOICE_ID_ENABLE=${ident_long_voice}
 LONG_CW_ID_ENABLE=${ident_long_cw}
+RGR_SOUND_DELAY=0
 ${cw_block}
 [Rx1]
 TYPE=Local
@@ -876,6 +1012,18 @@ function config_publish {
 		return 1
 	fi
 	sum_before=$(sha256sum "$snapshot" | awk '{print $1}')
+	courtesy_dest=$(native_path /usr/local/share/svxlink/events.d/local/Logic.tcl)
+	courtesy_backup=$(mktemp)
+	courtesy_had=0
+	if [ -f "$courtesy_dest" ] && [ ! -L "$courtesy_dest" ]; then
+		cp -p "$courtesy_dest" "$courtesy_backup"
+		courtesy_had=1
+	fi
+	if ! config_install_courtesy; then
+		rm -f "$snapshot" "$courtesy_backup"
+		echo "refused: courtesy override was not installed. The runtime config was not replaced."
+		return 1
+	fi
 	if [ -f "$dest" ]; then
 		backup="${ORP_ROOT:-}/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%SZ)"
 		if ! config_ancestors_real "$(dirname "$backup")"; then
@@ -885,9 +1033,20 @@ function config_publish {
 		mkdir -p "$backup"
 		cp -p "$dest" "$backup/svxlink.conf"
 	fi
-	mv -f "$snapshot" "$dest"
+	if ! mv -f "$snapshot" "$dest"; then
+		rm -f "$snapshot"
+		if [ "$courtesy_had" = 1 ]; then
+			cp -p "$courtesy_backup" "$courtesy_dest"
+		else
+			rm -f "$courtesy_dest"
+		fi
+		rm -f "$courtesy_backup"
+		echo "refused: runtime config was not replaced"
+		return 1
+	fi
 	chmod 644 "$dest"
 	sum_after=$(sha256sum "$dest" | awk '{print $1}')
+	rm -f "$courtesy_backup"
 	if [ "$sum_before" != "$sum_after" ]; then
 		echo "refused: published bytes did not match the rendered snapshot"
 		return 1
@@ -897,8 +1056,10 @@ function config_publish {
 	echo "runtime=simulation/dummy-path PTT_TYPE=NONE loopback-udp"
 	echo "logic=${logic_type}"
 	echo "gpio=not-applied"
-	echo "courtesy=not-applied"
-	echo "courtesy_upstream=Logic.tcl send_rgr_sound"
+	echo "courtesy=applied"
+	echo "courtesy_mode=${courtesy_mode}"
+	echo "courtesy_path=/usr/local/share/svxlink/events.d/local/Logic.tcl"
+	echo "courtesy_executed=not-run"
 	echo "event=$(config_event_handler)"
 	echo "stored wiring was not modified"
 	echo "service was not started"
