@@ -319,7 +319,9 @@ if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoe
 	&& grep -q 'orp_helper svxlink start' "$sudoers" \
 	&& grep -q 'orp_helper svxlink stop' "$sudoers" \
 	&& grep -q 'orp_helper config publish' "$sudoers" \
-	&& grep -q 'orp_helper info os' "$sudoers"
+	&& grep -q 'orp_helper info os' "$sudoers" \
+	&& grep -F -q 'orp_helper module activate *' "$sudoers" \
+	&& grep -F -q 'orp_helper module deactivate *' "$sudoers"
 then
 	ok "sudoers allows exact svxlink lifecycle commands and still has no gpio or unmask"
 else

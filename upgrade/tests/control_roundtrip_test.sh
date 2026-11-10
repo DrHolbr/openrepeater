@@ -13,7 +13,7 @@ orp_use_fixture_tmpdir
 
 tmp=$(orp_mktemp_dir)
 preview="$(orp_fixture_root)/orp-preview-controls-$$"
-trap 'kill "$server" >/dev/null 2>&1 || true; rm -rf "$tmp" "$preview"' EXIT
+trap 'kill "$server" >/dev/null 2>&1 || true; sudo -n chown -R "$(id -u):$(id -g)" "$tmp" "$preview" 2>/dev/null || true; rm -rf "$tmp" "$preview"' EXIT
 db="$tmp/openrepeater.db"
 jar="$tmp/admin.cookies"
 throw_jar="$tmp/throw.cookies"
@@ -74,6 +74,8 @@ export ORP_SOUNDS_PATH="$sounds"
 export ORP_PROBE_CANARY="$canary"
 export ORP_HELPER_STUB=1
 export ORP_HELPER_LOG="$helper_log"
+export ORP_ROOT="$live"
+export ORP_HELPER_BIN="$ROOT_DIR/install/scripts/orp_helper"
 php -S 127.0.0.1:${port} -t "$ROOT_DIR" >"$tmp/server.log" 2>&1 &
 server=$!
 ready=0
@@ -362,8 +364,17 @@ if (!is_array($r) || $r["msgType"] !== "success") { fwrite(STDERR, "activation d
 ' "$module_key" "$ROOT_DIR" "$mode"
 [ "$(cat "$preview/sounds/en_US/ProbeMod/keep")" = "KEEP" ]
 [ ! -L "$preview/sounds/en_US/ProbeMod" ]
-[ -L "$preview/events.d/ModuleProbe.tcl" ]
+[ ! -e "$preview/events.d/ModuleProbe.tcl" ]
+loaded="$live/usr/local/share/svxlink/events.d/ModuleProbe.tcl"
+[ -f "$loaded" ] && [ ! -L "$loaded" ]
+[ "$(stat -c %u "$loaded")" = "0" ]
+mode=$(stat -c %a "$loaded")
+[ $((8#$mode & 022)) -eq 0 ]
+[ "$(cat "$loaded")" = "proc probe {} {puts ran}" ]
+printf 'proc probe {} {puts changed}\n' > "$modules/ProbeMod/svxlink/events.d/ModuleProbe.tcl"
+[ "$(cat "$loaded")" = "proc probe {} {puts ran}" ]
 [ ! -e /usr/share/svxlink/events.d/ModuleProbe.tcl ]
+[ ! -e /usr/local/share/svxlink/events.d/ModuleProbe.tcl ]
 if grep -q 'ProbeMod' "$cfg"; then
 	echo "FAIL: uploaded module was copied into the root runtime" >&2
 	exit 1
@@ -383,6 +394,8 @@ code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/del.body" -w '%{ht
 	--data-urlencode 'deleteSelectedModule=ProbeMod' \
 	"$base/modules.php")
 grep -q 'Successfully deleted' "$tmp/del.body"
+[ ! -e "$loaded" ]
+[ -f "$live/usr/local/share/svxlink/events.d/Logic.tcl" ]
 [ "$(sqlite3 "$db" "SELECT COUNT(*) FROM modules WHERE svxlinkName='ProbeMod';")" = "0" ]
 code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/core.body" -w '%{http_code}' \
 	--data-urlencode 'delete=1' \

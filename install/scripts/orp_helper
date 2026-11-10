@@ -1288,6 +1288,309 @@ function info_os {
 	uname -a
 }
 
+# A module name is one token. It is never a path. Core modules stay the
+# stock files shipped with SvxLink and are not replaced from the web tree.
+function module_name_ok() {
+	local name=$1
+	[ -n "$name" ] && [ "${#name}" -le 32 ] || return 1
+	case "$name" in
+		[A-Za-z]*) ;;
+		*) return 1 ;;
+	esac
+	case "$name" in
+		*[!A-Za-z0-9_]*) return 1 ;;
+	esac
+	case "$name" in
+		Help|Parrot|EchoLink) return 1 ;;
+	esac
+	return 0
+}
+
+# Live runs ignore ORP_ROOT. The harness may prefix it.
+function module_root_path() {
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+		printf '%s%s' "${ORP_ROOT:-}" "$1"
+		return 0
+	fi
+	printf '%s' "$1"
+}
+
+function module_source_base() {
+	local base
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ] && [ -n "${ORP_MODULES_PATH:-}" ]; then
+		base=${ORP_MODULES_PATH%/}
+	else
+		base=$(module_root_path /var/www/openrepeater/modules)
+	fi
+	case "$base" in
+		/*) ;;
+		*) return 1 ;;
+	esac
+	case "$base" in
+		*..*|*$'\n'*) return 1 ;;
+	esac
+	[ -d "$base" ] && [ ! -L "$base" ] || return 1
+	printf '%s' "$base"
+}
+
+# The share tree SvxLink sources. /usr/local is the orp-test build.
+# /usr is the distro package. Neither path is taken from the web user.
+function module_share_root() {
+	if [ -f "$(module_root_path /usr/local/share/svxlink/events.tcl)" ]; then
+		module_root_path /usr/local/share/svxlink
+		return 0
+	fi
+	if [ -f "$(module_root_path /usr/share/svxlink/events.tcl)" ]; then
+		module_root_path /usr/share/svxlink
+		return 0
+	fi
+	module_root_path /usr/local/share/svxlink
+}
+
+function module_prepare_dir() {
+	local dir=$1
+	if [ -L "$dir" ]; then
+		echo "refused: module destination is a symlink" >&2
+		return 1
+	fi
+	if [ ! -d "$dir" ]; then
+		install -d -m 0755 "$dir" || return 1
+	fi
+	if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+		echo "refused: module destination is not a directory" >&2
+		return 1
+	fi
+	chown root:root "$dir" || return 1
+	chmod 0755 "$dir" || return 1
+	[ -d "$dir" ] && [ ! -L "$dir" ]
+}
+
+function module_activate() {
+	local name=$1 base share manifest
+	module_name_ok "$name" || {
+		echo "refused: module name is not a single token" >&2
+		return 1
+	}
+	base=$(module_source_base) || {
+		echo "refused: module source is not a real directory" >&2
+		return 1
+	}
+	share=$(module_share_root)
+	module_prepare_dir "$share" || return 1
+	module_prepare_dir "$share/events.d" || return 1
+	module_prepare_dir "$share/modules.d" || return 1
+	module_prepare_dir "$share/sounds" || return 1
+	module_prepare_dir "$share/sounds/en_US" || return 1
+	manifest=$(module_root_path "/var/lib/openrepeater/module-install/${name}.list")
+	module_prepare_dir "$(dirname "$manifest")" || return 1
+	python3 - "$base/$name/svxlink" "$share" "$manifest" "$name" <<'PY'
+import os, stat, sys
+source, share, manifest, name = sys.argv[1:5]
+MAX_FILES = 200
+MAX_BYTES = 8388608
+created = []
+
+def fail(message):
+    for path in reversed(created):
+        try:
+            if os.path.islink(path) or os.path.isfile(path):
+                os.unlink(path)
+            elif os.path.isdir(path):
+                os.rmdir(path)
+        except OSError:
+            pass
+    sys.stderr.write(message + "\n")
+    sys.exit(1)
+
+def component_ok(part):
+    if not part or part in (".", "..") or "/" in part or "\\" in part or "\0" in part:
+        return False
+    if part[0] == ".":
+        return False
+    allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
+    return len(part) <= 64 and all(ch in allowed for ch in part)
+
+def open_dir(path):
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    return os.open(path, flags)
+
+def seal_children(directory):
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    top = os.open(directory, flags)
+    try:
+        names = os.listdir(top)
+        for entry in names:
+            info = os.lstat(entry, dir_fd=top)
+            if stat.S_ISLNK(info.st_mode):
+                fail("refused: module load directory contains a symlink")
+            if stat.S_ISREG(info.st_mode):
+                fd = os.open(entry, file_flags, dir_fd=top)
+                try:
+                    os.fchown(fd, 0, 0)
+                    os.fchmod(fd, 0o644)
+                finally:
+                    os.close(fd)
+            elif not stat.S_ISDIR(info.st_mode):
+                fail("refused: module load directory contains a special file")
+    finally:
+        os.close(top)
+
+def collect(rel_dir, dest_prefix):
+    src = os.path.join(source, rel_dir)
+    if not os.path.lexists(src):
+        return []
+    if os.path.islink(src) or not os.path.isdir(src):
+        fail("refused: module %s is not a real directory" % rel_dir)
+    found = []
+    for current, dirs, files in os.walk(src, followlinks=False):
+        dirs.sort()
+        for dirname in list(dirs):
+            full = os.path.join(current, dirname)
+            if os.path.islink(full) or not component_ok(dirname):
+                fail("refused: symlink or unsafe name in module")
+        for filename in files:
+            full = os.path.join(current, filename)
+            rel = os.path.relpath(full, src)
+            parts = rel.split(os.sep)
+            if os.path.islink(full) or not stat.S_ISREG(os.lstat(full).st_mode):
+                fail("refused: symlink or non-regular file in module")
+            if any(not component_ok(part) for part in parts):
+                fail("refused: unsafe module file name")
+            if len(parts) > 8:
+                fail("refused: module path is too deep")
+            found.append((full, dest_prefix + "/" + "/".join(parts)))
+    return found
+
+try:
+    seal_children(os.path.join(share, "events.d"))
+    seal_children(os.path.join(share, "modules.d"))
+    planned = []
+    planned.extend(collect("events.d", "events.d"))
+    planned.extend(collect("modules.d", "modules.d"))
+    sounds = os.path.join(source, "sounds", "en_US")
+    if os.path.lexists(sounds):
+        if os.path.islink(sounds) or not os.path.isdir(sounds):
+            fail("refused: module sounds path is not a real directory")
+        sound_dest = os.path.join(share, "sounds", "en_US", name)
+        if os.path.lexists(sound_dest):
+            fail("refused: module sounds destination already exists")
+        planned.extend(collect("sounds/en_US", "sounds/en_US/" + name))
+    if len(planned) > MAX_FILES:
+        fail("refused: module has too many files")
+    for src, rel in planned:
+        size = os.lstat(src).st_size
+        if size > MAX_BYTES:
+            fail("refused: module file is too large")
+        dest = os.path.join(share, rel)
+        if os.path.lexists(dest):
+            fail("refused: module destination already exists")
+    sound_rel = "sounds/en_US/" + name
+    if any(rel.startswith(sound_rel + "/") for _src, rel in planned):
+        sound_dir = os.path.join(share, sound_rel)
+        os.mkdir(sound_dir, 0o755)
+        os.chown(sound_dir, 0, 0, follow_symlinks=False)
+        created.append(sound_dir)
+    for src, rel in planned:
+        dest = os.path.join(share, rel)
+        parent = os.path.dirname(dest)
+        if not os.path.isdir(parent) or os.path.islink(parent):
+            fail("refused: module destination parent is not a directory")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        out = os.open(dest, flags, 0o644)
+        created.append(dest)
+        try:
+            src_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+            inn = os.open(src, src_flags)
+            try:
+                remaining = MAX_BYTES
+                while True:
+                    chunk = os.read(inn, min(65536, remaining))
+                    if chunk == b"":
+                        break
+                    remaining -= len(chunk)
+                    if remaining < 0:
+                        fail("refused: module file is too large")
+                    os.write(out, chunk)
+            finally:
+                os.close(inn)
+            os.fchown(out, 0, 0)
+            os.fchmod(out, 0o644)
+        finally:
+            os.close(out)
+    lines = [rel for _src, rel in planned]
+    blob = "".join(line + "\n" for line in lines).encode()
+    man_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    man = os.open(manifest, man_flags, 0o644)
+    try:
+        os.write(man, blob)
+        os.fchown(man, 0, 0)
+        os.fchmod(man, 0o644)
+    finally:
+        os.close(man)
+except SystemExit:
+    raise
+except OSError as exc:
+    fail("refused: module install failed: %s" % exc.strerror)
+PY
+}
+
+function module_deactivate() {
+	local name=$1 share manifest
+	module_name_ok "$name" || {
+		echo "refused: module name is not a single token" >&2
+		return 1
+	}
+	share=$(module_share_root)
+	manifest=$(module_root_path "/var/lib/openrepeater/module-install/${name}.list")
+	if [ ! -e "$manifest" ] && [ ! -L "$manifest" ]; then
+		return 0
+	fi
+	if [ -L "$manifest" ] || [ ! -f "$manifest" ]; then
+		echo "refused: module manifest is not a regular file" >&2
+		return 1
+	fi
+	python3 - "$share" "$manifest" "$name" <<'PY'
+import os, stat, sys
+share, manifest, name = sys.argv[1:4]
+try:
+    info = os.lstat(manifest)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        sys.stderr.write("refused: module manifest is not a regular file\n")
+        sys.exit(1)
+    lines = open(manifest, "r", encoding="utf-8").read().splitlines()
+    sound_dir = os.path.join(share, "sounds", "en_US", name)
+    removed = []
+    for rel in lines:
+        if not rel or rel.startswith("/") or "\\" in rel or "\0" in rel or ".." in rel.split("/"):
+            sys.stderr.write("refused: module manifest path is unsafe\n")
+            sys.exit(1)
+        dest = os.path.join(share, rel)
+        parent = os.path.realpath(os.path.dirname(dest))
+        share_real = os.path.realpath(share)
+        if parent != share_real and not parent.startswith(share_real + os.sep):
+            sys.stderr.write("refused: module manifest escapes the share tree\n")
+            sys.exit(1)
+        if not os.path.lexists(dest):
+            continue
+        dest_info = os.lstat(dest)
+        if stat.S_ISDIR(dest_info.st_mode) and not stat.S_ISLNK(dest_info.st_mode):
+            continue
+        os.unlink(dest)
+        removed.append(dest)
+    if os.path.lexists(sound_dir) and not os.path.islink(sound_dir):
+        try:
+            if not os.listdir(sound_dir):
+                os.rmdir(sound_dir)
+        except OSError:
+            pass
+    os.unlink(manifest)
+except OSError as exc:
+    sys.stderr.write("refused: module removal failed: %s\n" % exc.strerror)
+    sys.exit(1)
+PY
+}
+
 # TODO LIST
 # Setting Timezone
 # Expanding Filesystem
@@ -1374,6 +1677,12 @@ while :; do
 			elif [ "$2" == "outputs" ]; then audio_outputs
 			elif [ "$2" == "version" ]; then audio_version
 			else echo "INVALID OPTION"; echo "USAGE: orp_helper audio (inputs|outputs|version)"
+			fi
+			exit;;
+        module)
+			if [ "$2" = "activate" ] && [ -n "${3:-}" ] && [ -z "${4:-}" ]; then module_activate "$3"
+			elif [ "$2" = "deactivate" ] && [ -n "${3:-}" ] && [ -z "${4:-}" ]; then module_deactivate "$3"
+			else echo "INVALID OPTION"; echo "USAGE: orp_helper module (activate|deactivate) NAME"
 			fi
 			exit;;
         set_mixer)

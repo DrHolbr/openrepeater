@@ -470,8 +470,9 @@ class Modules {
 			}
 		}
 
-		// An inactive install does not link into SvxLink and does not remove
-		// a sounds directory. Links are created only when the module is activated.
+		// An inactive install does not copy anything onto a path SvxLink
+		// loads, and it does not remove a sounds directory. The root helper
+		// copies files only when an authenticated admin activates the module.
 		if ((int) $enabled === 1 && !in_array($svxlink_name, $this->core_modules, true)) {
 			$links = $this->link_module_files($svxlink_name);
 			if ($links === false) {
@@ -486,84 +487,17 @@ class Modules {
 	}
 
 	public function link_module_files($svxlink_name) {
-		if (!is_string($svxlink_name) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $svxlink_name)) {
+		if (!$this->modulePublish('activate', $svxlink_name)) {
 			return false;
 		}
-		if (in_array($svxlink_name, $this->core_modules, true)) {
-			return false;
-		}
-		$undo = array();
-		$pairs = array(
-			array($this->modules_path . $svxlink_name . '/svxlink/events.d/', $this->svxlink_events_d_path),
-			array($this->modules_path . $svxlink_name . '/svxlink/modules.d/', $this->svxlink_modules_d_path),
-		);
-		foreach ($pairs as $pair) {
-			if (!$this->link_each($pair[0], $pair[1], $undo)) {
-				$this->undo_module_links($undo);
-				return false;
-			}
-		}
-		$sounds_src = $this->modules_path . $svxlink_name . '/svxlink/sounds/en_US';
-		if (is_dir($sounds_src) && !is_link($sounds_src)) {
-			if (!$this->place_link($sounds_src, $this->svxlink_sounds . $svxlink_name, $undo)) {
-				$this->undo_module_links($undo);
-				return false;
-			}
-		}
-		return $undo;
+		return array('installed' => $svxlink_name);
 	}
 
 	public function undo_module_links($undo) {
-		if (!is_array($undo)) {
+		if (!is_array($undo) || !isset($undo['installed']) || !is_string($undo['installed'])) {
 			return;
 		}
-		for ($i = count($undo) - 1; $i >= 0; $i--) {
-			$item = $undo[$i];
-			if (!is_array($item) || !isset($item['path']) || !is_string($item['path'])) {
-				continue;
-			}
-			if (!empty($item['created']) && is_link($item['path'])) {
-				unlink($item['path']);
-			}
-			if (isset($item['prior']) && is_string($item['prior']) && !file_exists($item['path']) && !is_link($item['path'])) {
-				symlink($item['prior'], $item['path']);
-			}
-		}
-	}
-
-	private function link_each($src, $destDir, &$undo) {
-		if (!is_dir($src)) {
-			return true;
-		}
-		if (!is_dir($destDir) || is_link($destDir)) {
-			return false;
-		}
-		foreach ($this->read_dir($src) as $file) {
-			if (!$this->place_link($file['filePath'], $destDir . $file['fileName'], $undo)) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	private function place_link($target, $link, &$undo) {
-		$prior = null;
-		if (is_link($link)) {
-			$prior = readlink($link);
-			if ($prior === false || !unlink($link)) {
-				return false;
-			}
-		} elseif (file_exists($link)) {
-			return false;
-		}
-		if (!symlink($target, $link)) {
-			if ($prior !== null) {
-				symlink($prior, $link);
-			}
-			return false;
-		}
-		$undo[] = array('path' => $link, 'prior' => $prior, 'created' => true);
-		return true;
+		$this->modulePublish('deactivate', $undo['installed']);
 	}
 
 	public function unlink_module_files($svxlink_name) {
@@ -573,37 +507,43 @@ class Modules {
 		if (in_array($svxlink_name, $this->core_modules, true)) {
 			return true;
 		}
-		$pairs = array(
-			array($this->modules_path . $svxlink_name . '/svxlink/events.d/', $this->svxlink_events_d_path),
-			array($this->modules_path . $svxlink_name . '/svxlink/modules.d/', $this->svxlink_modules_d_path),
-		);
-		foreach ($pairs as $pair) {
-			if (!is_dir($pair[0]) || is_link($pair[0])) {
-				continue;
-			}
-			foreach ($this->read_dir($pair[0]) as $file) {
-				$link = $pair[1] . $file['fileName'];
-				if (!is_link($link)) {
-					continue;
-				}
-				$target = readlink($link);
-				if ($target !== $file['filePath'] || !unlink($link)) {
-					return false;
-				}
-			}
+		return $this->modulePublish('deactivate', $svxlink_name);
+	}
+
+	// Root copies the module onto the SvxLink load path. This process does
+	// not symlink the uploaded tree, and a live call does not pass ORP_ROOT.
+	private function modulePublish($action, $svxlink_name) {
+		if ($action !== 'activate' && $action !== 'deactivate') {
+			return false;
 		}
-		$sounds = $this->svxlink_sounds . $svxlink_name;
-		$expected = $this->modules_path . $svxlink_name . '/svxlink/sounds/en_US';
-		if (is_link($sounds)) {
-			$target = readlink($sounds);
-			if ($target !== $expected && $target !== $expected . '/') {
-				return false;
-			}
-			if (!unlink($sounds)) {
-				return false;
-			}
+		if (!is_string($svxlink_name) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $svxlink_name)) {
+			return false;
 		}
-		return true;
+		if (in_array($svxlink_name, $this->core_modules, true)) {
+			return false;
+		}
+		$helper = '/usr/sbin/orp_helper';
+		$command = 'sudo -n ';
+		if (BenchGuard::testHarnessActive()) {
+			$bin = getenv('ORP_HELPER_BIN');
+			if (is_string($bin) && $bin !== '' && $bin[0] === '/' && strpos($bin, '..') === false
+				&& is_file($bin) && !is_link($bin)) {
+				$helper = $bin;
+			}
+			$command .= 'env ' . escapeshellarg('ORP_BENCH_TEST_HARNESS=1');
+			foreach (array('ORP_ROOT', 'ORP_MODULES_PATH') as $key) {
+				$value = getenv($key);
+				if (is_string($value) && $value !== '' && strpos($value, "\0") === false) {
+					$command .= ' ' . escapeshellarg($key . '=' . $value);
+				}
+			}
+			$command .= ' ';
+		}
+		$command .= escapeshellarg($helper) . ' module ' . $action . ' ' . escapeshellarg($svxlink_name);
+		$unused = array();
+		$rc = 1;
+		exec($command, $unused, $rc);
+		return $rc === 0;
 	}
 
 	private function removeModuleTree($path) {
@@ -1307,26 +1247,6 @@ class Modules {
 		}
 	}
 
-	private function read_dir($path) {
-	
-		// Read Files into 1 dimensional array
-		if ($handle = opendir($path)) {
-				while (false !== ($file = readdir($handle))) {
-				if ('.' === $file) continue;
-				if ('..' === $file) continue;
-				$fileList[] = $file;
-			}
-			closedir($handle);	
-		}
-	
-		// Build array with full file paths
-		foreach($fileList as $fileName) {	
-			$filePath = $path . $fileName;
-			$filesArray[] = array('fileName' => $fileName, 'filePath' => $filePath);	
-		}
-
-		return $filesArray;
-	}
 
 
 

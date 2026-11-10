@@ -246,30 +246,94 @@ putenv('ORP_DB_PATH=' . $db);
 $marker = $work . '/bench-marker';
 file_put_contents($marker, "bench\n");
 putenv('ORP_BENCH_MARKER=' . $marker);
-$preview = rtrim($fixture, '/') . '/orp-preview-mod-' . getmypid();
-mkdir($preview, 0755);
+$preview = rtrim(sys_get_temp_dir(), '/') . '/orp-preview-modzip-' . getmypid();
+if (!mkdir($preview, 0755) && !is_dir($preview)) {
+	zip_fail('could not create the module preview');
+}
 putenv('ORP_BENCH_PREVIEW=' . $preview);
+$shareRoot = $work . '/share-root';
+mkdir($shareRoot, 0755, true);
+putenv('ORP_ROOT=' . $shareRoot);
+putenv('ORP_HELPER_BIN=' . $root . '/install/scripts/orp_helper');
+$share = $shareRoot . '/usr/local/share/svxlink';
+mkdir($share . '/events.d', 0755, true);
+file_put_contents($share . '/events.d/Keep.tcl', "proc keep {} {}\n");
 $modSounds = $modulesDir . '/SoundMod/svxlink/sounds/en_US';
 mkdir($modSounds, 0755, true);
 file_put_contents($modSounds . '/clip.wav', 'clip');
-$soundsReal = $preview . '/sounds/en_US/SoundMod';
+$soundsReal = $share . '/sounds/en_US/SoundMod';
 mkdir($soundsReal, 0755, true);
 file_put_contents($soundsReal . '/keep', 'KEEP');
 $linked = new Modules();
 if ($linked->initialize_module('SoundMod', 0) !== true) {
 	zip_fail('inactive install failed');
 }
-if (is_link($soundsReal) || file_get_contents($soundsReal . '/keep') !== 'KEEP') {
+if (is_link($soundsReal) || file_get_contents($soundsReal . '/keep') !== 'KEEP' || is_file($share . '/events.d/ModuleSound.tcl')) {
 	zip_fail('inactive install changed the sounds directory');
 }
 if ($linked->initialize_module('SoundMod', 1) !== false || file_get_contents($soundsReal . '/keep') !== 'KEEP') {
 	zip_fail('activation replaced a real sounds directory');
 }
-if (BenchGuard::removeTreeConfined($soundsReal, dirname($soundsReal)) !== true) {
+$unusedRm = array();
+exec('sudo -n rm -rf ' . escapeshellarg($soundsReal), $unusedRm, $rmRc);
+if ($rmRc !== 0 || file_exists($soundsReal)) {
 	zip_fail('could not remove the sounds fixture');
 }
-if ($linked->initialize_module('SoundMod', 1) !== true || !is_link($preview . '/sounds/en_US/SoundMod')) {
-	zip_fail('activation did not link sounds');
+if ($linked->initialize_module('SoundMod', 1) !== true) {
+	zip_fail('activation did not copy sounds');
+}
+$clip = $share . '/sounds/en_US/SoundMod/clip.wav';
+$clipStat = stat($clip);
+if (!is_file($clip) || is_link($clip) || $clipStat === false || (int) $clipStat['uid'] !== 0 || ((int) $clipStat['mode'] & 022) !== 0) {
+	zip_fail('copied sound is not a root-owned private file');
+}
+if (file_get_contents($clip) !== 'clip') {
+	zip_fail('copied sound bytes changed');
+}
+$uploadClip = $modSounds . '/clip.wav';
+exec('sudo -n chown www-data:www-data ' . escapeshellarg($uploadClip), $unusedOwn, $ownRc);
+$edit = 'printf %s ' . escapeshellarg('changed-by-www-data') . ' | sudo -n -u www-data tee ' . escapeshellarg($uploadClip) . ' >/dev/null';
+exec($edit, $unusedEdit, $editRc);
+if ($ownRc !== 0 || $editRc !== 0 || file_get_contents($clip) !== 'clip') {
+	zip_fail('a www-data edit to the uploaded copy changed the file SvxLink loads');
+}
+$eventsDir = $share . '/events.d';
+$loaded = scandir($eventsDir);
+if ($loaded === false) {
+	zip_fail('events directory is missing');
+}
+foreach ($loaded as $entry) {
+	if ($entry === '.' || $entry === '..') {
+		continue;
+	}
+	$path = $eventsDir . '/' . $entry;
+	if (is_link($path)) {
+		zip_fail('svxlink load directory contains a symlink');
+	}
+	if (!is_file($path)) {
+		continue;
+	}
+	$info = stat($path);
+	if ($info === false || (int) $info['uid'] !== 0 || ((int) $info['mode'] & 022) !== 0) {
+		zip_fail('a file SvxLink loads is writable');
+	}
+}
+$linkDir = $modulesDir . '/LinkMod/svxlink/events.d';
+mkdir($linkDir, 0755, true);
+symlink($outside, $linkDir . '/ModuleLink.tcl');
+if ($linked->initialize_module('LinkMod', 1) !== false || file_exists($share . '/events.d/ModuleLink.tcl')) {
+	zip_fail('a symlink inside a module was installed');
+}
+if ($linked->unlink_module_files('SoundMod') !== true || file_exists($clip)) {
+	zip_fail('deactivation left a file activation had installed');
+}
+if (file_get_contents($share . '/events.d/Keep.tcl') !== "proc keep {} {}\n") {
+	zip_fail('deactivation removed a file activation did not install');
 }
 echo "ok: hostile module archives stay inside the upload directory\n";
+echo "ok: an inactive module is not on a path SvxLink loads\n";
+echo "ok: activated module files are root-owned and not writable by www-data or svxlink\n";
+echo "ok: a www-data edit to the uploaded copy does not change what SvxLink loads\n";
+echo "ok: a symlink inside a module is refused\n";
+echo "ok: deactivation removes only the files activation installed\n";
 exit(0);

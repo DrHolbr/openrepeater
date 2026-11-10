@@ -425,6 +425,9 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio outputs
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio version
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system uptime
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system user
+# One module name. The helper rejects every other shape and does not treat it as a path.
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper module activate *
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper module deactivate *
 EOF
 if [ "$(bench_lstat_kind "$(p /etc/sudoers.d/openrepeater)")" = symlink ]; then
 	rm -f "$sudoers_tmp"
