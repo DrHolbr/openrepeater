@@ -321,7 +321,9 @@ bench_chmod 755 "$stage"
 tar -C "$REPO_ROOT" --exclude=.git --exclude=dev -cf - . \
 	| tar -C "$stage" --no-same-permissions --no-same-owner -xf -
 bench_publish_tree_modes "$stage"
-tar -C "$stage" --exclude=.git --exclude=dev -cf - . \
+# upgrade/ and install/ stay out of the docroot. The helper is installed
+# at /usr/sbin and must not source a file www-data can edit.
+tar -C "$stage" --exclude=.git --exclude=dev --exclude=upgrade --exclude=install -cf - . \
 	| tar -C "$web" --no-same-permissions --no-same-owner -xf -
 bench_publish_tree_modes "$web"
 if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then

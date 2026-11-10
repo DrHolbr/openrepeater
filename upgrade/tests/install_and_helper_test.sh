@@ -27,6 +27,16 @@ bash -n "$INSTALL"
 bash -n "$ROOT_DIR/upgrade/lib/bench-target.sh"
 bash -n "$HELPER"
 ok "shell syntax checks passed"
+if grep -E -n '^[[:space:]]*(\.|source)[[:space:]]' "$HELPER"; then
+	bad "orp_helper sources a file"
+else
+	ok "orp_helper sources nothing"
+fi
+if grep -n 'bench-target.sh' "$HELPER" || grep -n '/var/www/openrepeater/upgrade' "$HELPER"; then
+	bad "orp_helper names a docroot script"
+else
+	ok "orp_helper does not name a docroot script"
+fi
 
 make_systemctl() {
 	local path=$1
@@ -790,7 +800,9 @@ ro_web="$ro_dest/var/www/openrepeater"
 if [ "$rc" -eq 0 ] \
 	&& [ "$(stat -c %a "$ro_web")" = "755" ] \
 	&& [ "$(stat -c %a "$ro_web/index.php")" = "644" ] \
-	&& [ "$(stat -c %a "$ro_web/install/scripts/orp_helper")" = "755" ] \
+	&& [ "$(stat -c %a "$ro_dest/usr/sbin/orp_helper")" = "755" ] \
+	&& [ ! -e "$ro_web/install" ] \
+	&& [ ! -e "$ro_web/upgrade" ] \
 	&& [ -d "$ro_web/sounds" ] && [ ! -L "$ro_web/sounds" ] \
 	&& [ -d "$ro_web/sounds/courtesy_tones" ] \
 	&& [ -d "$ro_web/backup/restore" ]
@@ -1013,6 +1025,203 @@ else
 	cat "$tmp/ft-token.err" >&2 || true
 fi
 sudo chown -R "$(id -u):$(id -g)" "$with_token" || true
+
+# Same fixtures, both copies. A mismatch is a drift even when both are wrong.
+token_verdict() {
+	local root=$1 which=$2
+	if [ "$which" = installer ]; then
+		if ROOT="$root" bash -c '. "$1"; bench_mode_is_functional_test' _ \
+			"$ROOT_DIR/upgrade/lib/bench-target.sh" >/dev/null 2>&1
+		then
+			printf accept
+		else
+			printf refuse
+		fi
+	else
+		if ORP_HELPER_SOURCE_ONLY=1 ORP_ROOT="$root" ORP_BENCH_TEST_HARNESS=1 \
+			bash -c '. "$1"; native_functional_token' _ "$HELPER" >/dev/null 2>&1
+		then
+			printf accept
+		else
+			printf refuse
+		fi
+	fi
+}
+expect_token() {
+	local label=$1 root=$2 want=$3 inst helper
+	inst=$(token_verdict "$root" installer)
+	helper=$(token_verdict "$root" helper)
+	if [ "$inst" != "$helper" ] || [ "$inst" != "$want" ]; then
+		bad "token drift ${label}: installer=${inst} helper=${helper} expected=${want}"
+	fi
+}
+cat > "$tmp/drift-systemctl" <<'EOF'
+#!/bin/bash
+case "$1" in
+	is-enabled)
+		printf '%s\n' "${DRIFT_ENABLED:-disabled}"
+		exit 1
+		;;
+	is-active)
+		printf '%s\n' "${DRIFT_ACTIVE:-inactive}"
+		exit 3
+		;;
+	*)
+		exit 0
+		;;
+esac
+EOF
+chmod 755 "$tmp/drift-systemctl"
+mask_verdict() {
+	local root=$1 which=$2
+	if [ "$which" = installer ]; then
+		if ROOT="$root" ORP_SYSTEMCTL="$tmp/drift-systemctl" \
+			bash -c '. "$1"; bench_assert_masks' _ \
+			"$ROOT_DIR/upgrade/lib/bench-target.sh" >/dev/null 2>&1
+		then
+			printf accept
+		else
+			printf refuse
+		fi
+	else
+		if ORP_HELPER_SOURCE_ONLY=1 ORP_ROOT="$root" ORP_BENCH_TEST_HARNESS=1 \
+			ORP_SYSTEMCTL="$tmp/drift-systemctl" \
+			bash -c '. "$1"; native_masks' _ "$HELPER" >/dev/null 2>&1
+		then
+			printf accept
+		else
+			printf refuse
+		fi
+	fi
+}
+expect_masks() {
+	local label=$1 root=$2 enabled=$3 active=$4 want=$5 inst helper
+	inst=$(DRIFT_ENABLED="$enabled" DRIFT_ACTIVE="$active" mask_verdict "$root" installer)
+	helper=$(DRIFT_ENABLED="$enabled" DRIFT_ACTIVE="$active" mask_verdict "$root" helper)
+	if [ "$inst" != "$helper" ] || [ "$inst" != "$want" ]; then
+		bad "unit drift ${label}: installer=${inst} helper=${helper} expected=${want}"
+	fi
+}
+new_token_root() {
+	local root contents=$1 mode=$2 owner=$3
+	root=$(orp_mktemp_dir)
+	orp_mkdir "$root/etc/openrepeater"
+	printf 'orp-test\n' > "$root/etc/hostname"
+	if [ "$contents" != missing ]; then
+		printf '%s\n' "$contents" > "$root/etc/openrepeater/operating-mode"
+		chmod "$mode" "$root/etc/openrepeater/operating-mode"
+		if [ "$owner" = root ]; then
+			sudo chown 0:0 "$root/etc/openrepeater/operating-mode"
+		elif [ "$owner" = user ]; then
+			sudo chown 1000:1000 "$root/etc/openrepeater/operating-mode"
+		fi
+	fi
+	printf '%s' "$root"
+}
+good_token=$(new_token_root functional-test 644 root)
+user_owned=$(new_token_root functional-test 644 user)
+group_write=$(new_token_root functional-test 666 root)
+wrong_text=$(new_token_root bench 644 root)
+missing_token=$(new_token_root missing 644 root)
+wrong_host=$(orp_mktemp_dir)
+orp_mkdir "$wrong_host/etc/openrepeater"
+printf 'not-the-bench\n' > "$wrong_host/etc/hostname"
+printf 'functional-test\n' > "$wrong_host/etc/openrepeater/operating-mode"
+chmod 644 "$wrong_host/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$wrong_host/etc/openrepeater/operating-mode"
+link_token=$(orp_mktemp_dir)
+orp_mkdir "$link_token/etc/openrepeater"
+printf 'orp-test\n' > "$link_token/etc/hostname"
+printf 'functional-test\n' > "$link_token/etc/openrepeater/real-mode"
+chmod 644 "$link_token/etc/openrepeater/real-mode"
+sudo chown 0:0 "$link_token/etc/openrepeater/real-mode"
+ln -s real-mode "$link_token/etc/openrepeater/operating-mode"
+expect_token "root-owned functional-test" "$good_token" accept
+expect_token "uid 1000 mode 0644" "$user_owned" refuse
+expect_token "group-writable" "$group_write" refuse
+expect_token "contents bench" "$wrong_text" refuse
+expect_token "missing file" "$missing_token" refuse
+expect_token "wrong hostname" "$wrong_host" refuse
+expect_token "symlink token" "$link_token" refuse
+if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; then
+	acl_token=$(new_token_root functional-test 644 root)
+	sudo setfacl -m u:nobody:r "$acl_token/etc/openrepeater/operating-mode"
+	expect_token "extended ACL" "$acl_token" refuse
+	sudo setfacl -b "$acl_token/etc/openrepeater/operating-mode" || true
+fi
+expect_masks "disabled inactive with a token" "$good_token" disabled inactive accept
+expect_masks "systemd masked without a token" "$missing_token" masked inactive accept
+expect_masks "enabled with a token" "$good_token" enabled inactive refuse
+expect_masks "active with a token" "$good_token" disabled active refuse
+expect_masks "disabled without a token" "$missing_token" disabled inactive refuse
+devnull_unit=$(orp_mktemp_dir)
+orp_mkdir "$devnull_unit/etc/systemd/system"
+ln -sfn /dev/null "$devnull_unit/etc/systemd/system/svxlink.service"
+expect_masks "dev-null symlink without a token" "$devnull_unit" disabled inactive refuse
+ok "installer and helper token and unit verdicts match"
+
+attack=$(orp_mktemp_dir)
+plant_native_layout "$attack"
+orp_mkdir "$attack/usr/sbin" "$attack/etc/openrepeater" \
+	"$attack/var/lib/openrepeater/db" \
+	"$attack/var/www/openrepeater/upgrade/lib" "$attack/upgrade/lib"
+cp "$HELPER" "$attack/usr/sbin/orp_helper"
+chmod 755 "$attack/usr/sbin/orp_helper"
+printf 'orp-test\n' > "$attack/etc/hostname"
+printf 'functional-test\n' > "$attack/etc/openrepeater/operating-mode"
+chmod 644 "$attack/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$attack/etc/openrepeater/operating-mode"
+attack_db="$attack/var/lib/openrepeater/db/openrepeater.db"
+cp "$ROOT_DIR/install/sql/openrepeater.db" "$attack_db"
+chmod 600 "$attack_db"
+apply_ident_profile "$attack_db"
+sqlite3 "$attack_db" "UPDATE settings SET value='W1AW' WHERE keyID='callSign'; UPDATE settings SET value='simplex' WHERE keyID='orp_Mode'; UPDATE settings SET value='beep' WHERE keyID='courtesyMode';"
+if ! ORP_HELPER_SOURCE_ONLY=1 ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$attack" ORP_DB_PATH="$attack_db" \
+	bash -c '. "$1"; config_render "$2"' _ "$attack/usr/sbin/orp_helper" \
+	"$attack/etc/svxlink/svxlink.conf"
+then
+	bad "could not render the attack-fixture snapshot"
+fi
+marker="$attack/pwned-marker"
+cat > "$attack/upgrade/lib/bench-target.sh" <<EOF
+printf 'pwned\n' > '$marker'
+EOF
+cp "$attack/upgrade/lib/bench-target.sh" "$attack/var/www/openrepeater/upgrade/lib/bench-target.sh"
+sudo chown -R www-data:www-data "$attack/upgrade" "$attack/var/www/openrepeater"
+if [ "$(stat -c %u "$attack/var/www/openrepeater/upgrade/lib/bench-target.sh")" != "$(id -u www-data)" ]; then
+	bad "the planted bench-target.sh is not owned by www-data"
+fi
+: > "$attack/systemctl.log"
+run_attack() {
+	ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$attack" ORP_DB_PATH="$attack_db" \
+		ORP_OPERATING_MODE_FILE="$attack/etc/openrepeater/operating-mode" \
+		ORP_SYSTEMCTL="$ft_ctl" ORP_SYSTEMCTL_LOG="$attack/systemctl.log" \
+		"$attack/usr/sbin/orp_helper" "$@" >/dev/null 2>&1 || true
+}
+run_attack svxlink start
+run_attack svxlink stop
+run_attack svxlink restart
+run_attack svxlink status
+run_attack config publish
+run_attack audio inputs
+run_attack audio outputs
+run_attack audio version
+run_attack system uptime
+run_attack system user
+run_attack info timezone
+run_attack info cpu_type
+run_attack info cpu_speed
+run_attack info cpu_load
+run_attack info cpu_temp
+run_attack info uptime
+run_attack info memory_usage
+run_attack info disk_usage
+run_attack info os
+if [ -e "$marker" ]; then
+	bad "orp_helper executed a www-data-owned bench-target.sh"
+else
+	ok "orp_helper did not execute a www-data-owned bench-target.sh"
+fi
 
 if [ "$fail" -ne 0 ]; then
 	echo "shell checks failed" >&2

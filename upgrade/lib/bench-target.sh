@@ -111,7 +111,8 @@ bench_assert_bootstrap_idle() {
 	return 0
 }
 
-# Shared by the installer and orp_helper. A trusted functional-test token
+# Installer copy of the functional-test token check. orp_helper keeps an
+# inlined copy and does not source this file. A trusted functional-test token
 # is a regular file on hostname orp-test, owned by uid 0, not a symlink,
 # not group or world writable, and without an extended ACL when getfacl
 # is installed. The contents are exactly functional-test.

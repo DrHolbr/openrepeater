@@ -504,22 +504,39 @@ function native_systemctl() {
 	fi
 }
 
+# Inlined copy of bench_mode_is_functional_test. This process sources
+# nothing. A live run reads only /etc/hostname and
+# /etc/openrepeater/operating-mode. The harness may prefix ORP_ROOT on
+# those two paths and does not look in the docroot.
+function native_token_path() {
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+		printf '%s%s' "${ORP_ROOT:-}" "$1"
+		return 0
+	fi
+	printf '%s' "$1"
+}
+
 function native_functional_token() {
-	local lib dir
-	dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-	lib=$(cd "$dir/../../upgrade/lib" 2>/dev/null && pwd)/bench-target.sh || true
-	if [ ! -f "${lib:-}" ]; then
-		lib="${ORP_ROOT:-}/var/www/openrepeater/upgrade/lib/bench-target.sh"
+	local file host perm owner token
+	file=$(native_token_path /etc/openrepeater/operating-mode)
+	host=$(native_token_path /etc/hostname)
+	[ -f "$file" ] && [ ! -L "$file" ] || return 1
+	[ -f "$host" ] && [ ! -L "$host" ] || return 1
+	[ "$(tr -d '[:space:]' < "$host")" = "orp-test" ] || return 1
+	perm=$(stat -c %a "$file")
+	case "$perm" in
+		''|*[!0-7]*) return 1 ;;
+	esac
+	[ $((8#$perm & 022)) -eq 0 ] || return 1
+	owner=$(stat -c %u "$file")
+	[ "$owner" = "0" ] || return 1
+	if command -v getfacl >/dev/null 2>&1; then
+		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
+			return 1
+		fi
 	fi
-	if [ ! -f "$lib" ]; then
-		lib=/var/www/openrepeater/upgrade/lib/bench-target.sh
-	fi
-	[ -f "$lib" ] || return 1
-	ROOT=${ORP_ROOT:-}
-	ROOT=${ROOT%/}
-	# shellcheck source=upgrade/lib/bench-target.sh
-	. "$lib"
-	bench_mode_is_functional_test
+	token=$(tr -d '[:space:]' < "$file")
+	[ "$token" = "functional-test" ]
 }
 
 function native_unit_disabled() {
@@ -532,16 +549,19 @@ function native_unit_disabled() {
 }
 
 function native_masks() {
-	local rc=0 unit path
+	local rc=0 unit enabled active
 	for unit in svxlink.service remotetrx.service svxreflector.service; do
-		path=$(native_path "/etc/systemd/system/${unit}")
-		if [ -L "$path" ] && [ "$(readlink "$path")" = "/dev/null" ]; then
+		set +e
+		enabled=$(native_systemctl is-enabled "$unit" 2>/dev/null)
+		active=$(native_systemctl is-active "$unit" 2>/dev/null)
+		set -e
+		# Same predicate as bench_assert_masks. A symlink under /etc is
+		# not enough, and no file under /etc is required.
+		if [ "$enabled" = "masked" ]; then
 			echo "ok: ${unit} -> /dev/null"
 			continue
 		fi
-		# Same predicate as the installer: systemd says disabled and
-		# inactive. The unit file does not have to exist under /etc.
-		if native_functional_token && native_unit_disabled "$unit"; then
+		if native_functional_token && [ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]; then
 			echo "ok: ${unit} stays disabled"
 			continue
 		fi
