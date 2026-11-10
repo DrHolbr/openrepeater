@@ -154,7 +154,7 @@ class Modules {
 			$this->Database->set_module_enabled($id, 0);
 			return array(
 				'msgType' => 'error',
-				'msgText' => 'The module was not activated. No SvxLink link was left in place.'
+				'msgText' => 'The module was not activated. No SvxLink files were installed.'
 			);
 		}
 
@@ -787,11 +787,13 @@ class Modules {
 			
 			$return_html .= '</div><div>';
 			
-			// Activate / Deactiveate Link
+			// Activate and deactivate are POST forms. A GET query does not change the module.
+			$module_token = htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8');
+			$module_key = htmlspecialchars((string) $cur_mod['moduleKey'], ENT_QUOTES, 'UTF-8');
 			if ($cur_mod['moduleEnabled']==1) {
-				$return_html .= '<a href="?deactivate='.$cur_mod['moduleKey'].'">Deactivate</a>';
+				$return_html .= '<form method="post" action="modules.php" style="display:inline"><input type="hidden" name="csrf_token" value="'.$module_token.'"><input type="hidden" name="deactivate" value="'.$module_key.'"><button type="submit">Deactivate</button></form>';
 			} else {
-				$return_html .= '<a href="?activate='.$cur_mod['moduleKey'].'">Activate</a>';													
+				$return_html .= '<form method="post" action="modules.php" style="display:inline"><input type="hidden" name="csrf_token" value="'.$module_token.'"><input type="hidden" name="activate" value="'.$module_key.'"><button type="submit">Activate</button></form>';
 			}
 
 			// Settings Link...if Applicable

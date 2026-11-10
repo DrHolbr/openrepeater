@@ -352,6 +352,18 @@ fi
 mkdir -p "$preview/sounds/en_US/ProbeMod"
 printf 'KEEP\n' > "$preview/sounds/en_US/ProbeMod/keep"
 module_key=$(sqlite3 "$db" "SELECT moduleKey FROM modules WHERE svxlinkName='ProbeMod';")
+enabled_before=$(sqlite3 "$db" "SELECT moduleEnabled FROM modules WHERE moduleKey='${module_key}';")
+code=$(curl -s -b "$jar" -o "$tmp/get-activate.body" -w '%{http_code}' \
+	"$base/modules.php?activate=${module_key}")
+[ "$code" = "405" ]
+grep -q 'method not allowed' "$tmp/get-activate.body"
+code=$(curl -s -b "$jar" -o "$tmp/get-deactivate.body" -w '%{http_code}' \
+	"$base/modules.php?deactivate=${module_key}")
+[ "$code" = "405" ]
+grep -q 'method not allowed' "$tmp/get-deactivate.body"
+[ "$(sqlite3 "$db" "SELECT moduleEnabled FROM modules WHERE moduleKey='${module_key}';")" = "$enabled_before" ]
+[ ! -e "$live/usr/local/share/svxlink/events.d/ModuleProbe.tcl" ]
+echo "ok: GET activate and deactivate are refused and change nothing"
 php -r '
 $_SERVER["DOCUMENT_ROOT"] = $argv[2];
 putenv("ORP_OPERATING_MODE_FILE=" . $argv[3]);

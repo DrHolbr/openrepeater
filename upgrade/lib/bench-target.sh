@@ -1001,3 +1001,33 @@ bench_install_php84() {
 	done
 	return 0
 }
+
+# Remove symlinks under the SvxLink share trees that point at an uploaded
+# module. Those links are how 04d7dbe and older trees put www-data-owned Tcl
+# on the path svxlink loads. The link is removed. The target is not.
+bench_lexical_join() {
+	python3 -c 'import os, sys; print(os.path.normpath(os.path.join(sys.argv[1], sys.argv[2])))' "$1" "$2"
+}
+
+bench_remove_legacy_module_symlinks() {
+	local modules share path target logical
+	modules=$(p /var/www/openrepeater/modules)
+	modules=${modules%/}
+	for share in "$(p /usr/share/svxlink)" "$(p /usr/local/share/svxlink)"; do
+		[ -d "$share" ] && [ ! -L "$share" ] || continue
+		while IFS= read -r path; do
+			[ -n "$path" ] || continue
+			target=$(readlink "$path") || continue
+			case "$target" in
+				/*) logical=$target ;;
+				*) logical=$(bench_lexical_join "$(dirname "$path")" "$target") ;;
+			esac
+			case "$logical" in
+				"$modules"|"$modules"/*)
+					rm -f -- "$path"
+					echo "removed legacy module symlink ${path} -> ${target}"
+					;;
+			esac
+		done < <(find -P "$share" -xdev -type l -print)
+	done
+}

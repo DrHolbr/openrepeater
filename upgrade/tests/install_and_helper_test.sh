@@ -320,8 +320,10 @@ if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoe
 	&& grep -q 'orp_helper svxlink stop' "$sudoers" \
 	&& grep -q 'orp_helper config publish' "$sudoers" \
 	&& grep -q 'orp_helper info os' "$sudoers" \
-	&& grep -F -q 'orp_helper module activate *' "$sudoers" \
-	&& grep -F -q 'orp_helper module deactivate *' "$sudoers"
+	&& grep -F -q 'orp_helper module activate [A-Za-z]' "$sudoers" \
+	&& grep -F -q 'orp_helper module activate [A-Za-z][A-Za-z0-9_]' "$sudoers" \
+	&& ! grep -F -q 'orp_helper module activate *' "$sudoers" \
+	&& ! grep -F -q 'orp_helper module deactivate *' "$sudoers"
 then
 	ok "sudoers allows exact svxlink lifecycle commands and still has no gpio or unmask"
 else
@@ -1223,6 +1225,38 @@ if [ -e "$marker" ]; then
 	bad "orp_helper executed a www-data-owned bench-target.sh"
 else
 	ok "orp_helper did not execute a www-data-owned bench-target.sh"
+fi
+
+legacy=$(orp_mktemp_dir)
+orp_mkdir "$legacy/usr/share/svxlink/events.d" "$legacy/usr/local/share/svxlink/events.d" \
+	"$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d"
+printf 'tcl\n' > "$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl"
+printf 'stock\n' > "$legacy/usr/share/svxlink/events.d/Logic.tcl"
+ln -s "$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl" \
+	"$legacy/usr/share/svxlink/events.d/ModuleFoo.tcl"
+ln -s ../../../../../var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl \
+	"$legacy/usr/local/share/svxlink/events.d/ModuleFoo.tcl"
+ln -s /etc/hostname "$legacy/usr/share/svxlink/events.d/hostname.tcl"
+(
+	export ROOT="$legacy"
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_remove_legacy_module_symlinks
+) > "$tmp/legacy.log"
+if [ ! -e "$legacy/usr/share/svxlink/events.d/ModuleFoo.tcl" ] \
+	&& [ ! -L "$legacy/usr/share/svxlink/events.d/ModuleFoo.tcl" ] \
+	&& [ ! -e "$legacy/usr/local/share/svxlink/events.d/ModuleFoo.tcl" ] \
+	&& [ ! -L "$legacy/usr/local/share/svxlink/events.d/ModuleFoo.tcl" ] \
+	&& [ -L "$legacy/usr/share/svxlink/events.d/hostname.tcl" ] \
+	&& [ "$(cat "$legacy/usr/share/svxlink/events.d/Logic.tcl")" = "stock" ] \
+	&& [ "$(cat "$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl")" = "tcl" ] \
+	&& grep -q 'removed legacy module symlink' "$tmp/legacy.log" \
+	&& grep -q 'bench_remove_legacy_module_symlinks' "$INSTALL"
+then
+	ok "legacy module symlinks into the web tree are removed"
+else
+	bad "legacy module symlinks were not removed"
+	cat "$tmp/legacy.log" >&2 || true
 fi
 
 if [ "$fail" -ne 0 ]; then

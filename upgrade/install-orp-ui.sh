@@ -425,10 +425,17 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio outputs
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio version
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system uptime
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system user
-# One module name. The helper rejects every other shape and does not treat it as a path.
-www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper module activate *
-www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper module deactivate *
+# One module name, 1 to 32 characters. The first character is a letter.
+# The helper still rejects every other shape and does not treat it as a path.
 EOF
+module_pat='[A-Za-z]'
+module_i=1
+while [ "$module_i" -le 32 ]; do
+	printf 'www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper module activate %s\n' "$module_pat" >> "$sudoers_tmp"
+	printf 'www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper module deactivate %s\n' "$module_pat" >> "$sudoers_tmp"
+	module_pat="${module_pat}[A-Za-z0-9_]"
+	module_i=$((module_i + 1))
+done
 if [ "$(bench_lstat_kind "$(p /etc/sudoers.d/openrepeater)")" = symlink ]; then
 	rm -f "$sudoers_tmp"
 	echo "refused: sudoers fragment is a symbolic link" >&2
@@ -565,6 +572,7 @@ fi
 
 bench_verify_protected
 bench_assert_masks
+bench_remove_legacy_module_symlinks
 
 echo "OpenRepeater UI files are staged for orp-test."
 echo "Radio units were not started and their masks were checked again."

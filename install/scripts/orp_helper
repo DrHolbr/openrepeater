@@ -1383,12 +1383,17 @@ function module_activate() {
 	module_prepare_dir "$share/sounds/en_US" || return 1
 	manifest=$(module_root_path "/var/lib/openrepeater/module-install/${name}.list")
 	module_prepare_dir "$(dirname "$manifest")" || return 1
+	# A previous attempt may have stopped after the intent journal was written.
+	if [ -e "$manifest" ] || [ -L "$manifest" ]; then
+		module_deactivate "$name" || return 1
+	fi
 	python3 - "$base/$name/svxlink" "$share" "$manifest" "$name" <<'PY'
-import os, stat, sys
+import os, stat, sys, time
 source, share, manifest, name = sys.argv[1:5]
 MAX_FILES = 200
 MAX_BYTES = 8388608
 created = []
+journal = None
 
 def fail(message):
     for path in reversed(created):
@@ -1397,6 +1402,11 @@ def fail(message):
                 os.unlink(path)
             elif os.path.isdir(path):
                 os.rmdir(path)
+        except OSError:
+            pass
+    if journal and os.path.lexists(journal) and not os.path.islink(journal):
+        try:
+            os.unlink(journal)
         except OSError:
             pass
     sys.stderr.write(message + "\n")
@@ -1485,6 +1495,21 @@ try:
         dest = os.path.join(share, rel)
         if os.path.lexists(dest):
             fail("refused: module destination already exists")
+    # The manifest is an intent journal. It is written before any module
+    # file is created, so a crash is recovered by the next activate or deactivate.
+    lines = [rel for _src, rel in planned]
+    blob = "".join(line + "\n" for line in lines).encode()
+    man_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    man = os.open(manifest, man_flags, 0o644)
+    journal = manifest
+    try:
+        os.write(man, blob)
+        os.fchown(man, 0, 0)
+        os.fchmod(man, 0o644)
+    finally:
+        os.close(man)
+    if os.environ.get("ORP_BENCH_TEST_HARNESS") == "1" and os.environ.get("ORP_MODULE_SWAP_WAIT") == "1":
+        time.sleep(2)
     sound_rel = "sounds/en_US/" + name
     if any(rel.startswith(sound_rel + "/") for _src, rel in planned):
         sound_dir = os.path.join(share, sound_rel)
@@ -1500,9 +1525,12 @@ try:
         out = os.open(dest, flags, 0o644)
         created.append(dest)
         try:
-            src_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+            src_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
             inn = os.open(src, src_flags)
             try:
+                info = os.fstat(inn)
+                if (not stat.S_ISREG(info.st_mode)) or info.st_nlink != 1 or info.st_size > MAX_BYTES:
+                    fail("refused: module file is not a private regular file")
                 remaining = MAX_BYTES
                 while True:
                     chunk = os.read(inn, min(65536, remaining))
@@ -1518,16 +1546,6 @@ try:
             os.fchmod(out, 0o644)
         finally:
             os.close(out)
-    lines = [rel for _src, rel in planned]
-    blob = "".join(line + "\n" for line in lines).encode()
-    man_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    man = os.open(manifest, man_flags, 0o644)
-    try:
-        os.write(man, blob)
-        os.fchown(man, 0, 0)
-        os.fchmod(man, 0o644)
-    finally:
-        os.close(man)
 except SystemExit:
     raise
 except OSError as exc:

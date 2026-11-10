@@ -24,20 +24,22 @@ $ModulesClass = new Modules();
 ?>
 
 		<?php
+		if (isset($_GET['activate']) || isset($_GET['deactivate'])) {
+			RequestGuard::deny(405);
+		}
+
 		if ( isset($_POST['updateModuleSettings']) ) {
 			$results = $ModulesClass->save_module_settings($_POST);
 			$alert = '<div class="alert alert-'.$results['msgType'].'">'.$results['msgText'].'</div>';
 		}
 
-		if ( isset($_GET['deactivate']) ) {
-			$module_id = $_GET['deactivate'];
-			$results = $ModulesClass->deactivateMod($module_id);
+		if ( isset($_POST['deactivate']) ) {
+			$results = $ModulesClass->deactivateMod($_POST['deactivate']);
 			$alert = '<div class="alert alert-'.$results['msgType'].'">'.$results['msgText'].'</div>';
 		}
 
-		if ( isset($_GET['activate']) ) {
-			$module_id = $_GET['activate'];
-			$results = $ModulesClass->activateMod($module_id);
+		if ( isset($_POST['activate']) ) {
+			$results = $ModulesClass->activateMod($_POST['activate']);
 			$alert = '<div class="alert alert-'.$results['msgType'].'">'.$results['msgText'].'</div>';
 		}
 
