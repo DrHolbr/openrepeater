@@ -43,7 +43,7 @@ $classSVXLinkGPIO = new SVXLink_GPIO($gpio);
 
 $benchGuard = BenchGuard::detect();
 
-if ($benchGuard->operatingMode() === 'functional-test') {
+if ($benchGuard->operatingMode() === 'functional-test' && !$benchGuard->uiBlocksLifted()) {
 	$runtime = $classSVXLink->disconnectedRuntimeConfig();
 	$wrote = $classSVXLink->write_config($runtime, 'svxlink.conf', 'ini');
 	$publish = shell_exec('sudo /usr/sbin/orp_helper config publish 2>&1');
@@ -211,7 +211,7 @@ if (!$publishFailed) {
 	$classDB->set_update_flag(false);
 }
 
-if ($publishFailed || $onBench || $benchGuard->operatingMode() === 'functional-test') {
+if ($publishFailed || ($onBench && !$benchGuard->uiBlocksLifted()) || ($benchGuard->operatingMode() === 'functional-test' && !$benchGuard->uiBlocksLifted())) {
 	if ($publishFailed) {
 		$notice = 'preview_failed=1';
 	} else {
@@ -226,6 +226,10 @@ if ($publishFailed || $onBench || $benchGuard->operatingMode() === 'functional-t
 	$join = (strpos($url, '?') === false) ? '?' : '&';
 	header('Location: '.$url.$join.$notice);
 	exit;
+}
+
+if ($benchGuard->uiBlocksLifted()) {
+	shell_exec('sudo /usr/sbin/orp_helper config publish 2>&1');
 }
 
 ########

@@ -117,6 +117,59 @@ class BenchGuard {
 		return $this->operatingMode() === 'bench';
 	}
 
+	// Same predicate as orp_helper native_functional_token. One switch lifts
+	// the bench UI blocks. Production without this token is unchanged.
+	public function trustedFunctionalTest() {
+		$path = $this->modeFilePath();
+		clearstatcache(true, $path);
+		if (!is_file($path) || is_link($path)) {
+			return false;
+		}
+		$perms = fileperms($path);
+		if ($perms === false || ($perms & 0022) !== 0) {
+			return false;
+		}
+		$owner = fileowner($path);
+		if ($owner === false || (int) $owner !== 0) {
+			return false;
+		}
+		$hostFile = '/etc/hostname';
+		if (self::testHarnessActive()) {
+			$override = getenv('ORP_BENCH_HOSTNAME_FILE');
+			if (!is_string($override) || $override === '' || !self::harnessPathAllowed($override)) {
+				return false;
+			}
+			$hostFile = $override;
+		}
+		if (is_link($hostFile) || !is_file($hostFile)) {
+			return false;
+		}
+		if ($this->hostname() !== 'orp-test') {
+			return false;
+		}
+		if ($this->extendedAcl($path)) {
+			return false;
+		}
+		$raw = file_get_contents($path);
+		return is_string($raw) && trim($raw) === 'functional-test';
+	}
+
+	public function uiBlocksLifted() {
+		return $this->trustedFunctionalTest();
+	}
+
+	private function extendedAcl($path) {
+		$getfacl = trim((string) shell_exec('command -v getfacl 2>/dev/null'));
+		if ($getfacl === '') {
+			return false;
+		}
+		$out = shell_exec($getfacl . ' -p -- ' . escapeshellarg($path) . ' 2>/dev/null');
+		if (!is_string($out) || $out === '') {
+			return false;
+		}
+		return preg_match('/^(user|group):[^:]+:|^mask:/m', $out) === 1;
+	}
+
 	public function hostname() {
 		if (self::testHarnessActive()) {
 			$override = getenv('ORP_BENCH_HOSTNAME_FILE');
@@ -340,6 +393,11 @@ class BenchGuard {
 	public function commandAllowed($service, $option) {
 		$service = (string) $service;
 		$option = (string) $option;
+		// Trusted functional-test lifts every bench block, including start,
+		// GPIO, and the other radio units. No token keeps the old answers.
+		if ($this->uiBlocksLifted()) {
+			return true;
+		}
 		if ($option === 'unmask') {
 			return false;
 		}

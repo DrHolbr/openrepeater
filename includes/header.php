@@ -117,7 +117,10 @@ $benchGuard = BenchGuard::detect();
 
 	<div class="server_bar_wrap"<?php if ($updateFlage == false) { echo ' style="display: none;"'; } ?>>
 	<div class="server_bar">
-		<?php if ($benchGuard->operatingMode() === 'functional-test') { ?>
+		<?php if ($benchGuard->uiBlocksLifted()) { ?>
+		<span>Functional test: the bench blocks are off. svxlink, remotetrx, and svxreflector can be managed, and GPIO output can be driven. No radio is attached.</span>
+		<button class="rebuild_button" data-toggle="modal" data-target="#restartServer"><i class="icon-refresh icon-white"></i> Rebuild & Restart Repeater</button>
+		<?php } elseif ($benchGuard->operatingMode() === 'functional-test') { ?>
 		<span>Functional test publishes /etc/svxlink/svxlink.conf with UDP audio and PTT_TYPE=NONE. Stored GPIO numbers are not applied. Start and stop control svxlink only and do not unmask a unit. A masked unit is service-disabled. That is separate from an unresolved GPIO number, and neither means a transmitter has unkeyed.</span>
 		<?php } elseif ($benchGuard->isBench()) { ?>
 		<span>Bench mode: configuration rebuild will not publish files or restart the radio. A refused shutdown command is not evidence the transmitter is unkeyed.</span>

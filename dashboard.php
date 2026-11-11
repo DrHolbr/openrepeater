@@ -87,7 +87,11 @@ $classSystem = new System();
 				      </div>
 				      <div class="modal-footer">
 							<button class="btn btn-default" data-dismiss="modal">Cancel</button>
+							<?php if (BenchGuard::detect()->uiBlocksLifted()) { ?>
+							<button type="button" class="btn btn-success" onclick="reboot_orp_system();">Restart</button>
+							<?php } else { ?>
 							<button class="btn btn-success" disabled="disabled">Host restart blocked</button>
+							<?php } ?>
 				      </div>
 				    </div><!-- /.modal-content -->
 				  </div><!-- /.modal-dialog -->
@@ -108,7 +112,11 @@ $classSystem = new System();
 				      </div>
 				      <div class="modal-footer">
 							<button class="btn btn-default" data-dismiss="modal">Cancel</button>
+							<?php if (BenchGuard::detect()->uiBlocksLifted()) { ?>
+							<button type="button" class="btn btn-danger" onclick="shutdown_orp_system();">Shutdown</button>
+							<?php } else { ?>
 							<button class="btn btn-danger" disabled="disabled">Host shutdown blocked</button>
+							<?php } ?>
 				      </div>
 				    </div><!-- /.modal-content -->
 				  </div><!-- /.modal-dialog -->

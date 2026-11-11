@@ -314,7 +314,12 @@ else
 fi
 sudoers="$good/etc/sudoers.d/openrepeater"
 if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoers" \
-	&& ! grep -E -q 'alsa|gpio_up|set_mixer|unmask' "$sudoers" \
+	&& grep -q 'orp_helper svxlink gpio_up' "$sudoers" \
+	&& grep -q 'orp_helper svxlink unmask' "$sudoers" \
+	&& grep -q 'orp_helper remotetrx start' "$sudoers" \
+	&& grep -q 'orp_helper svxreflector unmask' "$sudoers" \
+	&& grep -q 'orp_helper system restart' "$sudoers" \
+	&& grep -q 'orp_helper system stop' "$sudoers" \
 	&& grep -q 'orp_helper svxlink status' "$sudoers" \
 	&& grep -q 'orp_helper svxlink start' "$sudoers" \
 	&& grep -q 'orp_helper svxlink stop' "$sudoers" \
@@ -325,7 +330,7 @@ if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoe
 	&& ! grep -F -q 'orp_helper module activate *' "$sudoers" \
 	&& ! grep -F -q 'orp_helper module deactivate *' "$sudoers"
 then
-	ok "sudoers allows exact svxlink lifecycle commands and still has no gpio or unmask"
+	ok "sudoers allows the functional-test radio commands and the closed module names"
 else
 	bad "sudoers contract"
 	cat "$sudoers" >&2 || true
@@ -864,18 +869,14 @@ sudo chown 0:0 "$mask_root/etc/openrepeater/operating-mode"
 	export ROOT="$mask_root"
 	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
 	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
-	if MASK_ENABLED=enabled MASK_ACTIVE=inactive bench_assert_masks; then
-		exit 1
-	fi
-) || bad "an enabled unit was accepted in functional-test"
+	MASK_ENABLED=enabled MASK_ACTIVE=inactive bench_assert_masks
+) || bad "an enabled unit was refused in functional-test"
 (
 	export ROOT="$mask_root"
 	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
 	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
-	if MASK_ENABLED=disabled MASK_ACTIVE=active bench_assert_masks; then
-		exit 1
-	fi
-) || bad "a running unit was accepted in functional-test"
+	MASK_ENABLED=disabled MASK_ACTIVE=active bench_assert_masks
+) || bad "a running unit was refused in functional-test"
 sudo chmod 666 "$mask_root/etc/openrepeater/operating-mode"
 (
 	export ROOT="$mask_root"
@@ -1055,8 +1056,16 @@ expect_token() {
 	local label=$1 root=$2 want=$3 inst helper
 	inst=$(token_verdict "$root" installer)
 	helper=$(token_verdict "$root" helper)
-	if [ "$inst" != "$helper" ] || [ "$inst" != "$want" ]; then
-		bad "token drift ${label}: installer=${inst} helper=${helper} expected=${want}"
+	phpv=$(php -r '
+		putenv("ORP_BENCH_TEST_HARNESS=1");
+		putenv("ORP_OPERATING_MODE_FILE=" . $argv[1] . "/etc/openrepeater/operating-mode");
+		putenv("ORP_BENCH_HOSTNAME_FILE=" . $argv[1] . "/etc/hostname");
+		putenv("ORP_BENCH_MARKER=" . $argv[1] . "/no-such-marker");
+		require $argv[2] . "/includes/classes/BenchGuard.php";
+		echo BenchGuard::detect()->trustedFunctionalTest() ? "accept" : "refuse";
+	' "$root" "$ROOT_DIR")
+	if [ "$inst" != "$helper" ] || [ "$inst" != "$phpv" ] || [ "$inst" != "$want" ]; then
+		bad "token drift ${label}: installer=${inst} helper=${helper} php=${phpv} expected=${want}"
 	fi
 }
 cat > "$tmp/drift-systemctl" <<'EOF'
@@ -1155,8 +1164,8 @@ if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; the
 fi
 expect_masks "disabled inactive with a token" "$good_token" disabled inactive accept
 expect_masks "systemd masked without a token" "$missing_token" masked inactive accept
-expect_masks "enabled with a token" "$good_token" enabled inactive refuse
-expect_masks "active with a token" "$good_token" disabled active refuse
+expect_masks "enabled with a token" "$good_token" enabled inactive accept
+expect_masks "active with a token" "$good_token" disabled active accept
 expect_masks "disabled without a token" "$missing_token" disabled inactive refuse
 devnull_unit=$(orp_mktemp_dir)
 orp_mkdir "$devnull_unit/etc/systemd/system"

@@ -157,6 +157,11 @@ bench_mode_is_functional_test() {
 # or a disabled unit without that token is refused.
 bench_assert_masks() {
 	local unit enabled active
+	# A trusted functional-test token means the radio units stay manageable.
+	# Masks are not required. Production without the token is unchanged.
+	if bench_mode_is_functional_test; then
+		return 0
+	fi
 	for unit in svxlink.service remotetrx.service svxreflector.service; do
 		enabled=$(unit_enabled_state "$unit")
 		active=$(unit_active_state "$unit")
@@ -1022,6 +1027,24 @@ bench_ancestors_are_real() {
 		path=$(dirname "$path")
 	done
 	return 0
+}
+
+# When the trusted functional-test token is present, a /dev/null mask is
+# removed so svxlink, remotetrx, and svxreflector can be started later.
+# The installer does not enable them and does not start them.
+bench_unmask_radio_units() {
+	local unit link
+	if ! bench_mode_is_functional_test; then
+		return 0
+	fi
+	for unit in svxlink.service remotetrx.service svxreflector.service; do
+		link=$(p "/etc/systemd/system/${unit}")
+		if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
+			rm -f -- "$link"
+			echo "unmasked ${unit} for functional-test"
+			orp_systemctl unmask "$unit" || true
+		fi
+	done
 }
 
 bench_remove_legacy_module_symlinks() {

@@ -496,14 +496,18 @@ class SVXLink {
 	public function configDestination($filename) {
 		$guard = BenchGuard::detect();
 		if ($guard->operatingMode() === 'functional-test') {
-			if ($filename !== 'svxlink.conf') {
+			$stageNames = array('svxlink.conf');
+			if ($guard->uiBlocksLifted()) {
+				$stageNames = array('svxlink.conf', 'gpio.conf', 'Logic.tcl');
+			}
+			if (!in_array($filename, $stageNames, true)) {
 				return null;
 			}
 			$dir = $guard->previewDir();
 			if (!is_string($dir) || !BenchGuard::previewAllowed($dir) || is_link($dir)) {
 				return null;
 			}
-			return rtrim($dir, '/') . '/svxlink.conf';
+			return rtrim($dir, '/') . '/' . $filename;
 		}
 		if ($guard->isBench()) {
 			if (basename($filename) !== $filename) {

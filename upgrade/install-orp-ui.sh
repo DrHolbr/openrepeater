@@ -214,6 +214,9 @@ bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/db)"
 # functional-test token may instead leave the unit inactive and disabled.
 # Do not create a mask and do not replace one.
 for unit in svxlink.service remotetrx.service svxreflector.service; do
+	if bench_mode_is_functional_test; then
+		continue
+	fi
 	link=$(p "/etc/systemd/system/${unit}")
 	if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
 		continue
@@ -425,6 +428,31 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio outputs
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio version
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system uptime
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system user
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system restart
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system stop
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink enable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink disable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink gpio_up
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink gpio_down
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink unmask
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx start
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx stop
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx restart
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx status
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx enable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx disable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx unmask
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector start
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector stop
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector restart
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector status
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector enable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector disable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector unmask
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa backup /var/www/openrepeater/backup/build/alsamixer.state
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa backup /var/www/openrepeater/backup/restore/alsamixer.state
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa restore /var/www/openrepeater/backup/build/alsamixer.state
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa restore /var/www/openrepeater/backup/restore/alsamixer.state
 # One module name, 1 to 32 characters. The first character is a letter.
 # The helper still rejects every other shape and does not treat it as a path.
 EOF
@@ -517,15 +545,15 @@ if [ "$write_vendor_unit" -eq 1 ]; then
 	bench_chown root:root "$(p /usr/local/lib/systemd/system/svxlink.service)"
 fi
 for unit in svxlink.service remotetrx.service svxreflector.service; do
+	if bench_mode_is_functional_test; then
+		continue
+	fi
 	link=$(p "/etc/systemd/system/${unit}")
 	if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
 		continue
 	fi
 	enabled=$(unit_enabled_state "$unit")
 	active=$(unit_active_state "$unit")
-	if bench_mode_is_functional_test && [ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]; then
-		continue
-	fi
 	echo "refused: ${unit} is not a /dev/null mask, and it is not inactive and disabled under a functional-test token. It was not replaced." >&2
 	exit 4
 done
@@ -572,6 +600,7 @@ fi
 
 bench_verify_protected
 bench_assert_masks
+bench_unmask_radio_units
 bench_remove_legacy_module_symlinks
 
 echo "OpenRepeater UI files are staged for orp-test."
