@@ -50,6 +50,18 @@ export ORP_BENCH_TEST_HARNESS=1
 export PYTHONDONTWRITEBYTECODE=1
 export ORP_LIVE_ETC_LOG="$(orp_fixture_root)/orp-live-etc-reads.log"
 : > "$ORP_LIVE_ETC_LOG"
+host_tree_listing() {
+	local path
+	for path in /var/www/openrepeater /etc/openrepeater /etc/svxlink /etc/sudoers.d; do
+		if [ -e "$path" ] || [ -L "$path" ]; then
+			find -P "$path" -printf '%p %u %g %m\n'
+		else
+			printf 'absent %s\n' "$path"
+		fi
+	done | sort
+}
+host_tree_before=$(mktemp)
+host_tree_listing > "$host_tree_before"
 
 if ! command -v php >/dev/null 2>&1; then
 	echo "php is required" >&2
@@ -105,4 +117,13 @@ if [ -s "$ORP_LIVE_ETC_LOG" ]; then
 	exit 1
 fi
 echo "ok: no test read live /etc/openrepeater or /etc/hostname"
+host_tree_after=$(mktemp)
+host_tree_listing > "$host_tree_after"
+if ! cmp -s "$host_tree_before" "$host_tree_after"; then
+	echo "FAIL: a test changed /var/www/openrepeater, /etc/openrepeater, /etc/svxlink, or /etc/sudoers.d" >&2
+	diff -u "$host_tree_before" "$host_tree_after" >&2 || true
+	exit 1
+fi
+rm -f "$host_tree_before" "$host_tree_after"
+echo "ok: live host trees were not changed"
 echo "harness passed"

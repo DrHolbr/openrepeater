@@ -51,5 +51,17 @@ if ! awk '
 	exit 1
 fi
 
+: > "$log"
+set +e
+slash=$(ORP_BENCH_TEST_HARNESS=1 ORP_LIVE_ETC_LOG="$log" ORP_ROOT=// ORP_BENCH_MARKER="$marker" \
+	"$HELPER" svxlink start 2>&1)
+slash_rc=$?
+set -e
+[ "$slash_rc" -ne 0 ]
+grep -qx '/etc/hostname' "$log"
+if printf '%s\n' "$slash" | grep -q 'host-action-accepted\|harness: svxlink start'; then
+	echo "FAIL: ORP_ROOT=// followed the live token" >&2
+	exit 1
+fi
 echo "ok: harness helper calls do not read live /etc/openrepeater or /etc/hostname"
 echo "harness isolation checks passed"

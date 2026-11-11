@@ -135,6 +135,23 @@ foreach (array_merge($allowed, $refused) as $pair) {
 echo "ok: lifted actions stay available, enable and mixer stay refused, and repeater wiring needs tx-armed\n";
 ' "$ROOT_DIR" "$host" "$mode" "$marker" "$tmp/bench-mode" "$tmp/tx-armed" "$preview"
 
+printf 'yes\n' > "$tmp/tx-no"
+chmod 644 "$tmp/tx-no"
+sudo chown 0:0 "$tmp/tx-no"
+php -r '
+require $argv[1] . "/includes/classes/BenchGuard.php";
+putenv("ORP_BENCH_TEST_HARNESS=1");
+putenv("ORP_BENCH_HOSTNAME_FILE=" . $argv[2]);
+putenv("ORP_OPERATING_MODE_FILE=" . $argv[3]);
+putenv("ORP_TX_ARMED_FILE=" . $argv[4]);
+$guard = BenchGuard::detect();
+if ($guard->txArmed()) {
+	fwrite(STDERR, "FAIL: tx-armed accepted contents other than armed\n");
+	exit(1);
+}
+echo "ok: tx-armed contents must be exactly armed\n";
+' "$ROOT_DIR" "$host" "$mode" "$tmp/tx-no"
+
 layout="$tmp/root"
 mkdir -p "$layout/etc/openrepeater"
 printf 'orp-test\n' > "$layout/etc/hostname"
@@ -166,10 +183,22 @@ run_helper() {
 		SVXLINK_GPIO_UP_BIN="$gpio_up" SVXLINK_GPIO_DOWN_BIN="$gpio_down" \
 		"$HELPER" "$@"
 }
-out=$(run_helper svxlink start)
-grep -q 'start svxlink.service' "$log"
-out=$(run_helper svxlink restart)
-grep -q 'restart svxlink.service' "$log"
+: > "$log"
+set +e
+start_out=$(run_helper svxlink start)
+start_rc=$?
+restart_out=$(run_helper svxlink restart)
+restart_rc=$?
+set -e
+[ "$start_rc" -ne 0 ]
+printf '%s\n' "$start_out" | grep -q 'refused:'
+[ "$restart_rc" -ne 0 ]
+printf '%s\n' "$restart_out" | grep -q 'refused:'
+if grep -q 'start svxlink.service' "$log" || grep -q 'restart svxlink.service' "$log"; then
+	echo "FAIL: unarmed start ran without a disconnected snapshot" >&2
+	exit 1
+fi
+echo "ok: unarmed svxlink start and restart stay refused without the disconnected snapshot"
 set +e
 blocked_gpio=$(run_helper svxlink gpio_up)
 blocked_gpio_rc=$?
@@ -192,15 +221,26 @@ out=$(ORP_TX_ARMED_FILE="$tmp/tx-armed" run_helper svxlink gpio_up)
 printf '%s\n' "$out" | grep -q 'gpio-up'
 out=$(ORP_TX_ARMED_FILE="$tmp/tx-armed" run_helper svxlink gpio_down)
 printf '%s\n' "$out" | grep -q 'gpio-down'
+mkdir -p "$layout/etc/systemd/system/multi-user.target.wants" \
+	"$layout/etc/systemd/system/remotetrx.service.requires" \
+	"$layout/etc/systemd/system/remotetrx.service.upholds"
+ln -sfn /lib/systemd/system/remotetrx.service "$layout/etc/systemd/system/multi-user.target.wants/remotetrx.service"
+ln -sfn /lib/systemd/system/remotetrx.service "$layout/etc/systemd/system/remotetrx.service.requires/remotetrx.service"
+ln -sfn /lib/systemd/system/remotetrx.service "$layout/etc/systemd/system/remotetrx.service.upholds/remotetrx.service"
 out=$(run_helper remotetrx unmask)
 grep -q 'unmask remotetrx.service' "$log"
+grep -q 'disable remotetrx.service' "$log"
+printf '%s\n' "$out" | grep -q 'is-enabled=disabled remotetrx.service'
+[ ! -e "$layout/etc/systemd/system/multi-user.target.wants/remotetrx.service" ]
+[ ! -e "$layout/etc/systemd/system/remotetrx.service.requires/remotetrx.service" ]
+[ ! -e "$layout/etc/systemd/system/remotetrx.service.upholds/remotetrx.service" ]
 out=$(run_helper svxreflector start)
 grep -q 'start svxreflector.service' "$log"
 out=$(run_helper system restart)
 printf '%s\n' "$out" | grep -q '^host-action-accepted system restart$'
 out=$(run_helper system stop)
 printf '%s\n' "$out" | grep -q '^host-action-accepted system stop$'
-echo "ok: the helper runs start, armed GPIO, and host actions, and refuses enable"
+echo "ok: the helper refuses unarmed start, runs armed GPIO and host actions, and refuses enable"
 
 printf 'bench\n' > "$tmp/bench-only"
 chmod 644 "$tmp/bench-only"
@@ -234,7 +274,10 @@ fi
 echo "ok: GPIO, unmask, and host restart are refused without the trusted token"
 
 unmask_root="$tmp/unmask-root"
-mkdir -p "$unmask_root/etc/openrepeater" "$unmask_root/etc/systemd/system/multi-user.target.wants"
+mkdir -p "$unmask_root/etc/openrepeater" \
+	"$unmask_root/etc/systemd/system/multi-user.target.wants" \
+	"$unmask_root/etc/systemd/system/svxlink.service.requires" \
+	"$unmask_root/etc/systemd/system/svxlink.service.upholds"
 printf 'orp-test\n' > "$unmask_root/etc/hostname"
 printf 'functional-test\n' > "$unmask_root/etc/openrepeater/operating-mode"
 chmod 644 "$unmask_root/etc/openrepeater/operating-mode"
@@ -242,6 +285,8 @@ sudo chown 0:0 "$unmask_root/etc/openrepeater/operating-mode"
 for unit in svxlink.service remotetrx.service svxreflector.service; do
 	ln -sfn /dev/null "$unmask_root/etc/systemd/system/$unit"
 	ln -sfn "/lib/systemd/system/$unit" "$unmask_root/etc/systemd/system/multi-user.target.wants/$unit"
+	ln -sfn "/lib/systemd/system/$unit" "$unmask_root/etc/systemd/system/svxlink.service.requires/$unit"
+	ln -sfn "/lib/systemd/system/$unit" "$unmask_root/etc/systemd/system/svxlink.service.upholds/$unit"
 done
 : > "$tmp/unmask.log"
 unmask_out=$(
@@ -255,6 +300,8 @@ unmask_out=$(
 for unit in svxlink.service remotetrx.service svxreflector.service; do
 	[ ! -e "$unmask_root/etc/systemd/system/$unit" ]
 	[ ! -e "$unmask_root/etc/systemd/system/multi-user.target.wants/$unit" ]
+	[ ! -e "$unmask_root/etc/systemd/system/svxlink.service.requires/$unit" ]
+	[ ! -e "$unmask_root/etc/systemd/system/svxlink.service.upholds/$unit" ]
 	grep -q "unmask ${unit}" "$tmp/unmask.log"
 	grep -q "disable ${unit}" "$tmp/unmask.log"
 	printf '%s\n' "$unmask_out" | grep -q "is-enabled=disabled ${unit}"
@@ -270,7 +317,7 @@ ln -sfn /dev/null "$unmask_root/etc/systemd/system/svxlink.service"
 	bench_unmask_radio_units
 )
 [ -L "$unmask_root/etc/systemd/system/svxlink.service" ]
-echo "ok: a trusted token unmasks, disables, and clears wants links"
+echo "ok: a trusted token unmasks, disables, and clears wants, requires, and upholds links"
 
 php -d disable_functions=shell_exec -r '
 require $argv[1] . "/includes/classes/BenchGuard.php";
@@ -299,8 +346,15 @@ printf 'orp-test\n' > "$pubroot/etc/hostname"
 printf 'functional-test\n' > "$pubroot/etc/openrepeater/operating-mode"
 chmod 644 "$pubroot/etc/openrepeater/operating-mode"
 sudo chown 0:0 "$pubroot/etc/openrepeater/operating-mode"
-printf '%s\n' 'PTT_TYPE=GPIO' 'PTT_PIN=gpio26' > "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
-chmod 644 "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
+printf '%s\n' '[Tx1]' 'PTT_TYPE=GPIO' 'PTT_PIN=gpio26' '[Tx2]' 'PTT_TYPE=NONE' \
+	> "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
+printf 'GPIOCONF\n' > "$pubroot/var/lib/openrepeater/bench-preview/gpio.conf"
+printf 'LOGICTCL\n' > "$pubroot/var/lib/openrepeater/bench-preview/Logic.tcl"
+printf 'PORT1\n' > "$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port1.tcl"
+chmod 644 "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf" \
+	"$pubroot/var/lib/openrepeater/bench-preview/gpio.conf" \
+	"$pubroot/var/lib/openrepeater/bench-preview/Logic.tcl" \
+	"$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port1.tcl"
 dir="$tmp"
 while [ -n "$dir" ] && [ "$dir" != "/" ]; do
 	chmod a+x "$dir"
@@ -321,6 +375,58 @@ if printf '%s\n' "$off_pub" | grep -q 'stored-wiring'; then
 	exit 1
 fi
 grep -q '^PTT_TYPE=NONE$' "$pubroot/etc/svxlink/svxlink.conf"
+if [ -e "$pubroot/etc/svxlink/gpio.conf" ] || [ -e "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl" ]; then
+	echo "FAIL: unarmed publish installed staged companions" >&2
+	exit 1
+fi
+none_sum=$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")
+start_log="$tmp/start.log"
+: > "$start_log"
+start_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_SYSTEMCTL="$ctl" ORP_SYSTEMCTL_LOG="$start_log" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" svxlink start)
+printf '%s\n' "$start_pub" | grep -q 'start svxlink.service' || grep -q 'start svxlink.service' "$start_log"
+printf 'PTT_TYPE=GPIO\n' | sudo -n tee -a "$pubroot/etc/svxlink/svxlink.conf" >/dev/null
+: > "$start_log"
+set +e
+bad_start=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_SYSTEMCTL="$ctl" ORP_SYSTEMCTL_LOG="$start_log" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" svxlink start)
+bad_start_rc=$?
+set -e
+[ "$bad_start_rc" -ne 0 ]
+printf '%s\n' "$bad_start" | grep -q 'PTT_TYPE other than NONE'
+if grep -q 'start svxlink.service' "$start_log"; then
+	echo "FAIL: unarmed start ran with PTT_TYPE=GPIO" >&2
+	exit 1
+fi
+printf 'PTT_TYPE=GPIO\n' > "$pubroot/etc/svxlink/remotetrx.conf"
+chmod 644 "$pubroot/etc/svxlink/remotetrx.conf"
+set +e
+bad_rtx=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_SYSTEMCTL="$ctl" ORP_SYSTEMCTL_LOG="$start_log" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" remotetrx start)
+bad_rtx_rc=$?
+set -e
+[ "$bad_rtx_rc" -ne 0 ]
+printf '%s\n' "$bad_rtx" | grep -q 'NONE or Dummy'
+printf 'PTT_TYPE=Dummy\n' > "$pubroot/etc/svxlink/remotetrx.conf"
+dummy_rtx=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_SYSTEMCTL="$ctl" ORP_SYSTEMCTL_LOG="$start_log" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" remotetrx start)
+grep -q 'start remotetrx.service' "$start_log"
 mkdir -p "$pubroot/var/backups/orp-ui"
 chmod 755 "$pubroot/var" "$pubroot/var/backups" "$pubroot/var/backups/orp-ui"
 printf 'armed\n' > "$pubroot/etc/openrepeater/tx-armed"
@@ -332,7 +438,36 @@ on_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$
 	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
 	"$HELPER" config publish)
 printf '%s\n' "$on_pub" | grep -q '^runtime=stored-wiring PTT_TYPE=GPIO PTT_PIN=gpio26$'
+printf '%s\n' "$on_pub" | grep -q '^tx-section=\[Tx1\] PTT_TYPE=GPIO PTT_PIN=gpio26$'
+printf '%s\n' "$on_pub" | grep -q '^tx-section=\[Tx2\] PTT_TYPE=NONE$'
 grep -q '^PTT_TYPE=GPIO$' "$pubroot/etc/svxlink/svxlink.conf"
 grep -q '^PTT_PIN=gpio26$' "$pubroot/etc/svxlink/svxlink.conf"
-echo "ok: tx-armed publish prints the stored PTT type and pin"
+grep -q '^GPIOCONF$' "$pubroot/etc/svxlink/gpio.conf"
+grep -q '^LOGICTCL$' "$pubroot/usr/local/share/svxlink/events.d/local/Logic.tcl"
+grep -q '^PORT1$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
+armed_sum=$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")
+canary="$pubroot/gpio-canary"
+printf 'CANARY\n' > "$canary"
+sudo -n rm -f "$pubroot/etc/svxlink/gpio.conf"
+sudo -n ln -s "$canary" "$pubroot/etc/svxlink/gpio.conf"
+printf '%s\n' '[Tx1]' 'PTT_TYPE=GPIO' 'PTT_PIN=gpio23' > "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
+chmod 644 "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
+set +e
+roll=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish)
+roll_rc=$?
+set -e
+[ "$roll_rc" -ne 0 ]
+printf '%s\n' "$roll" | grep -q 'rolled back'
+[ "$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")" = "$armed_sum" ]
+[ "$(stat -c %u "$canary")" = "$(id -u)" ]
+grep -q '^CANARY$' "$canary"
+if grep -q 'gpio23' "$pubroot/etc/svxlink/svxlink.conf"; then
+	echo "FAIL: rolled-back publish left the new svxlink.conf in place" >&2
+	exit 1
+fi
+echo "ok: tx-armed publish installs the staged set and rolls it back"
 echo "functional-test lift checks passed"

@@ -140,19 +140,20 @@ function drive_refuses {
 }
 
 function alsa_state_allowed {
-	case "$1" in
-		/var/www/openrepeater/backup/build/alsamixer.state|/var/www/openrepeater/backup/restore/alsamixer.state)
-			if [ -L "$1" ]; then
-				echo "refused: alsa state path is a symlink"
-				return 1
-			fi
-			return 0
-			;;
-		*)
-			echo "refused: alsa path is outside the backup directory"
-			return 1
-			;;
-	esac
+	local path=$1 build restore
+	# Harness runs resolve these through the fixture root. Production keeps
+	# the two live backup paths. Root still does not open a symlink.
+	build=$(module_root_path /var/www/openrepeater/backup/build/alsamixer.state)
+	restore=$(module_root_path /var/www/openrepeater/backup/restore/alsamixer.state)
+	if [ "$path" != "$build" ] && [ "$path" != "$restore" ]; then
+		echo "refused: alsa path is outside the backup directory"
+		return 1
+	fi
+	if [ -L "$path" ]; then
+		echo "refused: alsa state path is a symlink"
+		return 1
+	fi
+	return 0
 }
 
 function bench_refuses {
@@ -195,6 +196,15 @@ function radio_unit_ctl {
 		echo "refused: ${unit} ${action} requires a trusted functional-test token"
 		return 1
 	fi
+	if [ "$action" = "start" ] || [ "$action" = "restart" ]; then
+		if ! tx_transmit_allowed "$unit"; then
+			return 1
+		fi
+	fi
+	if [ "$action" = "unmask" ]; then
+		radio_unit_unmask "$unit"
+		return $?
+	fi
 	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
 		if [ -n "${ORP_SYSTEMCTL:-}" ]; then
 			"${ORP_SYSTEMCTL}" "$action" "${unit}.service"
@@ -204,6 +214,93 @@ function radio_unit_ctl {
 		return 0
 	fi
 	systemctl "$action" "${unit}.service"
+}
+
+# A missing file has no PTT_TYPE lines and is treated as disconnected.
+# A symlink is refused. allowed_re matches the whole PTT_TYPE line.
+function ptt_lines_are() {
+	local file=$1 allowed_re=$2
+	if [ ! -e "$file" ]; then
+		return 0
+	fi
+	if [ -L "$file" ] || [ ! -f "$file" ]; then
+		echo "refused: ${file} is not a regular file. Start was not called."
+		return 1
+	fi
+	if grep -E '^PTT_TYPE=' "$file" | grep -E -qv "$allowed_re"; then
+		return 1
+	fi
+	return 0
+}
+
+# Unarmed svxlink start/restart requires a disconnected snapshot.
+# Unarmed remotetrx start/restart requires every PTT_TYPE to be NONE or Dummy.
+function tx_transmit_allowed() {
+	local unit=$1 dest
+	if tx_armed; then
+		return 0
+	fi
+	case "$unit" in
+		svxlink)
+			dest=$(config_dest)
+			if ! ptt_lines_are "$dest" '^PTT_TYPE=NONE$'; then
+				echo "refused: svxlink.conf has a PTT_TYPE other than NONE. Start was not called."
+				return 1
+			fi
+			if ! config_matches_snapshot; then
+				echo "refused: svxlink.conf is not the disconnected-test snapshot. Start was not called."
+				return 1
+			fi
+			;;
+		remotetrx)
+			dest=$(native_path /etc/svxlink/remotetrx.conf)
+			if ! ptt_lines_are "$dest" '^PTT_TYPE=(NONE|Dummy)$'; then
+				echo "refused: remotetrx.conf has a PTT_TYPE other than NONE or Dummy. Start was not called."
+				return 1
+			fi
+			;;
+	esac
+	return 0
+}
+
+function radio_unit_systemctl() {
+	local action=$1 unit=$2
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+		if [ -n "${ORP_SYSTEMCTL:-}" ]; then
+			"${ORP_SYSTEMCTL}" "$action" "${unit}.service"
+			return $?
+		fi
+		echo "harness: ${unit} ${action}"
+		return 0
+	fi
+	systemctl "$action" "${unit}.service"
+}
+
+# unmask also disables the unit, deletes wants/requires/upholds links, and
+# requires is-enabled=disabled. It does not start the unit.
+function radio_unit_unmask() {
+	local unit=$1 sys enabled
+	radio_unit_systemctl unmask "$unit" || true
+	radio_unit_systemctl disable "$unit" || true
+	sys=$(native_path /etc/systemd/system)
+	if [ -d "$sys" ]; then
+		find -P "$sys" -xdev -type l -name "${unit}.service" \
+			\( -path '*wants/*' -o -path '*requires/*' -o -path '*upholds/*' \) -delete
+	fi
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ] && [ -z "${ORP_SYSTEMCTL:-}" ]; then
+		enabled=disabled
+	else
+		enabled=$(radio_unit_systemctl is-enabled "$unit" 2>/dev/null || true)
+	fi
+	case "$enabled" in
+		disabled|not-found)
+			echo "is-enabled=disabled ${unit}.service"
+			;;
+		*)
+			echo "refused: ${unit}.service is-enabled=${enabled:-empty}, expected disabled"
+			return 1
+			;;
+	esac
 }
 
 function svxlink_disable {
@@ -294,9 +391,11 @@ function svxlink_stop {
 }
 
 function svxlink_start {
-	# A trusted functional-test token starts the unit directly. That path
-	# skips config_matches_snapshot and native_start_blocked. Those checks
-	# still run when the mode file is functional-test but the token is not
+	# With the tx-armed flag, a trusted token starts the unit directly and
+	# skips config_matches_snapshot and native_start_blocked. Without the
+	# flag, radio_unit_ctl still refuses start unless the live file matches
+	# the disconnected snapshot and every PTT_TYPE is NONE. Those checks
+	# also run when the mode file is functional-test but the token is not
 	# trusted. svxlink_gpio_up executes /usr/sbin/svxlink_gpio_up; it does
 	# not source that file. This tree does not ship the binary.
 	if native_functional_token; then
@@ -350,8 +449,31 @@ function config_real_file() {
 # libraries in /usr/local/lib (not the multiarch distro directories).
 # ORP_ROOT is a fixture prefix. The text written into svxlink.conf stays
 # the real absolute path the process opens.
+# Strip trailing slashes. "/" and "//" are empty so they cannot prefix a
+# relative join into the live /etc tree.
+function orp_root_prefix() {
+	local root=${ORP_ROOT:-}
+	while [ -n "$root" ] && [ "${root%/}" != "$root" ]; do
+		root=${root%/}
+	done
+	case "$root" in
+		""|/) return 1 ;;
+	esac
+	printf '%s' "$root"
+}
+
 function native_path() {
-	printf '%s%s' "${ORP_ROOT:-}" "$1"
+	local root
+	if root=$(orp_root_prefix); then
+		printf '%s%s' "$root" "$1"
+		return 0
+	fi
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+		harness_note_live_etc "$1"
+		printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked$1"
+		return 0
+	fi
+	printf '%s' "$1"
 }
 
 function native_harness() {
@@ -590,18 +712,24 @@ function harness_note_live_etc() {
 	fi
 }
 
+function path_collapses_to_live_etc() {
+	local collapsed
+	collapsed=$(printf '%s' "$1" | sed -E 's#/+#/#g')
+	case "$collapsed" in
+		/etc|/etc/*) return 0 ;;
+	esac
+	return 1
+}
+
 function native_token_path() {
-	local rel=$1 resolved root
+	local rel=$1 resolved
 	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
-		root=${ORP_ROOT:-}
-		resolved="${root}${rel}"
-		case "$resolved" in
-			/etc/hostname|/etc/openrepeater|/etc/openrepeater/*)
-				harness_note_live_etc "$resolved"
-				printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked${rel}"
-				return 0
-				;;
-		esac
+		resolved=$(native_path "$rel")
+		if path_collapses_to_live_etc "$resolved"; then
+			harness_note_live_etc "$resolved"
+			printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked${rel}"
+			return 0
+		fi
 		printf '%s' "$resolved"
 		return 0
 	fi
@@ -609,20 +737,11 @@ function native_token_path() {
 }
 
 function tx_armed_path() {
-	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
-		if [ -n "${ORP_TX_ARMED_FILE:-}" ]; then
-			printf '%s' "$ORP_TX_ARMED_FILE"
-			return 0
-		fi
-		if [ -z "${ORP_ROOT:-}" ]; then
-			harness_note_live_etc /etc/openrepeater/tx-armed
-			printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked/etc/openrepeater/tx-armed"
-			return 0
-		fi
-		printf '%s%s' "${ORP_ROOT}" /etc/openrepeater/tx-armed
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ] && [ -n "${ORP_TX_ARMED_FILE:-}" ]; then
+		printf '%s' "$ORP_TX_ARMED_FILE"
 		return 0
 	fi
-	printf '%s' /etc/openrepeater/tx-armed
+	native_token_path /etc/openrepeater/tx-armed
 }
 
 # Root-only flag. Absent unless root creates it over SSH. Same trust checks
@@ -644,7 +763,13 @@ function tx_armed() {
 			return 1
 		fi
 	fi
-	return 0
+	# The file body is exactly "armed", with an optional trailing newline.
+	local body
+	body=$(tr -d '\r' < "$file")
+	case "$body" in
+		armed|armed$'\n') return 0 ;;
+	esac
+	return 1
 }
 
 function native_functional_token() {
@@ -1144,7 +1269,122 @@ EOF
 }
 
 function config_dest() {
-	printf '%s' "${ORP_ROOT:-}/etc/svxlink/svxlink.conf"
+	native_path /etc/svxlink/svxlink.conf
+}
+
+# Read a www-data file into a root temp. head -c enforces the cap. pipefail
+# makes a failed cat fail the pipeline. Root does not open the source.
+function wwwdata_read_capped() {
+	local src=$1 dest=$2 limit=1048576 bytes
+	if [ ! -f "$src" ] || [ -L "$src" ]; then
+		echo "refused: staged path is not a regular file" >&2
+		return 1
+	fi
+	if ! (set -o pipefail; timeout 5 setpriv --reuid=www-data --regid=www-data --init-groups -- cat -- "$src" | head -c $((limit + 1)) > "$dest"); then
+		echo "refused: staged file was not read as www-data" >&2
+		return 1
+	fi
+	bytes=$(wc -c < "$dest" | tr -d ' ')
+	if [ "$bytes" -gt "$limit" ]; then
+		echo "refused: staged file is larger than ${limit} bytes" >&2
+		return 1
+	fi
+	if [ "$bytes" -eq 0 ]; then
+		echo "refused: staged file is empty" >&2
+		return 1
+	fi
+}
+
+# Companion files are read before anything is installed. COMPANION_DIR holds
+# the temps and a manifest of "temp dest had_backup".
+function prepare_armed_companions() {
+	local stage name src dest tmp
+	stage=$(module_root_path /var/lib/openrepeater/bench-preview)
+	COMPANION_DIR=$(mktemp -d "${TMPDIR:-/tmp}/orp-companions.XXXXXX")
+	: > "$COMPANION_DIR/manifest"
+	queue_companion() {
+		local src=$1 dest=$2 tmp
+		tmp=$(mktemp "$COMPANION_DIR/body.XXXXXX")
+		if ! wwwdata_read_capped "$src" "$tmp"; then
+			return 1
+		fi
+		printf '%s %s\n' "$tmp" "$dest" >> "$COMPANION_DIR/manifest"
+	}
+	if [ -e "$stage/gpio.conf" ] || [ -L "$stage/gpio.conf" ]; then
+		queue_companion "$stage/gpio.conf" "$(native_path /etc/svxlink/gpio.conf)" || return 1
+	fi
+	if [ -e "$stage/Logic.tcl" ] || [ -L "$stage/Logic.tcl" ]; then
+		queue_companion "$stage/Logic.tcl" "$(native_path /usr/local/share/svxlink/events.d/local/Logic.tcl)" || return 1
+	fi
+	if [ -d "$stage" ] && [ ! -L "$stage" ]; then
+		while IFS= read -r src; do
+			[ -n "$src" ] || continue
+			name=$(basename "$src")
+			case "$name" in
+				ORP_RepeaterLogic_Port[0-9].tcl|ORP_RepeaterLogic_Port[0-9][0-9].tcl|ORP_SimplexLogic_Port[0-9].tcl|ORP_SimplexLogic_Port[0-9][0-9].tcl)
+					queue_companion "$src" "$(native_path "/usr/local/share/svxlink/events.d/${name}")" || return 1
+					;;
+				*)
+					echo "refused: staged ${name} is not a PortN logic file" >&2
+					return 1
+					;;
+			esac
+		done < <(find -P "$stage" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' | sort)
+	fi
+}
+
+function rollback_published_conf() {
+	local dest=$1 backup=$2 existed=$3
+	if [ "$existed" = 1 ] && [ -f "$backup" ]; then
+		cp -p "$backup" "$dest"
+	else
+		rm -f "$dest"
+	fi
+}
+
+function commit_armed_companions() {
+	local tmp dest parent backup_name
+	[ -n "${COMPANION_DIR:-}" ] && [ -f "$COMPANION_DIR/manifest" ] || return 0
+	: > "$COMPANION_DIR/installed"
+	while read -r tmp dest; do
+		[ -n "$tmp" ] || continue
+		parent=$(dirname "$dest")
+		if [ -L "$dest" ]; then
+			echo "refused: ${dest} is a symbolic link" >&2
+			return 1
+		fi
+		if [ -d "$dest" ]; then
+			echo "refused: ${dest} is a directory" >&2
+			return 1
+		fi
+		if [ ! -d "$parent" ] || [ -L "$parent" ]; then
+			echo "refused: ${parent} is not a directory" >&2
+			return 1
+		fi
+		backup_name=$(printf '%s' "$dest" | sha256sum | awk '{print $1}')
+		if [ -e "$dest" ]; then
+			cp -p "$dest" "$COMPANION_DIR/$backup_name"
+			printf 'restore %s %s\n' "$dest" "$COMPANION_DIR/$backup_name" >> "$COMPANION_DIR/installed"
+		else
+			printf 'remove %s\n' "$dest" >> "$COMPANION_DIR/installed"
+		fi
+		if ! mv -f "$tmp" "$dest"; then
+			echo "refused: ${dest} was not installed" >&2
+			return 1
+		fi
+		chmod 644 "$dest"
+	done < "$COMPANION_DIR/manifest"
+}
+
+function rollback_armed_companions() {
+	local action path bak
+	[ -n "${COMPANION_DIR:-}" ] && [ -f "$COMPANION_DIR/installed" ] || return 0
+	tac "$COMPANION_DIR/installed" | while read -r action path bak; do
+		case "$action" in
+			restore) cp -p "$bak" "$path" ;;
+			remove) rm -f "$path" ;;
+		esac
+	done
 }
 
 function config_matches_snapshot() {
@@ -1204,22 +1444,33 @@ function config_publish {
 		echo "refused: functional-test.d is not empty. Sample svxlink.d files were not copied."
 		return 1
 	fi
-	if ! config_logic_select; then
-		return 1
-	fi
 	snapshot=$(mktemp "${parent}/.orp-svxlink.XXXXXX")
+	COMPANION_DIR=""
+	conf_existed=0
 	if native_functional_token && tx_armed; then
+		# Advanced mode is not rendered by config_logic_select. The staged
+		# set is the publish. Repeater and simplex still record a logic name
+		# when the database mode is one of those two.
+		mode_now=$(config_db_value orp_Mode || true)
+		case "$mode_now" in
+			repeater|simplex) config_logic_select || logic_type=staged ;;
+			*) logic_type=staged; logic_name=staged ;;
+		esac
 		staged=$(module_root_path /var/lib/openrepeater/bench-preview/svxlink.conf)
-		if [ ! -f "$staged" ] || [ -L "$staged" ]; then
+		if ! wwwdata_read_capped "$staged" "$snapshot"; then
 			rm -f "$snapshot"
 			echo "refused: tx-armed publish needs a regular staged svxlink.conf"
 			return 1
 		fi
-		if ! timeout 5 setpriv --reuid=www-data --regid=www-data --init-groups -- cat -- "$staged" > "$snapshot"; then
+		if ! prepare_armed_companions; then
+			rm -rf "$COMPANION_DIR"
 			rm -f "$snapshot"
-			echo "refused: staged svxlink.conf was not read as www-data"
+			echo "refused: staged companion was not read"
 			return 1
 		fi
+	elif ! config_logic_select; then
+		rm -f "$snapshot"
+		return 1
 	elif ! config_render "$snapshot"; then
 		rm -f "$snapshot"
 		echo "refused: disconnected-test config was not rendered"
@@ -1244,16 +1495,19 @@ function config_publish {
 		return 1
 	fi
 	if [ -f "$dest" ]; then
-		backup="${ORP_ROOT:-}/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%SZ)"
+		backup=$(native_path "/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%SZ)")
 		if ! config_ancestors_real "$(dirname "$backup")"; then
 			rm -f "$snapshot"
+			rm -rf "${COMPANION_DIR:-}"
 			return 1
 		fi
 		mkdir -p "$backup"
 		cp -p "$dest" "$backup/svxlink.conf"
+		conf_existed=1
 	fi
 	if ! mv -f "$snapshot" "$dest"; then
 		rm -f "$snapshot"
+		rm -rf "${COMPANION_DIR:-}"
 		if [ "$courtesy_had" = 1 ]; then
 			cp -p "$courtesy_backup" "$courtesy_dest"
 		else
@@ -1264,6 +1518,18 @@ function config_publish {
 		return 1
 	fi
 	chmod 644 "$dest"
+	if ! commit_armed_companions; then
+		rollback_armed_companions
+		rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"
+		rm -rf "${COMPANION_DIR:-}"
+		if [ "$courtesy_had" = 1 ]; then
+			cp -p "$courtesy_backup" "$courtesy_dest"
+		fi
+		rm -f "$courtesy_backup"
+		echo "refused: staged companion was not installed. The published set was rolled back."
+		return 1
+	fi
+	rm -rf "${COMPANION_DIR:-}"
 	sum_after=$(sha256sum "$dest" | awk '{print $1}')
 	rm -f "$courtesy_backup"
 	if [ "$sum_before" != "$sum_after" ]; then
@@ -1274,6 +1540,21 @@ function config_publish {
 	echo "snapshot=${sum_after}"
 	ptt_type=$(sed -n 's/^PTT_TYPE=//p' "$dest" | head -n 1)
 	ptt_pin=$(sed -n 's/^PTT_PIN=//p' "$dest" | head -n 1)
+	awk '
+		/^\[/ { sec=$0; next }
+		/^PTT_TYPE=/ { t[sec]=substr($0, 10); seen[++n]=sec }
+		/^PTT_PIN=/ { p[sec]=substr($0, 9) }
+		END {
+			for (i = 1; i <= n; i++) {
+				s = seen[i]
+				if (s ~ /^\[(Tx|TX)/) {
+					printf "tx-section=%s PTT_TYPE=%s", s, t[s]
+					if (p[s] != "") printf " PTT_PIN=%s", p[s]
+					printf "\n"
+				}
+			}
+		}
+	' "$dest"
 	if [ -n "$ptt_type" ] && [ "$ptt_type" != "NONE" ]; then
 		echo "runtime=stored-wiring PTT_TYPE=${ptt_type} PTT_PIN=${ptt_pin}"
 		echo "logic=${logic_type}"
@@ -1393,7 +1674,7 @@ function alsamixer_backup {
 		rm -f "$tmp"
 		return 1
 	fi
-	if ! setpriv --reuid=www-data --regid=www-data --init-groups -- tee -- "$1" < "$tmp" >/dev/null; then
+	if ! timeout 5 setpriv --reuid=www-data --regid=www-data --init-groups -- tee -- "$1" < "$tmp" >/dev/null; then
 		rm -f "$tmp"
 		echo "refused: alsa state was not written as www-data"
 		return 1
@@ -1414,7 +1695,7 @@ function alsamixer_restore {
 		return 1
 	fi
 	tmp=$(mktemp)
-	if ! timeout 5 setpriv --reuid=www-data --regid=www-data --init-groups -- cat -- "$1" > "$tmp"; then
+	if ! wwwdata_read_capped "$1" "$tmp"; then
 		rm -f "$tmp"
 		echo "refused: alsa state was not read as www-data"
 		return 1
@@ -1525,7 +1806,7 @@ function module_name_ok() {
 # Live runs ignore ORP_ROOT. The harness may prefix it.
 function module_root_path() {
 	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
-		printf '%s%s' "${ORP_ROOT:-}" "$1"
+		native_path "$1"
 		return 0
 	fi
 	printf '%s' "$1"

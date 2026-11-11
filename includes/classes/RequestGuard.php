@@ -166,6 +166,10 @@ class RequestGuard {
 		if (($option === 'gpio_up' || $option === 'gpio_down') && !BenchGuard::detect()->txArmed()) {
 			return false;
 		}
+		$guard = BenchGuard::detect();
+		if ($service === 'remotetrx' && ($option === 'start' || $option === 'restart') && !$guard->txArmed() && !$guard->remotetrxPttDisconnected()) {
+			return false;
+		}
 		return true;
 	}
 

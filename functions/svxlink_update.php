@@ -230,13 +230,21 @@ if ($publishFailed || ($onBench && !$benchGuard->uiBlocksLifted()) || ($benchGua
 }
 
 if ($benchGuard->uiBlocksLifted()) {
-	shell_exec('sudo /usr/sbin/orp_helper config publish 2>&1');
+	$publish = shell_exec('sudo /usr/sbin/orp_helper config publish 2>&1');
+	if (!is_string($publish) || strpos($publish, 'refused:') !== false) {
+		$notice = 'functional_publish_failed=1';
+		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
+		$join = (strpos($url, '?') === false) ? '?' : '&';
+		header('Location: '.$url.$join.$notice);
+		exit;
+	}
 }
 
 ########
 # GPIO setup runs only when root has created the tx-armed flag. Without
-# that flag the published runtime stays disconnected. A lifted svxlink
-# start skips the snapshot and native-start checks inside orp_helper.
+# that flag the published runtime stays disconnected. An armed start skips
+# the snapshot and native-start checks. An unarmed start still refuses a
+# PTT_TYPE other than NONE and a config that does not match the snapshot.
 if ($benchGuard->txArmed()) {
 	$shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_down');
 	$shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up');

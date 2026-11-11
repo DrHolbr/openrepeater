@@ -8,23 +8,45 @@ bench_note_live_etc() {
 	fi
 }
 
+# "/" and "//" are not a prefix. They would alias the live /etc tree.
+bench_root_prefix() {
+	local root=${ROOT:-}
+	while [ -n "$root" ] && [ "${root%/}" != "$root" ]; do
+		root=${root%/}
+	done
+	case "$root" in
+		""|/) return 1 ;;
+	esac
+	printf '%s' "$root"
+}
+
 # ROOT prefixes a fixture. A harness run with an empty ROOT must not open
 # the live token or hostname. Production (harness unset) still uses /etc.
 p() {
-	local rel=$1 resolved
+	local rel=$1 root resolved collapsed
 	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
-		resolved="${ROOT:-}${rel}"
-		case "$rel" in
-			/etc/hostname|/etc/openrepeater|/etc/openrepeater/*)
-				case "$resolved" in
-					/etc/hostname|/etc/openrepeater|/etc/openrepeater/*)
-						bench_note_live_etc "$resolved"
-						printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked${rel}"
-						return 0
-						;;
-				esac
+		if ! root=$(bench_root_prefix); then
+			case "$rel" in
+				/etc/hostname|/etc/openrepeater|/etc/openrepeater/*)
+					bench_note_live_etc "$rel"
+					printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked${rel}"
+					return 0
+					;;
+			esac
+			printf '%s' "$rel"
+			return 0
+		fi
+		resolved="${root}${rel}"
+		collapsed=$(printf '%s' "$resolved" | sed -E 's#/+#/#g')
+		case "$collapsed" in
+			/etc|/etc/*)
+				bench_note_live_etc "$collapsed"
+				printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked${rel}"
+				return 0
 				;;
 		esac
+		printf '%s' "$resolved"
+		return 0
 	fi
 	printf '%s%s' "${ROOT}" "$1"
 }
@@ -1054,35 +1076,37 @@ bench_ancestors_are_real() {
 
 # When the trusted functional-test token is present, a /dev/null mask is
 # removed so svxlink, remotetrx, and svxreflector can be started later.
-# After unmask the unit is disabled and existing wants links are removed.
-# The installer does not enable them and does not start them.
+# Every unit is then disabled, and wants, requires, and upholds links for
+# all three units are removed. is-enabled must be disabled. The installer
+# does not enable them and does not start them.
 bench_unmask_radio_units() {
 	local unit link sys enabled
 	if ! bench_mode_is_functional_test; then
 		return 0
 	fi
+	sys=$(p /etc/systemd/system)
 	for unit in svxlink.service remotetrx.service svxreflector.service; do
-		link=$(p "/etc/systemd/system/${unit}")
+		link="${sys}/${unit}"
 		if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
 			rm -f -- "$link"
 			echo "unmasked ${unit} for functional-test"
 			orp_systemctl unmask "$unit" || true
-			orp_systemctl disable "$unit" || true
-			sys=$(p /etc/systemd/system)
-			if [ -d "$sys" ]; then
-				find -P "$sys" -xdev -type l -name "$unit" -path '*wants/*' -delete
-			fi
-			enabled=$(orp_systemctl is-enabled "$unit" 2>/dev/null || true)
-			case "$enabled" in
-				disabled|not-found)
-					echo "is-enabled=disabled ${unit}"
-					;;
-				*)
-					echo "refused: ${unit} is-enabled=${enabled:-empty}, expected disabled" >&2
-					return 1
-					;;
-			esac
 		fi
+		orp_systemctl disable "$unit" || true
+		if [ -d "$sys" ]; then
+			find -P "$sys" -xdev -type l -name "$unit" \
+				\( -path '*wants/*' -o -path '*requires/*' -o -path '*upholds/*' \) -delete
+		fi
+		enabled=$(orp_systemctl is-enabled "$unit" 2>/dev/null || true)
+		case "$enabled" in
+			disabled|not-found)
+				echo "is-enabled=disabled ${unit}"
+				;;
+			*)
+				echo "refused: ${unit} is-enabled=${enabled:-empty}, expected disabled" >&2
+				return 1
+				;;
+		esac
 	done
 }
 

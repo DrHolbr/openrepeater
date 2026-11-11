@@ -10,12 +10,13 @@ This mode assumes no radio is attached. Do this before a transmitter, antenna, o
 
 1. Confirm the host is still the bench and nothing is keyed.
 2. Leave `/etc/openrepeater/tx-armed` absent. The installer does not create it. Only root over SSH creates it, and only when a control operator is present.
-3. The flag is a regular file owned by uid 0, not a symlink, not group or world writable, and without an extended ACL. It uses the same checks as the functional-test token.
-4. Without the flag, publish stays the disconnected runtime (`PTT_TYPE=NONE`). Start, stop, and restart are available. `enable` stays refused for `svxlink`, `remotetrx`, and `svxreflector`.
-5. With the flag, publish installs the stored wiring and the UI reports the real PTT type and pin. It does not report `PTT_TYPE=NONE` for that wiring.
-6. After unmask, the installer disables the unit and removes existing wants links. `is-enabled` must be `disabled`.
-7. A lifted `svxlink start` skips the snapshot match and the native-start preflight. Those checks still run when the token is not trusted.
-8. `/usr/sbin/svxlink_gpio_up` and `/usr/sbin/svxlink_gpio_down` are not in this tree. The helper executes them and does not source them. On the cloud agent both paths are absent, so there is no sourced file to audit. On the bench, confirm each binary exists, is root-owned, and that every file it sources is root-owned before creating `tx-armed`.
+3. The flag is a regular file owned by uid 0, not a symlink, not group or world writable, and without an extended ACL. Its contents are exactly `armed`. It uses the same trust checks as the functional-test token.
+4. Without the flag, publish stays the disconnected runtime (`PTT_TYPE=NONE`). `svxlink start` and `svxlink restart` are refused unless that live file matches the disconnected snapshot and every `PTT_TYPE` is `NONE`. `remotetrx start` and `remotetrx restart` are refused unless every `PTT_TYPE` in `remotetrx.conf` is `NONE` or `Dummy`. Stop stays available. `enable` stays refused for `svxlink`, `remotetrx`, and `svxreflector`.
+5. With the flag, publish installs the staged `svxlink.conf` and, when those files are in the preview, `gpio.conf`, `Logic.tcl`, and `ORP_*Logic_PortN.tcl`. Each file is read as www-data with a size cap and moved into place atomically. A failure rolls the set back. The UI reports every Tx section's PTT type and pin. It does not report `PTT_TYPE=NONE` for stored GPIO wiring. The mode-save message does that only when the functional-test token is trusted and the flag is present.
+6. `unmask` disables the unit and removes `*.wants`, `*.requires`, and `*.upholds` links for all three radio units. `is-enabled` must be `disabled`.
+7. An armed `svxlink start` skips the snapshot match and the native-start preflight. An unarmed start does not. Those checks still run when the token is not trusted.
+8. Disarm before a radio is connected: remove `/etc/openrepeater/tx-armed`, run `sudo /usr/sbin/orp_helper config publish`, then `grep '^PTT_TYPE=' /etc/svxlink/svxlink.conf`. Every value must be `NONE`.
+9. `/usr/sbin/svxlink_gpio_up` and `/usr/sbin/svxlink_gpio_down` are not in this tree. The helper executes them and does not source them. On the cloud agent both paths are absent, so there is no sourced file to audit. On the bench, confirm each binary exists, is root-owned, and that every file it sources is root-owned before creating `tx-armed`.
 
 ## Decision
 

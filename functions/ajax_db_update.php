@@ -56,7 +56,7 @@ if (isset($updates['orp_Mode'])) {
 	$type = $updates['orp_Mode'] === 'simplex' ? 'Simplex' : 'Repeater';
 	$ptt = 'NONE';
 	$detail = 'No GPIO line is configured.';
-	if (BenchGuard::detect()->txArmed()) {
+	if (BenchGuard::detect()->uiBlocksLifted() && BenchGuard::detect()->txArmed()) {
 		$pin = '';
 		$ports = $Database->get_ports();
 		if (is_array($ports)) {

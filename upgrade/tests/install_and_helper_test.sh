@@ -110,7 +110,7 @@ EOF
 checksum() { sha256sum "$1" | awk '{print $1}'; }
 
 tmp=$(orp_mktemp_dir)
-trap 'sudo -n rm -f /var/www/openrepeater/backup/build/alsamixer.state /var/www/openrepeater/backup/restore/alsamixer.state; orp_cleanup_fixture "$tmp"' EXIT
+trap 'orp_cleanup_fixture "$tmp"' EXIT
 helper_root="$tmp/helper-root"
 orp_mkdir "$helper_root/etc"
 printf 'fixture-host\n' > "$helper_root/etc/hostname"
@@ -647,12 +647,12 @@ fi
 printf '%s\n' '#!/bin/bash' 'echo "alsactl $*" >> "${HELPER_LOG:?}"' 'exit 1' > "$rec/alsactl"
 chmod 755 "$rec/alsactl"
 : > "$hlog"
-result=$(run_helper /no/such/bench-mode alsa backup /var/www/openrepeater/backup/build/alsamixer.state)
+result=$(run_helper /no/such/bench-mode alsa backup "$helper_root/var/www/openrepeater/backup/build/alsamixer.state")
 rc=$(printf '%s\n' "$result" | head -n 1)
 out=$(printf '%s\n' "$result" | tail -n +2)
 if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'alsactl store failed' \
 	&& grep -q 'alsactl --file ' "$hlog" \
-	&& ! grep -q 'alsactl --file /var/www/openrepeater/backup/build/alsamixer.state' "$hlog" \
+	&& ! grep -q "alsactl --file $helper_root/var/www/openrepeater/backup/build/alsamixer.state" "$hlog" \
 	&& ! grep -q '^chown ' "$hlog"
 then
 	ok "alsactl failure does not open or chown the www-data state path"
@@ -662,30 +662,62 @@ else
 	cat "$hlog" >&2 || true
 fi
 
-canary=$(mktemp)
+canary="$helper_root/alsa-canary"
+state="$helper_root/var/www/openrepeater/backup/build/alsamixer.state"
+orp_mkdir "$helper_root/var/www/openrepeater/backup/build" "$helper_root/var/www/openrepeater/backup/restore"
 printf 'CANARY\n' > "$canary"
 sudo -n chown 0:0 "$canary"
 sudo -n chmod 644 "$canary"
-sudo -n mkdir -p /var/www/openrepeater/backup/build /var/www/openrepeater/backup/restore
-sudo -n ln -sfn "$canary" /var/www/openrepeater/backup/build/alsamixer.state
-sudo -n ln -sfn "$canary" /var/www/openrepeater/backup/restore/alsamixer.state
+cat > "$rec/alsactl" <<'EOF'
+#!/bin/bash
+echo "alsactl $*" >> "${HELPER_LOG:?}"
+file=""
+prev=""
+for arg in "$@"; do
+	if [ "$prev" = "--file" ]; then
+		file=$arg
+	fi
+	prev=$arg
+done
+if [ -n "${ORP_ALSA_SWAP_TARGET:-}" ] && [ -n "${ORP_ALSA_CANARY:-}" ]; then
+	rm -f -- "$ORP_ALSA_SWAP_TARGET"
+	ln -s -- "$ORP_ALSA_CANARY" "$ORP_ALSA_SWAP_TARGET"
+fi
+if [ -n "$file" ]; then
+	printf 'stored\n' > "$file"
+fi
+exit 0
+EOF
+chmod 755 "$rec/alsactl"
+printf 'regular\n' > "$state"
+ORP_ALSA_SWAP_TARGET="$state" ORP_ALSA_CANARY="$canary" HELPER_LOG="$hlog" "$rec/alsactl" --file "$state" store
+sudo -n chown www-data:www-data "$state"
+if [ "$(stat -c %u "$canary")" != "0" ] || [ "$(stat -c %a "$canary")" != "644" ] || ! cmp -s <(printf 'CANARY\n') "$canary"; then
+	ok "3d0b6d9 alsactl --file plus chown changes the root canary"
+else
+	bad "3d0b6d9 alsactl --file plus chown left the canary unchanged"
+fi
+printf 'CANARY\n' | sudo -n tee "$canary" >/dev/null
+sudo -n chown 0:0 "$canary"
+sudo -n chmod 644 "$canary"
+rm -f "$state"
+printf 'regular\n' > "$state"
+canary_sha=$(sha256sum "$canary")
 : > "$hlog"
-result=$(run_helper /no/such/bench-mode alsa backup /var/www/openrepeater/backup/build/alsamixer.state)
-restore=$(run_helper /no/such/bench-mode alsa restore /var/www/openrepeater/backup/restore/alsamixer.state)
+result=$(ORP_ALSA_SWAP_TARGET="$state" ORP_ALSA_CANARY="$canary" run_helper /no/such/bench-mode alsa backup "$state")
 if [ "$(stat -c %u "$canary")" = "0" ] \
 	&& [ "$(stat -c %a "$canary")" = "644" ] \
-	&& printf '%s\n' "$result" | grep -q 'symlink' \
-	&& printf '%s\n' "$restore" | grep -q 'symlink'
+	&& [ "$(sha256sum "$canary")" = "$canary_sha" ] \
+	&& printf '%s\n' "$result" | grep -q 'symlink'
 then
-	ok "an alsa state symlink does not change the root canary owner"
+	ok "an alsa store that swaps in a symlink leaves the root canary unchanged"
 else
-	bad "alsa symlink canary owner=$(stat -c '%u %a' "$canary")"
-	printf '%s\n' "$result" "$restore" >&2
+	bad "alsa symlink canary owner=$(stat -c '%u %a' "$canary") sha=$(sha256sum "$canary")"
+	printf '%s\n' "$result" >&2
 fi
-sudo -n rm -f /var/www/openrepeater/backup/build/alsamixer.state /var/www/openrepeater/backup/restore/alsamixer.state
 
 : > "$hlog"
-result=$(run_helper "$marker" alsa backup /var/www/openrepeater/backup/build/alsamixer.state)
+result=$(run_helper "$marker" alsa backup "$helper_root/var/www/openrepeater/backup/build/alsamixer.state")
 rc=$(printf '%s\n' "$result" | head -n 1)
 out=$(printf '%s\n' "$result" | tail -n +2)
 if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && ! grep -E -q 'alsactl|chown' "$hlog"; then

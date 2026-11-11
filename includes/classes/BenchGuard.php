@@ -178,7 +178,55 @@ class BenchGuard {
 		if ($this->extendedAcl($file)) {
 			return false;
 		}
+		$raw = file_get_contents($file);
+		return $raw === "armed" || $raw === "armed\n";
+	}
+
+	// Missing remotetrx.conf has no PTT lines. A real PTT_TYPE other than
+	// NONE or Dummy means start would key a radio unless tx-armed is set.
+	public function remotetrxPttDisconnected() {
+		$path = $this->remotetrxConf();
+		if ($path === '') {
+			return true;
+		}
+		if (is_link($path)) {
+			return false;
+		}
+		if (!is_file($path)) {
+			return true;
+		}
+		$raw = file_get_contents($path);
+		if (!is_string($raw)) {
+			return false;
+		}
+		if (preg_match_all('/^PTT_TYPE=(.*)$/m', $raw, $matches) < 1) {
+			return true;
+		}
+		foreach ($matches[1] as $value) {
+			if ($value !== 'NONE' && $value !== 'Dummy') {
+				return false;
+			}
+		}
 		return true;
+	}
+
+	private function remotetrxConf() {
+		if (self::testHarnessActive()) {
+			$root = getenv('ORP_ROOT');
+			if (!is_string($root) || $root === '') {
+				return '';
+			}
+			$root = rtrim($root, '/');
+			if ($root === '' || $root === '/') {
+				return '';
+			}
+			$joined = $root . '/etc/svxlink/remotetrx.conf';
+			if (!self::harnessPathAllowed($joined)) {
+				return '';
+			}
+			return $joined;
+		}
+		return '/etc/svxlink/remotetrx.conf';
 	}
 
 	private function txArmedFile() {
@@ -463,6 +511,9 @@ class BenchGuard {
 				return false;
 			}
 			if ($service === 'set_mixer') {
+				return false;
+			}
+			if ($service === 'remotetrx' && ($option === 'start' || $option === 'restart') && !$this->txArmed() && !$this->remotetrxPttDisconnected()) {
 				return false;
 			}
 			return true;
