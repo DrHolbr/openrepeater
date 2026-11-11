@@ -2,7 +2,30 @@
 # Shared target checks for the bench UI installer.
 # ROOT is a path prefix. Empty ROOT means the real filesystem root.
 
+bench_note_live_etc() {
+	if [ -n "${ORP_LIVE_ETC_LOG:-}" ]; then
+		printf '%s\n' "$1" >> "$ORP_LIVE_ETC_LOG"
+	fi
+}
+
+# ROOT prefixes a fixture. A harness run with an empty ROOT must not open
+# the live token or hostname. Production (harness unset) still uses /etc.
 p() {
+	local rel=$1 resolved
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+		resolved="${ROOT:-}${rel}"
+		case "$rel" in
+			/etc/hostname|/etc/openrepeater|/etc/openrepeater/*)
+				case "$resolved" in
+					/etc/hostname|/etc/openrepeater|/etc/openrepeater/*)
+						bench_note_live_etc "$resolved"
+						printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked${rel}"
+						return 0
+						;;
+				esac
+				;;
+		esac
+	fi
 	printf '%s%s' "${ROOT}" "$1"
 }
 
@@ -1031,9 +1054,10 @@ bench_ancestors_are_real() {
 
 # When the trusted functional-test token is present, a /dev/null mask is
 # removed so svxlink, remotetrx, and svxreflector can be started later.
+# After unmask the unit is disabled and existing wants links are removed.
 # The installer does not enable them and does not start them.
 bench_unmask_radio_units() {
-	local unit link
+	local unit link sys enabled
 	if ! bench_mode_is_functional_test; then
 		return 0
 	fi
@@ -1043,6 +1067,21 @@ bench_unmask_radio_units() {
 			rm -f -- "$link"
 			echo "unmasked ${unit} for functional-test"
 			orp_systemctl unmask "$unit" || true
+			orp_systemctl disable "$unit" || true
+			sys=$(p /etc/systemd/system)
+			if [ -d "$sys" ]; then
+				find -P "$sys" -xdev -type l -name "$unit" -path '*wants/*' -delete
+			fi
+			enabled=$(orp_systemctl is-enabled "$unit" 2>/dev/null || true)
+			case "$enabled" in
+				disabled|not-found)
+					echo "is-enabled=disabled ${unit}"
+					;;
+				*)
+					echo "refused: ${unit} is-enabled=${enabled:-empty}, expected disabled" >&2
+					return 1
+					;;
+			esac
 		fi
 	done
 }

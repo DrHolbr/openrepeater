@@ -229,7 +229,7 @@ class SVXLink {
 	}
 
 	public function build_rx($curPort) {
-		if (BenchGuard::detect()->operatingMode() === 'functional-test') {
+		if (BenchGuard::detect()->operatingMode() === 'functional-test' && !BenchGuard::detect()->txArmed()) {
 			$cfg = $this->disconnectedRuntimeConfig();
 			return array('Rx1' => $cfg['Rx1']);
 		}
@@ -292,7 +292,7 @@ class SVXLink {
 	###############################################
 
 	public function build_tx($curPort) {
-		if (BenchGuard::detect()->operatingMode() === 'functional-test') {
+		if (BenchGuard::detect()->operatingMode() === 'functional-test' && !BenchGuard::detect()->txArmed()) {
 			$cfg = $this->disconnectedRuntimeConfig();
 			return array('Tx1' => $cfg['Tx1']);
 		}
@@ -496,11 +496,16 @@ class SVXLink {
 	public function configDestination($filename) {
 		$guard = BenchGuard::detect();
 		if ($guard->operatingMode() === 'functional-test') {
-			$stageNames = array('svxlink.conf');
+			$stage = ($filename === 'svxlink.conf');
 			if ($guard->uiBlocksLifted()) {
-				$stageNames = array('svxlink.conf', 'gpio.conf', 'Logic.tcl');
+				if ($filename === 'gpio.conf' || $filename === 'Logic.tcl') {
+					$stage = true;
+				}
+				if (preg_match('/^ORP_(Repeater|Simplex)Logic_Port[0-9]+\.tcl$/', $filename) === 1) {
+					$stage = true;
+				}
 			}
-			if (!in_array($filename, $stageNames, true)) {
+			if (!$stage) {
 				return null;
 			}
 			$dir = $guard->previewDir();

@@ -126,12 +126,13 @@ function bench_mode_on {
 }
 
 function drive_refuses {
-	# A trusted functional-test token lifts the GPIO block so the bench UI
-	# can exercise PTT and libgpiod with no radio attached.
-	if native_functional_token; then
+	# GPIO and PTT run only when the trusted token and the root-only
+	# tx-armed flag are both present. The installer does not create the flag.
+	# This mode assumes no radio is attached.
+	if native_functional_token && tx_armed; then
 		return 1
 	fi
-	if functional_test_on || bench_mode_on; then
+	if functional_test_on || bench_mode_on || native_functional_token; then
 		echo "refused: GPIO and PTT setup stay blocked ($1). This is not a service start and not proof a transmitter unkeyed."
 		return 0
 	fi
@@ -184,6 +185,12 @@ function radio_unit_ctl {
 			return 1
 			;;
 	esac
+	# enable stays blocked for svxlink, remotetrx, and svxreflector.
+	# start, stop, and restart stay available with the trusted token.
+	if [ "$action" = "enable" ]; then
+		echo "refused: ${unit} enable stays blocked. Start, stop, and restart stay available."
+		return 1
+	fi
 	if ! native_functional_token; then
 		echo "refused: ${unit} ${action} requires a trusted functional-test token"
 		return 1
@@ -206,9 +213,11 @@ function svxlink_disable {
 }
 
 function svxlink_enable {
-	if native_functional_token; then
-		radio_unit_ctl svxlink enable
-		return $?
+	# Functional-test refuses enable for svxlink even when the trusted
+	# token lifts start, stop, and restart.
+	if functional_test_on || native_functional_token; then
+		echo "refused: svxlink enable stays blocked in functional-test. Start, stop, and restart stay available."
+		return 1
 	fi
 	if bench_refuses "svxlink enable"; then
 		return 1
@@ -285,6 +294,11 @@ function svxlink_stop {
 }
 
 function svxlink_start {
+	# A trusted functional-test token starts the unit directly. That path
+	# skips config_matches_snapshot and native_start_blocked. Those checks
+	# still run when the mode file is functional-test but the token is not
+	# trusted. svxlink_gpio_up executes /usr/sbin/svxlink_gpio_up; it does
+	# not source that file. This tree does not ship the binary.
 	if native_functional_token; then
 		radio_unit_ctl svxlink start
 		return $?
@@ -322,9 +336,11 @@ function svxlink_gpio_down {
 
 
 ### SYSTEM FUNCTIONS ###
-# The web process never supplies this file. Root renders one fixed
-# disconnected-test document. A staged svxlink.conf is ignored, including
-# ORP_STAGED_CONFIG, so a check-then-install race cannot change the bytes.
+# The web process never supplies this file. Without /etc/openrepeater/tx-armed,
+# root renders the disconnected-test document and does not read the preview
+# file or ORP_STAGED_CONFIG. With that root-only flag, www-data cats the staged
+# file into a root snapshot. Root does not open the staged path and does not
+# use cp -p.
 function config_real_file() {
 	local path=$1
 	[ -f "$path" ] && [ ! -L "$path" ]
@@ -566,12 +582,69 @@ function native_systemctl() {
 # nothing. A live run reads only /etc/hostname and
 # /etc/openrepeater/operating-mode. The harness may prefix ORP_ROOT on
 # those two paths and does not look in the docroot.
+# Harness runs must name a fixture root. An empty ORP_ROOT is not the live
+# host. Production (harness unset) still reads the real /etc paths.
+function harness_note_live_etc() {
+	if [ -n "${ORP_LIVE_ETC_LOG:-}" ]; then
+		printf '%s\n' "$1" >> "$ORP_LIVE_ETC_LOG"
+	fi
+}
+
 function native_token_path() {
+	local rel=$1 resolved root
 	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
-		printf '%s%s' "${ORP_ROOT:-}" "$1"
+		root=${ORP_ROOT:-}
+		resolved="${root}${rel}"
+		case "$resolved" in
+			/etc/hostname|/etc/openrepeater|/etc/openrepeater/*)
+				harness_note_live_etc "$resolved"
+				printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked${rel}"
+				return 0
+				;;
+		esac
+		printf '%s' "$resolved"
 		return 0
 	fi
-	printf '%s' "$1"
+	printf '%s' "$rel"
+}
+
+function tx_armed_path() {
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+		if [ -n "${ORP_TX_ARMED_FILE:-}" ]; then
+			printf '%s' "$ORP_TX_ARMED_FILE"
+			return 0
+		fi
+		if [ -z "${ORP_ROOT:-}" ]; then
+			harness_note_live_etc /etc/openrepeater/tx-armed
+			printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked/etc/openrepeater/tx-armed"
+			return 0
+		fi
+		printf '%s%s' "${ORP_ROOT}" /etc/openrepeater/tx-armed
+		return 0
+	fi
+	printf '%s' /etc/openrepeater/tx-armed
+}
+
+# Root-only flag. Absent unless root creates it over SSH. Same trust checks
+# as the functional-test token: not a symlink, mode has no group or world
+# write, owner uid 0, and no extended ACL when getfacl is installed.
+function tx_armed() {
+	local file perm owner
+	file=$(tx_armed_path)
+	[ -f "$file" ] && [ ! -L "$file" ] || return 1
+	perm=$(stat -c %a "$file")
+	case "$perm" in
+		''|*[!0-7]*) return 1 ;;
+	esac
+	[ $((8#$perm & 022)) -eq 0 ] || return 1
+	owner=$(stat -c %u "$file")
+	[ "$owner" = "0" ] || return 1
+	if command -v getfacl >/dev/null 2>&1; then
+		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
+			return 1
+		fi
+	fi
+	return 0
 }
 
 function native_functional_token() {
@@ -1094,7 +1167,8 @@ function config_publish {
 		echo "refused: config publish requires functional-test"
 		return 1
 	fi
-	# Deliberately ignore ORP_STAGED_CONFIG and the preview file.
+	# Without tx-armed, the preview file is ignored. With the flag, www-data
+	# cats it into the root snapshot below. cp -p is not used.
 	if ! config_callsign >/dev/null; then
 		echo "refused: stored call sign is not a plain station token. It was not changed and was not published."
 		return 1
@@ -1130,20 +1204,33 @@ function config_publish {
 		echo "refused: functional-test.d is not empty. Sample svxlink.d files were not copied."
 		return 1
 	fi
+	if ! config_logic_select; then
+		return 1
+	fi
 	snapshot=$(mktemp "${parent}/.orp-svxlink.XXXXXX")
-	staged=$(module_root_path /var/lib/openrepeater/bench-preview/svxlink.conf)
-	if native_functional_token && [ -f "$staged" ] && [ ! -L "$staged" ]; then
-		cp -p -- "$staged" "$snapshot" || {
+	if native_functional_token && tx_armed; then
+		staged=$(module_root_path /var/lib/openrepeater/bench-preview/svxlink.conf)
+		if [ ! -f "$staged" ] || [ -L "$staged" ]; then
 			rm -f "$snapshot"
-			echo "refused: staged svxlink.conf was not copied"
+			echo "refused: tx-armed publish needs a regular staged svxlink.conf"
 			return 1
-		}
+		fi
+		if ! timeout 5 setpriv --reuid=www-data --regid=www-data --init-groups -- cat -- "$staged" > "$snapshot"; then
+			rm -f "$snapshot"
+			echo "refused: staged svxlink.conf was not read as www-data"
+			return 1
+		fi
 	elif ! config_render "$snapshot"; then
 		rm -f "$snapshot"
 		echo "refused: disconnected-test config was not rendered"
 		return 1
 	fi
 	sum_before=$(sha256sum "$snapshot" | awk '{print $1}')
+	if ! config_courtesy_load; then
+		rm -f "$snapshot"
+		echo "refused: courtesy mode was not loaded. The runtime config was not replaced."
+		return 1
+	fi
 	courtesy_dest=$(native_path /usr/local/share/svxlink/events.d/local/Logic.tcl)
 	courtesy_backup=$(mktemp)
 	courtesy_had=0
@@ -1185,9 +1272,17 @@ function config_publish {
 	fi
 	echo "published ${dest}"
 	echo "snapshot=${sum_after}"
-	echo "runtime=simulation/dummy-path PTT_TYPE=NONE loopback-udp"
-	echo "logic=${logic_type}"
-	echo "gpio=not-applied"
+	ptt_type=$(sed -n 's/^PTT_TYPE=//p' "$dest" | head -n 1)
+	ptt_pin=$(sed -n 's/^PTT_PIN=//p' "$dest" | head -n 1)
+	if [ -n "$ptt_type" ] && [ "$ptt_type" != "NONE" ]; then
+		echo "runtime=stored-wiring PTT_TYPE=${ptt_type} PTT_PIN=${ptt_pin}"
+		echo "logic=${logic_type}"
+		echo "gpio=stored-wiring"
+	else
+		echo "runtime=simulation/dummy-path PTT_TYPE=NONE loopback-udp"
+		echo "logic=${logic_type}"
+		echo "gpio=not-applied"
+	fi
 	echo "courtesy=applied"
 	echo "courtesy_mode=${courtesy_mode}"
 	echo "courtesy_path=/usr/local/share/svxlink/events.d/local/Logic.tcl"
@@ -1260,6 +1355,10 @@ function audio_version {
 
 ### AUDIO FUNCTIONS ###
 function set_mixer {
+	if native_functional_token || functional_test_on; then
+		echo "refused: mixer control is not supported"
+		return 1
+	fi
 	if bench_refuses "set_mixer"; then
 		return 1
 	fi
@@ -1271,27 +1370,61 @@ function set_mixer {
 }
 
 function alsamixer_backup {
+	local tmp
+	# Untrusted functional-test stays refused. The trusted token keeps the
+	# backup, and root never opens the www-data path.
+	if functional_test_on && ! native_functional_token; then
+		echo "refused: alsa backup stays blocked without a trusted functional-test token"
+		return 1
+	fi
 	if bench_refuses "alsa backup"; then
 		return 1
 	fi
 	if ! alsa_state_allowed "$1"; then
 		return 1
 	fi
-	if ! alsactl --file "$1" store; then
+	tmp=$(mktemp)
+	if ! alsactl --file "$tmp" store; then
+		rm -f "$tmp"
 		echo "refused: alsactl store failed"
+		return 1
+	fi
+	if ! alsa_state_allowed "$1"; then
+		rm -f "$tmp"
+		return 1
+	fi
+	if ! setpriv --reuid=www-data --regid=www-data --init-groups -- tee -- "$1" < "$tmp" >/dev/null; then
+		rm -f "$tmp"
+		echo "refused: alsa state was not written as www-data"
+		return 1
+	fi
+	rm -f "$tmp"
+}
+
+function alsamixer_restore {
+	local tmp
+	if functional_test_on && ! native_functional_token; then
+		echo "refused: alsa restore stays blocked without a trusted functional-test token"
+		return 1
+	fi
+	if bench_refuses "alsa restore"; then
 		return 1
 	fi
 	if ! alsa_state_allowed "$1"; then
 		return 1
 	fi
-	chown www-data:www-data "$1"
-}
-
-function alsamixer_restore {
-	if bench_refuses "alsa restore"; then
+	tmp=$(mktemp)
+	if ! timeout 5 setpriv --reuid=www-data --regid=www-data --init-groups -- cat -- "$1" > "$tmp"; then
+		rm -f "$tmp"
+		echo "refused: alsa state was not read as www-data"
 		return 1
 	fi
-	alsactl --file "$1" restore
+	if ! alsactl --file "$tmp" restore; then
+		rm -f "$tmp"
+		echo "refused: alsactl restore failed"
+		return 1
+	fi
+	rm -f "$tmp"
 }
 
 

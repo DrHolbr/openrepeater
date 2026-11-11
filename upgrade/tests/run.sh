@@ -48,6 +48,8 @@ orp_use_fixture_tmpdir
 # read the installed operating-mode token or the live svxlink config.
 export ORP_BENCH_TEST_HARNESS=1
 export PYTHONDONTWRITEBYTECODE=1
+export ORP_LIVE_ETC_LOG="$(orp_fixture_root)/orp-live-etc-reads.log"
+: > "$ORP_LIVE_ETC_LOG"
 
 if ! command -v php >/dev/null 2>&1; then
 	echo "php is required" >&2
@@ -74,6 +76,7 @@ echo "ok: php -l"
 
 bash "$ROOT_DIR/upgrade/tests/fixture_tmpdir_test.sh"
 php "$ROOT_DIR/upgrade/tests/php_safety_test.php"
+bash "$ROOT_DIR/upgrade/tests/harness_isolation_test.sh"
 bash "$ROOT_DIR/upgrade/tests/install_and_helper_test.sh"
 bash "$ROOT_DIR/upgrade/tests/anchor_chmod_race_test.sh"
 bash "$ROOT_DIR/upgrade/tests/login_session_test.sh"
@@ -96,4 +99,10 @@ php "$ROOT_DIR/upgrade/tests/return_url_test.php"
 php "$ROOT_DIR/upgrade/tests/stage_only_write_test.php"
 bash "$ROOT_DIR/upgrade/tests/uid_split_test.sh"
 bash "$ROOT_DIR/upgrade/tests/php_package_policy_test.sh"
+if [ -s "$ORP_LIVE_ETC_LOG" ]; then
+	echo "FAIL: a test read the live /etc/openrepeater or /etc/hostname path" >&2
+	cat "$ORP_LIVE_ETC_LOG" >&2
+	exit 1
+fi
+echo "ok: no test read live /etc/openrepeater or /etc/hostname"
 echo "harness passed"

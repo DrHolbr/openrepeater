@@ -110,7 +110,10 @@ EOF
 checksum() { sha256sum "$1" | awk '{print $1}'; }
 
 tmp=$(orp_mktemp_dir)
-trap 'orp_cleanup_fixture "$tmp"' EXIT
+trap 'sudo -n rm -f /var/www/openrepeater/backup/build/alsamixer.state /var/www/openrepeater/backup/restore/alsamixer.state; orp_cleanup_fixture "$tmp"' EXIT
+helper_root="$tmp/helper-root"
+orp_mkdir "$helper_root/etc"
+printf 'fixture-host\n' > "$helper_root/etc/hostname"
 bin="$tmp/bin"
 orp_mkdir "$bin"
 log="$tmp/systemctl.log"
@@ -314,12 +317,11 @@ else
 fi
 sudoers="$good/etc/sudoers.d/openrepeater"
 if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoers" \
-	&& grep -q 'orp_helper svxlink gpio_up' "$sudoers" \
-	&& grep -q 'orp_helper svxlink unmask' "$sudoers" \
-	&& grep -q 'orp_helper remotetrx start' "$sudoers" \
-	&& grep -q 'orp_helper svxreflector unmask' "$sudoers" \
-	&& grep -q 'orp_helper system restart' "$sudoers" \
-	&& grep -q 'orp_helper system stop' "$sudoers" \
+	&& ! grep -q 'orp_helper svxlink gpio_up' "$sudoers" \
+	&& ! grep -q 'orp_helper svxlink unmask' "$sudoers" \
+	&& ! grep -q 'orp_helper svxlink enable' "$sudoers" \
+	&& ! grep -q 'orp_helper system restart' "$sudoers" \
+	&& ! grep -q 'orp_helper alsa backup' "$sudoers" \
 	&& grep -q 'orp_helper svxlink status' "$sudoers" \
 	&& grep -q 'orp_helper svxlink start' "$sudoers" \
 	&& grep -q 'orp_helper svxlink stop' "$sudoers" \
@@ -330,7 +332,7 @@ if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoe
 	&& ! grep -F -q 'orp_helper module activate *' "$sudoers" \
 	&& ! grep -F -q 'orp_helper module deactivate *' "$sudoers"
 then
-	ok "sudoers allows the functional-test radio commands and the closed module names"
+	ok "sudoers keeps the production command list and omits lifted functional-test lines"
 else
 	bad "sudoers contract"
 	cat "$sudoers" >&2 || true
@@ -558,7 +560,7 @@ run_helper() {
 	local marker=$1
 	shift
 	set +e
-	out=$(ORP_BENCH_MARKER="$marker" "$HELPER" "$@" 2>&1)
+	out=$(ORP_BENCH_MARKER="$marker" ORP_ROOT="$helper_root" "$HELPER" "$@" 2>&1)
 	rc=$?
 	set -e
 	printf '%s\n' "$rc"
@@ -649,15 +651,38 @@ result=$(run_helper /no/such/bench-mode alsa backup /var/www/openrepeater/backup
 rc=$(printf '%s\n' "$result" | head -n 1)
 out=$(printf '%s\n' "$result" | tail -n +2)
 if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'alsactl store failed' \
-	&& grep -q 'alsactl --file /var/www/openrepeater/backup/build/alsamixer.state store' "$hlog" \
+	&& grep -q 'alsactl --file ' "$hlog" \
+	&& ! grep -q 'alsactl --file /var/www/openrepeater/backup/build/alsamixer.state' "$hlog" \
 	&& ! grep -q '^chown ' "$hlog"
 then
-	ok "alsactl failure does not chown the state file"
+	ok "alsactl failure does not open or chown the www-data state path"
 else
 	bad "alsactl failure still changed ownership"
 	printf '%s\n' "$out" >&2
 	cat "$hlog" >&2 || true
 fi
+
+canary=$(mktemp)
+printf 'CANARY\n' > "$canary"
+sudo -n chown 0:0 "$canary"
+sudo -n chmod 644 "$canary"
+sudo -n mkdir -p /var/www/openrepeater/backup/build /var/www/openrepeater/backup/restore
+sudo -n ln -sfn "$canary" /var/www/openrepeater/backup/build/alsamixer.state
+sudo -n ln -sfn "$canary" /var/www/openrepeater/backup/restore/alsamixer.state
+: > "$hlog"
+result=$(run_helper /no/such/bench-mode alsa backup /var/www/openrepeater/backup/build/alsamixer.state)
+restore=$(run_helper /no/such/bench-mode alsa restore /var/www/openrepeater/backup/restore/alsamixer.state)
+if [ "$(stat -c %u "$canary")" = "0" ] \
+	&& [ "$(stat -c %a "$canary")" = "644" ] \
+	&& printf '%s\n' "$result" | grep -q 'symlink' \
+	&& printf '%s\n' "$restore" | grep -q 'symlink'
+then
+	ok "an alsa state symlink does not change the root canary owner"
+else
+	bad "alsa symlink canary owner=$(stat -c '%u %a' "$canary")"
+	printf '%s\n' "$result" "$restore" >&2
+fi
+sudo -n rm -f /var/www/openrepeater/backup/build/alsamixer.state /var/www/openrepeater/backup/restore/alsamixer.state
 
 : > "$hlog"
 result=$(run_helper "$marker" alsa backup /var/www/openrepeater/backup/build/alsamixer.state)
@@ -1030,6 +1055,21 @@ else
 	cat "$tmp/ft-token.err" >&2 || true
 fi
 sudo chown -R "$(id -u):$(id -g)" "$with_token" || true
+token_sudoers="$with_token/etc/sudoers.d/openrepeater"
+if [ -f "$token_sudoers" ] \
+	&& grep -q 'orp_helper svxlink gpio_up' "$token_sudoers" \
+	&& grep -q 'orp_helper svxlink unmask' "$token_sudoers" \
+	&& grep -q 'orp_helper system restart' "$token_sudoers" \
+	&& grep -q 'orp_helper alsa backup /var/www/openrepeater/backup/build/alsamixer.state' "$token_sudoers" \
+	&& ! grep -q 'orp_helper svxlink enable' "$token_sudoers" \
+	&& ! grep -q 'orp_helper remotetrx enable' "$token_sudoers" \
+	&& ! grep -q 'orp_helper svxreflector enable' "$token_sudoers" \
+	&& ! grep -q 'set_mixer' "$token_sudoers"
+then
+	ok "a trusted token install emits lifted sudoers lines and not enable or mixer"
+else
+	bad "lifted sudoers were not conditional"
+fi
 
 # Same fixtures, both copies. A mismatch is a drift even when both are wrong.
 token_verdict() {

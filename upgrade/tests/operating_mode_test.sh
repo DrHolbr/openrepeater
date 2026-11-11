@@ -108,14 +108,16 @@ chmod 755 "$ctl"
 export ORP_SYSTEMCTL="$ctl"
 export ORP_SYSTEMCTL_LOG="$tmp/systemctl.log"
 : > "$ORP_SYSTEMCTL_LOG"
+orp_mkdir "$tmp/helper-root/etc"
+printf 'fixture-host\n' > "$tmp/helper-root/etc/hostname"
 set +e
-gpio_out=$("$ROOT_DIR/install/scripts/orp_helper" svxlink gpio_up 2>&1)
+gpio_out=$(ORP_ROOT="$tmp/helper-root" "$ROOT_DIR/install/scripts/orp_helper" svxlink gpio_up 2>&1)
 gpio_rc=$?
 set -e
 [ "$gpio_rc" -ne 0 ]
 printf '%s\n' "$gpio_out" | grep -q 'GPIO and PTT setup stay blocked'
 set +e
-start_out=$("$ROOT_DIR/install/scripts/orp_helper" svxlink start 2>&1)
+start_out=$(ORP_ROOT="$tmp/helper-root" "$ROOT_DIR/install/scripts/orp_helper" svxlink start 2>&1)
 start_rc=$?
 set -e
 [ "$start_rc" -ne 0 ]

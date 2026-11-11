@@ -1,8 +1,21 @@
 # Stage 2 plan: bench UI on Debian Trixie
 
-**Status: `04d7dbe15ac2832b27c600e69eb094027bfaf611` is installed on orp-test.** It was installed 1:58–2:01 AM EST on November 10, 2026, through `upgrade/install-orp-ui.sh`. svxlink was masked for that install and then returned to inactive and disabled. `remotetrx` and `svxreflector` were not left running. The rollback tree is `/var/backups/orp-rollback-143d5e7-04d7dbe`. The Pi has `php8.4-zip` `8.4.27-1~deb13u1`, `libzip5`, and `nodejs` `20.19.2`. `run.sh` passed natively at this commit, which supersedes the unfinished native run of `78112bf`. The earlier `143d5e7` page pass is the previous installed tree, not the current one. Production is untouched. This change does not merge.
+**Status: `720b6ba` is the installed build on orp-test.** The earlier `04d7dbe15ac2832b27c600e69eb094027bfaf611` install (1:58–2:01 AM EST on November 10, 2026) is the previous tree. svxlink was masked for that install and then returned to inactive and disabled. `remotetrx` and `svxreflector` were not left running. The rollback tree is `/var/backups/orp-rollback-143d5e7-04d7dbe`. The Pi has `php8.4-zip` `8.4.27-1~deb13u1`, `libzip5`, and `nodejs` `20.19.2`. Production is untouched. This change does not merge. Mixer control is not supported. "Unchanged without the token" describes production, where the trusted functional-test token is absent.
 
 The user goal is to make the existing OpenRepeater web UI usable on the bench Raspberry Pi 3B+ (Raspberry Pi OS / Debian Trixie arm64, PHP 8.x, nginx, SvxLink 26.05.2) without transmitting and without disturbing the image that is already building.
+
+## Before connecting a radio
+
+This mode assumes no radio is attached. Do this before a transmitter, antenna, or dummy load is connected:
+
+1. Confirm the host is still the bench and nothing is keyed.
+2. Leave `/etc/openrepeater/tx-armed` absent. The installer does not create it. Only root over SSH creates it, and only when a control operator is present.
+3. The flag is a regular file owned by uid 0, not a symlink, not group or world writable, and without an extended ACL. It uses the same checks as the functional-test token.
+4. Without the flag, publish stays the disconnected runtime (`PTT_TYPE=NONE`). Start, stop, and restart are available. `enable` stays refused for `svxlink`, `remotetrx`, and `svxreflector`.
+5. With the flag, publish installs the stored wiring and the UI reports the real PTT type and pin. It does not report `PTT_TYPE=NONE` for that wiring.
+6. After unmask, the installer disables the unit and removes existing wants links. `is-enabled` must be `disabled`.
+7. A lifted `svxlink start` skips the snapshot match and the native-start preflight. Those checks still run when the token is not trusted.
+8. `/usr/sbin/svxlink_gpio_up` and `/usr/sbin/svxlink_gpio_down` are not in this tree. The helper executes them and does not source them. On the cloud agent both paths are absent, so there is no sourced file to audit. On the bench, confirm each binary exists, is root-owned, and that every file it sources is root-owned before creating `tx-armed`.
 
 ## Decision
 

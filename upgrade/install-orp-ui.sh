@@ -428,9 +428,16 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio outputs
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio version
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system uptime
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system user
+# One module name, 1 to 32 characters. The first character is a letter.
+# The helper still rejects every other shape and does not treat it as a path.
+EOF
+# Lifted lines exist only when this install already has a trusted
+# functional-test token. A production install does not gain them.
+# enable is not listed. Mixer control is not supported.
+if bench_mode_is_functional_test; then
+	cat >> "$sudoers_tmp" <<'EOF'
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system restart
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system stop
-www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink enable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink disable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink gpio_up
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink gpio_down
@@ -439,23 +446,20 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx start
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx stop
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx restart
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx status
-www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx enable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx disable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx unmask
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector start
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector stop
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector restart
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector status
-www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector enable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector disable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector unmask
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa backup /var/www/openrepeater/backup/build/alsamixer.state
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa backup /var/www/openrepeater/backup/restore/alsamixer.state
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa restore /var/www/openrepeater/backup/build/alsamixer.state
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa restore /var/www/openrepeater/backup/restore/alsamixer.state
-# One module name, 1 to 32 characters. The first character is a letter.
-# The helper still rejects every other shape and does not treat it as a path.
 EOF
+fi
 module_pat='[A-Za-z]'
 module_i=1
 while [ "$module_i" -le 32 ]; do

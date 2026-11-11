@@ -54,7 +54,25 @@ echo "updated\n";
 if (isset($updates['orp_Mode'])) {
 	$logic = $updates['orp_Mode'] === 'simplex' ? 'SimplexLogic' : 'RepeaterLogic';
 	$type = $updates['orp_Mode'] === 'simplex' ? 'Simplex' : 'Repeater';
-	echo "stored-for-publish: LOGICS=${logic} TYPE=${type} PTT_TYPE=NONE. No GPIO line is configured.\n";
+	$ptt = 'NONE';
+	$detail = 'No GPIO line is configured.';
+	if (BenchGuard::detect()->txArmed()) {
+		$pin = '';
+		$ports = $Database->get_ports();
+		if (is_array($ports)) {
+			foreach ($ports as $port) {
+				if (is_array($port) && isset($port['txGPIO']) && preg_match('/^[0-9]{1,3}$/', (string) $port['txGPIO'])) {
+					$pin = (string) $port['txGPIO'];
+					break;
+				}
+			}
+		}
+		if ($pin !== '') {
+			$ptt = 'GPIO';
+			$detail = 'PTT_PIN=gpio' . $pin . '.';
+		}
+	}
+	echo "stored-for-publish: LOGICS=${logic} TYPE=${type} PTT_TYPE=${ptt}. ${detail}\n";
 }
 if (isset($updates['courtesyMode']) || isset($updates['courtesy'])) {
 	if (isset($updates['courtesyMode']) && $updates['courtesyMode'] === 'custom') {

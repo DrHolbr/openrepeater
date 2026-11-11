@@ -196,6 +196,7 @@ switch ($settings['orp_Mode']) {
 			}
 		}
 		$classSVXLink->write_config($advanced['gpio_config'], 'gpio.conf', 'text'); // Overridden GPIO config
+		$classSVXLink->write_config($classSVXLinkTCL->logic_override(), 'Logic.tcl', 'text');
         break;
 
 }
@@ -233,9 +234,13 @@ if ($benchGuard->uiBlocksLifted()) {
 }
 
 ########
-# Redundant GPIO teardown/setup to work around SVXLink issue
-$shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_down');
-$shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up');
+# GPIO setup runs only when root has created the tx-armed flag. Without
+# that flag the published runtime stays disconnected. A lifted svxlink
+# start skips the snapshot and native-start checks inside orp_helper.
+if ($benchGuard->txArmed()) {
+	$shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_down');
+	$shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up');
+}
 ########
 
 $shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink restart');

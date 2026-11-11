@@ -118,7 +118,7 @@ $benchGuard = BenchGuard::detect();
 	<div class="server_bar_wrap"<?php if ($updateFlage == false) { echo ' style="display: none;"'; } ?>>
 	<div class="server_bar">
 		<?php if ($benchGuard->uiBlocksLifted()) { ?>
-		<span>Functional test: the bench blocks are off. svxlink, remotetrx, and svxreflector can be managed, and GPIO output can be driven. No radio is attached.</span>
+		<span>Functional test: this mode assumes no radio is attached. Start, stop, and restart are available. Enable stays blocked. Stored PTT wiring and GPIO run only after root creates /etc/openrepeater/tx-armed.</span>
 		<button class="rebuild_button" data-toggle="modal" data-target="#restartServer"><i class="icon-refresh icon-white"></i> Rebuild & Restart Repeater</button>
 		<?php } elseif ($benchGuard->operatingMode() === 'functional-test') { ?>
 		<span>Functional test publishes /etc/svxlink/svxlink.conf with UDP audio and PTT_TYPE=NONE. Stored GPIO numbers are not applied. Start and stop control svxlink only and do not unmask a unit. A masked unit is service-disabled. That is separate from an unresolved GPIO number, and neither means a transmitter has unkeyed.</span>

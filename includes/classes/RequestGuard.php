@@ -154,14 +154,19 @@ class RequestGuard {
 			return false;
 		}
 		$lifted = array(
-			'svxlink' => array('enable', 'disable', 'gpio_up', 'gpio_down', 'unmask'),
+			'svxlink' => array('disable', 'gpio_up', 'gpio_down', 'unmask'),
 			'system' => array('restart', 'stop'),
-			'remotetrx' => array('start', 'stop', 'restart', 'status', 'enable', 'disable', 'unmask'),
-			'svxreflector' => array('start', 'stop', 'restart', 'status', 'enable', 'disable', 'unmask'),
+			'remotetrx' => array('start', 'stop', 'restart', 'status', 'disable', 'unmask'),
+			'svxreflector' => array('start', 'stop', 'restart', 'status', 'disable', 'unmask'),
 			'alsa' => array('backup', 'restore'),
-			'set_mixer' => array('set_mixer'),
 		);
-		return isset($lifted[$service]) && in_array($option, $lifted[$service], true);
+		if (!isset($lifted[$service]) || !in_array($option, $lifted[$service], true)) {
+			return false;
+		}
+		if (($option === 'gpio_up' || $option === 'gpio_down') && !BenchGuard::detect()->txArmed()) {
+			return false;
+		}
+		return true;
 	}
 
 	// A rebuild form may name the page to reopen. The result is always

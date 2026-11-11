@@ -158,14 +158,73 @@ class BenchGuard {
 		return $this->trustedFunctionalTest();
 	}
 
+	// Root-only flag at /etc/openrepeater/tx-armed. Absent unless root
+	// creates it. Same file checks as the token, with no required text.
+	// Without it, publish stays the disconnected runtime.
+	public function txArmed() {
+		$file = $this->txArmedFile();
+		clearstatcache(true, $file);
+		if (!is_file($file) || is_link($file)) {
+			return false;
+		}
+		$perms = fileperms($file);
+		if ($perms === false || ($perms & 0022) !== 0) {
+			return false;
+		}
+		$owner = fileowner($file);
+		if ($owner === false || (int) $owner !== 0) {
+			return false;
+		}
+		if ($this->extendedAcl($file)) {
+			return false;
+		}
+		return true;
+	}
+
+	private function txArmedFile() {
+		if (self::testHarnessActive()) {
+			$override = getenv('ORP_TX_ARMED_FILE');
+			if (is_string($override) && $override !== '' && self::harnessPathAllowed($override)) {
+				return $override;
+			}
+			$root = getenv('ORP_ROOT');
+			if (is_string($root) && $root !== '' && $root[0] === '/') {
+				$joined = rtrim($root, '/') . '/etc/openrepeater/tx-armed';
+				if (self::harnessPathAllowed($joined)) {
+					return $joined;
+				}
+			}
+			return rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-tx-armed';
+		}
+		return '/etc/openrepeater/tx-armed';
+	}
+
+	// Fail closed when shell_exec cannot run. A missing getfacl binary is
+	// not an ACL. A disabled shell_exec is treated as an ACL so the token
+	// is not trusted.
 	private function extendedAcl($path) {
-		$getfacl = trim((string) shell_exec('command -v getfacl 2>/dev/null'));
+		if (!function_exists('shell_exec')) {
+			return true;
+		}
+		$disabled = (string) ini_get('disable_functions');
+		if ($disabled !== '') {
+			foreach (array_map('trim', explode(',', $disabled)) as $name) {
+				if (strcasecmp($name, 'shell_exec') === 0) {
+					return true;
+				}
+			}
+		}
+		$getfacl = shell_exec('command -v getfacl 2>/dev/null');
+		if (!is_string($getfacl)) {
+			return true;
+		}
+		$getfacl = trim($getfacl);
 		if ($getfacl === '') {
 			return false;
 		}
 		$out = shell_exec($getfacl . ' -p -- ' . escapeshellarg($path) . ' 2>/dev/null');
 		if (!is_string($out) || $out === '') {
-			return false;
+			return true;
 		}
 		return preg_match('/^(user|group):[^:]+:|^mask:/m', $out) === 1;
 	}
@@ -393,9 +452,19 @@ class BenchGuard {
 	public function commandAllowed($service, $option) {
 		$service = (string) $service;
 		$option = (string) $option;
-		// Trusted functional-test lifts every bench block, including start,
-		// GPIO, and the other radio units. No token keeps the old answers.
+		// Trusted functional-test lifts bench blocks except enable.
+		// GPIO stays blocked until the root-only tx-armed flag exists.
+		// No token keeps the old answers. Mixer control is not supported.
 		if ($this->uiBlocksLifted()) {
+			if ($option === 'enable' && in_array($service, array('svxlink', 'remotetrx', 'svxreflector'), true)) {
+				return false;
+			}
+			if (($option === 'gpio_up' || $option === 'gpio_down') && !$this->txArmed()) {
+				return false;
+			}
+			if ($service === 'set_mixer') {
+				return false;
+			}
 			return true;
 		}
 		if ($option === 'unmask') {
