@@ -1073,11 +1073,11 @@ function config_ancestors_real() {
 		[ -n "$part" ] || continue
 		acc="${acc}/${part}"
 		if [ -L "$acc" ]; then
-			echo "refused: symbolic link at ${acc}" >&2
+			echo "refused: symbolic link at ${acc}"
 			return 1
 		fi
 		if [ -n "$rest" ] && [ ! -d "$acc" ]; then
-			echo "refused: missing directory ${acc}" >&2
+			echo "refused: missing directory ${acc}"
 			return 1
 		fi
 	done
@@ -1569,8 +1569,10 @@ function prepare_armed_companions() {
 		fi
 		printf '%s %s\n' "$tmp" "$dest" >> "$COMPANION_DIR/manifest"
 	}
+	refuse_armed_dest_symlinks "$snapshot_for_logics" || return 1
 	if [ -e "$stage/gpio.conf" ] || [ -L "$stage/gpio.conf" ]; then
-		queue_companion "$stage/gpio.conf" "$(native_path /etc/svxlink/gpio.conf)" || return 1
+		dest=$(native_path /etc/svxlink/gpio.conf)
+		queue_companion "$stage/gpio.conf" "$dest" || return 1
 	fi
 	if [ -e "$stage/Logic.tcl" ] || [ -L "$stage/Logic.tcl" ]; then
 		queue_companion "$stage/Logic.tcl" "$(native_path /usr/local/share/svxlink/events.d/local/Logic.tcl)" || return 1
@@ -1584,7 +1586,36 @@ function prepare_armed_companions() {
 				return 1
 			fi
 			if logics_include "$snapshot_for_logics" "$name"; then
-				queue_companion "$src" "$(native_path "/usr/local/share/svxlink/events.d/${name}")" || return 1
+				dest=$(native_path "/usr/local/share/svxlink/events.d/${name}")
+				queue_companion "$src" "$dest" || return 1
+			fi
+		done < <(find -P "$stage" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' | sort)
+	fi
+}
+
+# Destinations the armed publish would replace. Called before the conf
+# snapshot is created, and again from prepare_armed_companions.
+function refuse_armed_dest_symlinks() {
+	local conf=$1 stage dest name src
+	stage=$(module_root_path /var/lib/openrepeater/bench-preview)
+	if [ -e "$stage/gpio.conf" ] || [ -L "$stage/gpio.conf" ]; then
+		dest=$(native_path /etc/svxlink/gpio.conf)
+		if [ -L "$dest" ]; then
+			echo "refused: ${dest} is a symbolic link"
+			return 1
+		fi
+	fi
+	if [ -d "$stage" ] && [ ! -L "$stage" ]; then
+		while IFS= read -r src; do
+			[ -n "$src" ] || continue
+			name=$(basename "$src")
+			port_logic_name_ok "$name" || continue
+			if [ -n "$conf" ] && logics_include "$conf" "$name"; then
+				dest=$(native_path "/usr/local/share/svxlink/events.d/${name}")
+				if [ -L "$dest" ]; then
+					echo "refused: ${dest} is a symbolic link"
+					return 1
+				fi
 			fi
 		done < <(find -P "$stage" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' | sort)
 	fi
@@ -1595,7 +1626,7 @@ function refuse_unarmed_symlink_wiring() {
 	local gpio events name
 	gpio=$(native_path /etc/svxlink/gpio.conf)
 	if [ -L "$gpio" ]; then
-		echo "refused: ${gpio} is a symbolic link" >&2
+		echo "refused: ${gpio} is a symbolic link"
 		return 1
 	fi
 	events=$(native_path /usr/local/share/svxlink/events.d)
@@ -1603,7 +1634,7 @@ function refuse_unarmed_symlink_wiring() {
 		while IFS= read -r name; do
 			[ -n "$name" ] || continue
 			if port_logic_name_ok "$(basename "$name")"; then
-				echo "refused: ${name} is a symbolic link" >&2
+				echo "refused: ${name} is a symbolic link"
 				return 1
 			fi
 		done < <(find -P "$events" -maxdepth 1 -type l -name 'ORP_*Logic_Port*.tcl' -print)
@@ -1614,9 +1645,10 @@ function refuse_unarmed_symlink_wiring() {
 function rollback_published_conf() {
 	local dest=$1 backup=$2 existed=$3
 	if [ "$existed" = 1 ] && [ -f "$backup" ]; then
-		cp -p "$backup" "$dest"
-	else
-		rm -f "$dest"
+		cp -p "$backup" "$dest" || return 1
+	fi
+	if [ "$existed" != 1 ]; then
+		rm -f "$dest" || return 1
 	fi
 }
 
@@ -1625,7 +1657,7 @@ function record_existing_for_rollback() {
 	backup_name=$(printf '%s' "$dest" | sha256sum | awk '{print $1}')
 	if [ -e "$dest" ] || [ -L "$dest" ]; then
 		if [ -L "$dest" ]; then
-			echo "refused: ${dest} is a symbolic link" >&2
+			echo "refused: ${dest} is a symbolic link"
 			return 1
 		fi
 		cp -p "$dest" "$COMPANION_DIR/$backup_name"
@@ -1684,10 +1716,6 @@ function commit_armed_companions() {
 	fi
 	while read -r tmp dest; do
 		[ -n "$tmp" ] || continue
-		if [ -L "$dest" ]; then
-			echo "refused: ${dest} is a symbolic link" >&2
-			return 1
-		fi
 		if [ -d "$dest" ]; then
 			echo "refused: ${dest} is a directory" >&2
 			return 1
@@ -1811,7 +1839,7 @@ function require_python3() {
 }
 
 function config_publish {
-	local dest parent snapshot backup sum_before sum_after rb_failed
+	local dest parent snapshot backup sum_before sum_after rb_failed backup_parent
 	if ! functional_test_on; then
 		echo "refused: config publish requires functional-test"
 		return 1
@@ -1841,10 +1869,22 @@ function config_publish {
 		echo "refused: live svxlink path is a symbolic link"
 		return 1
 	fi
-	# Unarmed publish must not replace the conf, courtesy, or companions
-	# when installed wiring is still a symlink. Refuse before the first write.
-	if ! tx_armed; then
+	# Same predicate as the disarm branch. A present flag with an untrusted
+	# token still disarms, so it must take this check too. Before any write.
+	backup_parent=$(native_path /var/backups/orp-ui)
+	if ! config_ancestors_real "$backup_parent"; then
+		return 1
+	fi
+	if [ -L "$backup_parent" ] || [ ! -d "$backup_parent" ]; then
+		echo "refused: /var/backups/orp-ui is missing"
+		return 1
+	fi
+	if ! { native_functional_token && tx_armed; }; then
 		refuse_unarmed_symlink_wiring || return 1
+	fi
+	if native_functional_token && tx_armed; then
+		staged=$(module_root_path /var/lib/openrepeater/bench-preview/svxlink.conf)
+		refuse_armed_dest_symlinks "$staged" || return 1
 	fi
 	if [ -e "${parent}/functional-test.d" ] && [ ! -d "${parent}/functional-test.d" ]; then
 		echo "refused: functional-test.d is not a directory"
@@ -1914,11 +1954,6 @@ function config_publish {
 	fi
 	if [ -f "$dest" ]; then
 		backup=$(native_path "/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%SZ)")
-		if ! config_ancestors_real "$(dirname "$backup")"; then
-			rm -f "$snapshot"
-			rm -rf "${COMPANION_DIR:-}"
-			return 1
-		fi
 		mkdir -p "$backup"
 		cp -p "$dest" "$backup/svxlink.conf"
 		conf_existed=1
@@ -1953,11 +1988,17 @@ function config_publish {
 		if ! commit_armed_companions; then
 			rb_failed=0
 			rollback_publish_dirs || rb_failed=1
-			rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"
+			if ! rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"; then
+				echo "refused: published svxlink.conf was not restored"
+				rb_failed=1
+			fi
 			if [ "$courtesy_had" = 1 ]; then
-				cp -p "$courtesy_backup" "$courtesy_dest"
+				if ! cp -p "$courtesy_backup" "$courtesy_dest"; then
+					echo "refused: courtesy file was not restored"
+					rb_failed=1
+				fi
 			else
-				rm -f "$courtesy_dest"
+				rm -f "$courtesy_dest" || rb_failed=1
 			fi
 			rm -f "$courtesy_backup"
 			if [ "$rb_failed" = 1 ]; then
@@ -1970,11 +2011,17 @@ function config_publish {
 		if ! disarm_installed_wiring; then
 			rb_failed=0
 			rollback_publish_dirs || rb_failed=1
-			rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"
+			if ! rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"; then
+				echo "refused: published svxlink.conf was not restored"
+				rb_failed=1
+			fi
 			if [ "$courtesy_had" = 1 ]; then
-				cp -p "$courtesy_backup" "$courtesy_dest"
+				if ! cp -p "$courtesy_backup" "$courtesy_dest"; then
+					echo "refused: courtesy file was not restored"
+					rb_failed=1
+				fi
 			else
-				rm -f "$courtesy_dest"
+				rm -f "$courtesy_dest" || rb_failed=1
 			fi
 			rm -f "$courtesy_backup"
 			if [ "$rb_failed" = 1 ]; then

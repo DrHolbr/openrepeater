@@ -1593,6 +1593,37 @@ then
 else
 	bad "dangling legacy symlinks were not classified"
 fi
+nl_root=$(orp_mktemp_dir)
+orp_mkdir "$nl_root/usr/share/svxlink/events.d" "$nl_root/var/www/openrepeater/modules/Foo"
+printf 'MOD\n' > "$nl_root/var/www/openrepeater/modules/Foo/File.tcl"
+printf 'KEEP\n' > "$nl_root/usr/share/svxlink/events.d/victim"
+printf 'OUTSIDE\n' > "$nl_root/tail"
+python3 -c 'import os,sys; os.symlink(sys.argv[1], sys.argv[2])' \
+	"$nl_root/var/www/openrepeater/modules/Foo/File.tcl" \
+	"$nl_root/usr/share/svxlink/events.d/victim"$'\n'"tail"
+set +e
+(
+	cd "$nl_root"
+	export ROOT="$nl_root"
+	export ORP_BENCH_TEST_HARNESS=1
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_remove_legacy_module_symlinks
+) >"$tmp/newline-link.out" 2>"$tmp/newline-link.err"
+nl_rc=$?
+set -e
+if [ "$nl_rc" -ne 0 ] \
+	&& grep -q 'newline or tab' "$tmp/newline-link.err" \
+	&& [ "$(cat "$nl_root/usr/share/svxlink/events.d/victim")" = "KEEP" ] \
+	&& [ "$(cat "$nl_root/tail")" = "OUTSIDE" ] \
+	&& [ "$(cat "$nl_root/var/www/openrepeater/modules/Foo/File.tcl")" = "MOD" ] \
+	&& [ -L "$nl_root/usr/share/svxlink/events.d/victim"$'\n'"tail" ]
+then
+	ok "a newline in a legacy symlink name does not delete the sibling file"
+else
+	bad "a newline legacy symlink name deleted the wrong file rc=$nl_rc"
+	cat "$tmp/newline-link.err" >&2 || true
+fi
 pyhide="$tmp/no-python3"
 mkdir -p "$pyhide"
 IFS=':' read -ra py_dirs <<< "$PATH:/usr/bin:/bin"

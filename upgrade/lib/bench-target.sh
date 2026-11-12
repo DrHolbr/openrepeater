@@ -1144,18 +1144,30 @@ bench_classify_legacy_module_symlinks() {
 		}
 		# -m canonicalizes a missing component. -f would refuse a dangling link.
 		modules_real=$(readlink -m "$modules") || true
-			if [ -z "$modules_real" ]; then
+		if [ -z "$modules_real" ]; then
 			echo "refused: ${modules} was not resolved" >&2
 			rm -f "$LEGACY_SYMLINK_DROP"
 			return 1
 		fi
 		while IFS= read -r -d '' path; do
+			case "$path" in
+				*$'\n'*|*$'\t'*)
+					echo "refused: legacy symlink path contains a newline or tab" >&2
+					rm -f "$LEGACY_SYMLINK_DROP"
+					return 1
+					;;
+			esac
 			target=$(readlink "$path") || {
 				echo "refused: ${path} target was not read" >&2
 				rm -f "$LEGACY_SYMLINK_DROP"
 				return 1
 			}
 			case "$target" in
+				*$'\n'*|*$'\t'*)
+					echo "refused: legacy symlink target contains a newline or tab" >&2
+					rm -f "$LEGACY_SYMLINK_DROP"
+					return 1
+					;;
 				"")
 					echo "refused: ${path} has an empty target" >&2
 					rm -f "$LEGACY_SYMLINK_DROP"
@@ -1179,7 +1191,7 @@ bench_classify_legacy_module_symlinks() {
 			fi
 			case "$resolved" in
 				"$modules_real"|"$modules_real"/*)
-					printf '%s\t%s\n' "$path" "$target" >> "$LEGACY_SYMLINK_DROP"
+					printf '%s\0%s\0' "$path" "$target" >> "$LEGACY_SYMLINK_DROP"
 					;;
 			esac
 		done < <(find -P "$share" -xdev -type l -print0)
@@ -1189,7 +1201,7 @@ bench_classify_legacy_module_symlinks() {
 bench_apply_legacy_module_symlinks() {
 	local path target
 	[ -n "${LEGACY_SYMLINK_DROP:-}" ] && [ -f "$LEGACY_SYMLINK_DROP" ] || return 0
-	while IFS=$'\t' read -r path target; do
+	while IFS= read -r -d '' path && IFS= read -r -d '' target; do
 		[ -n "$path" ] || continue
 		rm -f -- "$path"
 		printf 'removed legacy module symlink %s -> %s\n' "$path" "$target"
