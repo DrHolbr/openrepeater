@@ -293,13 +293,16 @@ class BenchGuard {
 		return $found;
 	}
 
+	// A relative value is the conf directory plus the text. The kernel
+	// resolves "." and "..". There is no path-normalization loop.
 	private function resolveCfgDir($conf, $value) {
 		if ($value === '') {
 			return '';
 		}
 		if ($value[0] !== '/') {
-			$value = dirname($conf) . '/' . $value;
-		} elseif (self::testHarnessActive()) {
+			return dirname($conf) . '/' . $value;
+		}
+		if (self::testHarnessActive()) {
 			$root = getenv('ORP_ROOT');
 			if (!is_string($root) || rtrim($root, '/') === '' || rtrim($root, '/') === '/') {
 				return '';
@@ -309,26 +312,16 @@ class BenchGuard {
 				return '';
 			}
 		}
-		$parts = array();
-		foreach (explode('/', $value) as $part) {
-			if ($part === '' || $part === '.') {
-				continue;
-			}
-			if ($part === '..') {
-				array_pop($parts);
-				continue;
-			}
-			$parts[] = $part;
-		}
-		return '/' . implode('/', $parts);
+		return $value;
 	}
 
-	// The directory that holds the token. A loose harness file whose parent
-	// is not named openrepeater keeps the file checks only. A named ACL
-	// entry that grants write shows up as group-write in the mode, which
-	// the file's perm&022 check already refuses. getfacl is not used.
+	// The directory that holds the token. A loose harness file skips this
+	// anchor only while the harness is active. Production always checks the
+	// directory. A named ACL entry that grants write shows up as group-write
+	// in the mode, which the file's perm&022 check already refuses.
+	// getfacl is not used.
 	private function openrepeaterDirTrusted($dir) {
-		if (basename($dir) !== 'openrepeater') {
+		if (self::testHarnessActive() && basename($dir) !== 'openrepeater') {
 			return true;
 		}
 		clearstatcache(true, $dir);

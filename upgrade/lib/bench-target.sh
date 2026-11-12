@@ -189,7 +189,9 @@ bench_mode_is_functional_test() {
 	fi
 	local dir perm_dir owner_dir
 	dir=$(dirname "$file")
-	if [ "$(basename "$dir")" = "openrepeater" ]; then
+	# A loose harness file skips this anchor only while the harness is set.
+	# Production always checks the directory.
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" != 1 ] || [ "$(basename "$dir")" = "openrepeater" ]; then
 		[ -d "$dir" ] && [ ! -L "$dir" ] || return 1
 		perm_dir=$(stat -c %a "$dir")
 		case "$perm_dir" in

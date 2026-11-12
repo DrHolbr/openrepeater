@@ -97,4 +97,21 @@ if [ "$rc" -eq 0 ]; then
 fi
 printf '%s\n' "$out" | grep -q 'outside the fixture'
 echo "ok: a read-only source becomes a mode 0600 copy inside the fixture"
+walk_parent=$(mktemp -d)
+mkdir -m 700 "$walk_parent/created"
+parent_mode=$(stat -c %a "$walk_parent")
+vartmp_mode=$(stat -c %a /var/tmp)
+ORP_TEST_TMPDIR="$walk_parent" orp_fixture_traverse "$walk_parent/created"
+[ "$(stat -c %a "$walk_parent")" = "$parent_mode" ]
+[ "$(stat -c %a /var/tmp)" = "$vartmp_mode" ]
+[ "$(stat -c %a "$walk_parent/created")" = "711" ] || [ "$(stat -c %a "$walk_parent/created")" = "751" ]
+set +e
+ORP_TEST_TMPDIR="$walk_parent" orp_fixture_traverse /var/tmp >/tmp/orp-traverse-outside.txt 2>&1
+walk_rc=$?
+set -e
+[ "$walk_rc" -ne 0 ]
+grep -q 'outside the fixture' /tmp/orp-traverse-outside.txt
+rm -f /tmp/orp-traverse-outside.txt
+rm -rf "$walk_parent"
+echo "ok: fixture traverse does not chmod the temp parent"
 echo "fixture tmpdir checks passed"

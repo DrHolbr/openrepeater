@@ -113,6 +113,8 @@ $benchGuard = BenchGuard::detect();
 	<div class="alert alert-info">Disconnected test config was published and svxlink was restarted. PTT_TYPE=NONE does not key a radio. Stored wiring was not changed.</div>
 <?php } elseif (isset($_GET['functional_publish_failed'])) { ?>
 	<div class="alert alert-error">Functional-test publish was refused. Stored account, settings, and port wiring were not changed.</div>
+<?php } elseif (isset($_GET['gpio_setup_failed'])) { ?>
+	<div class="alert alert-error">GPIO setup was refused. svxlink was not restarted.</div>
 <?php } ?>
 
 	<div class="server_bar_wrap"<?php if ($updateFlage == false) { echo ' style="display: none;"'; } ?>>

@@ -377,14 +377,7 @@ chmod 644 "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf" \
 	"$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port1.tcl" \
 	"$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port2.tcl"
 printf 'STALE\n' > "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl"
-dir="$tmp"
-while [ -n "$dir" ] && [ "$dir" != "/" ]; do
-	chmod a+x "$dir"
-	case "$dir" in
-		/tmp|/var/tmp) break ;;
-	esac
-	dir=$(dirname "$dir")
-done
+orp_fixture_traverse "$tmp"
 chmod -R a+rX "$pubroot/var/lib/openrepeater"
 off_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
 	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
@@ -467,7 +460,38 @@ grep -q '^LOGICTCL$' "$pubroot/usr/local/share/svxlink/events.d/local/Logic.tcl"
 grep -q '^PORT1$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
 [ ! -e "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port2.tcl" ]
 [ ! -e "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl" ]
+printf 'STALE\n' > "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl"
+purge_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish)
+printf '%s\n' "$purge_pub" | grep -q 'removed .*/ORP_RepeaterLogic_Port9.tcl (backup: '
+purge_backup=$(printf '%s\n' "$purge_pub" | sed -n 's/.*backup: \(.*\))$/\1/p' | head -n 1)
+[ -f "$purge_backup/ORP_RepeaterLogic_Port9.tcl" ]
+grep -q '^STALE$' "$purge_backup/ORP_RepeaterLogic_Port9.tcl"
+[ ! -e "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl" ]
+grep -q '^PORT1$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
 sudo -n rm -f "$pubroot/etc/openrepeater/tx-armed"
+pre_disarm=$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")
+gpio_canary="$pubroot/gpio-link-target"
+printf 'LIVE-GPIO\n' > "$gpio_canary"
+sudo -n rm -f "$pubroot/etc/svxlink/gpio.conf"
+sudo -n ln -s "$gpio_canary" "$pubroot/etc/svxlink/gpio.conf"
+set +e
+unarmed_roll=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish)
+unarmed_roll_rc=$?
+set -e
+[ "$unarmed_roll_rc" -ne 0 ]
+printf '%s\n' "$unarmed_roll" | grep -q 'rolled back'
+[ "$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")" = "$pre_disarm" ]
+grep -q '^PORT1$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
+sudo -n rm -f "$pubroot/etc/svxlink/gpio.conf"
+printf 'GPIOCONF\n' > "$pubroot/etc/svxlink/gpio.conf"
 disarm_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
 	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
 	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
@@ -569,8 +593,23 @@ ctl_cfg="$tmp/cfg-systemctl"
 printf '%s\n' '#!/bin/bash' 'printf "%s\n" "$*" >> "${ORP_SYSTEMCTL_LOG:?}"' 'exit 0' > "$ctl_cfg"
 chmod 755 "$ctl_cfg"
 : > "$tmp/cfg-systemctl.log"
+nopy="$tmp/nopy"
+mkdir -p "$nopy"
+for bin in /usr/bin/* /bin/*; do
+	base=$(basename "$bin")
+	case "$base" in
+		python|python3|python3.*) continue ;;
+	esac
+	ln -s "$bin" "$nopy/$base" 2>/dev/null || true
+done
+if PATH="$nopy" command -v python3 >/dev/null 2>&1; then
+	echo "FAIL: python3 was still on PATH" >&2
+	exit 1
+fi
+joined=$(PATH="$nopy" ORP_HELPER_SOURCE_ONLY=1 bash -c '. "$1"; resolve_cfg_dir remotetrx.d "$2"' _ "$HELPER" "$cfg_root/etc/svxlink/remotetrx.conf")
+[ "$joined" = "$cfg_root/etc/svxlink/remotetrx.d" ]
 set +e
-cfg_out=$(cd / && ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$cfg_root" ORP_SYSTEMCTL="$ctl_cfg" \
+cfg_out=$(cd / && PATH="$nopy" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$cfg_root" ORP_SYSTEMCTL="$ctl_cfg" \
 	ORP_SYSTEMCTL_LOG="$tmp/cfg-systemctl.log" "$HELPER" remotetrx start 2>&1)
 cfg_rc=$?
 set -e

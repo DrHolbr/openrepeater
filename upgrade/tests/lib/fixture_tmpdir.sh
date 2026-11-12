@@ -163,6 +163,28 @@ orp_readonly_payload() {
 	printf '%s' "$dest"
 }
 
+# www-data has to traverse the fixture. chmod only directories this test
+# created and owns. Stop at ORP_TEST_TMPDIR, before /tmp or /var/tmp.
+orp_fixture_traverse() {
+	local dir=$1 root owner
+	root=$(orp_fixture_root) || return 1
+	case "$dir" in
+		"$root"/*) ;;
+		*)
+			echo "refused: not chmodding outside the fixture: $dir" >&2
+			return 1
+			;;
+	esac
+	while [ -n "$dir" ] && [ "$dir" != "/" ] && [ "$dir" != "$root" ]; do
+		owner=$(stat -c %u "$dir")
+		if [ "$owner" != "$(id -u)" ]; then
+			break
+		fi
+		chmod a+x "$dir"
+		dir=$(dirname "$dir")
+	done
+}
+
 # Remove a fixture tree even when an install left it mode 0555.
 # chmod stays inside the fixture root.
 orp_cleanup_fixture() {

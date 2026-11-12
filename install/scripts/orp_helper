@@ -269,8 +269,9 @@ function cfg_dir_from_file() {
 		count=$((count + 1))
 	done < "$file"
 	# Async::Config keeps the last CFG_DIR. More than one line is refused.
+	# The message is printed by the caller, on stdout, so command substitution
+	# does not swallow it.
 	if [ "$count" -gt 1 ]; then
-		echo "refused: CFG_DIR is set more than once. Start was not called." >&2
 		return 2
 	fi
 	printf '%s' "$found"
@@ -307,17 +308,14 @@ function ptt_lines_are() {
 	return 0
 }
 
-# Absolute values are fixture-prefixed in the harness. Relative values are
-# resolved against the conf file, not the process cwd.
+# Absolute values are fixture-prefixed in the harness. A relative value is
+# the conf directory plus the text. The kernel resolves "." and "..".
 function resolve_cfg_dir() {
-	local value=$1 conf=$2 base
+	local value=$1 conf=$2
 	case "$value" in
 		"") return 0 ;;
 		/*) native_path "$value" ;;
-		*)
-			base=$(dirname "$conf")
-			python3 -c 'import os, sys; print(os.path.normpath(os.path.join(sys.argv[1], sys.argv[2])))' "$base" "$value"
-			;;
+		*) printf '%s/%s' "$(dirname "$conf")" "$value" ;;
 	esac
 }
 
@@ -881,11 +879,13 @@ function tx_armed_path() {
 
 # The directory that holds the token. A named ACL entry that grants write
 # shows up as group-write in the mode, which perm&022 already refuses.
-# getfacl is not consulted. A parent that is not named openrepeater is a
-# loose harness file and is not this anchor.
+# getfacl is not consulted. A loose harness file skips this anchor only
+# while ORP_BENCH_TEST_HARNESS=1. Production always checks the directory.
 function openrepeater_dir_trusted() {
 	local dir=$1 perm owner
-	[ "$(basename "$dir")" = "openrepeater" ] || return 0
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ] && [ "$(basename "$dir")" != "openrepeater" ]; then
+		return 0
+	fi
 	[ -d "$dir" ] && [ ! -L "$dir" ] || return 1
 	perm=$(stat -c %a "$dir")
 	case "$perm" in
@@ -1468,10 +1468,20 @@ function logics_include() {
 }
 
 function cfg_dir_is_empty() {
-	local conf=$1 value dir
-	value=$(cfg_dir_from_file "$conf") || return 1
+	local conf=$1 value dir rc
+	value=$(cfg_dir_from_file "$conf")
+	rc=$?
+	if [ "$rc" -eq 2 ]; then
+		echo "refused: CFG_DIR is set more than once. Start was not called."
+		return 1
+	fi
+	[ "$rc" -eq 0 ] || return 1
 	[ -n "$value" ] || return 0
 	dir=$(resolve_cfg_dir "$value" "$conf")
+	if [ -z "$dir" ]; then
+		echo "refused: CFG_DIR was not resolved. Start was not called."
+		return 1
+	fi
 	if [ ! -e "$dir" ]; then
 		return 0
 	fi
@@ -1487,10 +1497,20 @@ function cfg_dir_is_empty() {
 }
 
 function remotetrx_cfg_dir_safe() {
-	local conf=$1 value dir entry base
-	value=$(cfg_dir_from_file "$conf") || return 1
+	local conf=$1 value dir entry base rc
+	value=$(cfg_dir_from_file "$conf")
+	rc=$?
+	if [ "$rc" -eq 2 ]; then
+		echo "refused: CFG_DIR is set more than once. Start was not called."
+		return 1
+	fi
+	[ "$rc" -eq 0 ] || return 1
 	[ -n "$value" ] || return 0
 	dir=$(resolve_cfg_dir "$value" "$conf")
+	if [ -z "$dir" ]; then
+		echo "refused: CFG_DIR was not resolved. Start was not called."
+		return 1
+	fi
 	if [ ! -e "$dir" ]; then
 		return 0
 	fi
@@ -1620,6 +1640,7 @@ function rename_into_dest() {
 function commit_armed_companions() {
 	local tmp dest parent events name keep
 	[ -n "${COMPANION_DIR:-}" ] && [ -f "$COMPANION_DIR/manifest" ] || return 0
+	FUNCTIONAL_BACKUP=""
 	: > "$COMPANION_DIR/installed"
 	events=$(native_path /usr/local/share/svxlink/events.d)
 	if [ -d "$events" ] && [ ! -L "$events" ]; then
@@ -1636,7 +1657,7 @@ function commit_armed_companions() {
 			done < "$COMPANION_DIR/manifest"
 			if [ "$keep" = 0 ]; then
 				record_existing_for_rollback "$name" || return 1
-				rm -f -- "$name"
+				backup_removed_file "$name" || return 1
 			fi
 		done < <(find -P "$events" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' -print)
 	fi
@@ -1655,45 +1676,65 @@ function commit_armed_companions() {
 	done < "$COMPANION_DIR/manifest"
 }
 
-# Unarmed publish drops the armed PortN files and gpio.conf. Each removed
-# file is copied first so a later failure can put it back. The glob is the
-# strict PortN name, not every ORP_ file.
-function disarm_installed_wiring() {
-	local events gpio name backup
-	# A failed removal can leave the previous armed svxlink.conf live while
-	# start stays refused, because gpio.conf or a PortN file is still there.
-	backup=$(native_path "/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%SZ)-$$")
-	if ! mkdir -p "$backup"; then
-		echo "refused: disarm backup directory was not created" >&2
+# One directory per publish, created only when a file is about to be removed.
+# mkdir is not -p: the parent /var/backups/orp-ui must already exist.
+function ensure_functional_backup() {
+	local parent backup
+	if [ -n "${FUNCTIONAL_BACKUP:-}" ]; then
+		return 0
+	fi
+	parent=$(native_path /var/backups/orp-ui)
+	if [ -L "$parent" ] || [ ! -d "$parent" ]; then
 		return 1
 	fi
+	backup="${parent}/functional-test-$(date -u +%Y%m%dT%H%M%S%NZ)-$$"
+	if ! mkdir "$backup"; then
+		return 1
+	fi
+	FUNCTIONAL_BACKUP=$backup
+}
+
+function backup_removed_file() {
+	local path=$1
+	if ! ensure_functional_backup; then
+		echo "refused: backup directory was not created"
+		return 1
+	fi
+	if ! cp -p "$path" "$FUNCTIONAL_BACKUP/$(basename "$path")"; then
+		echo "refused: ${path} was not backed up. It was not removed."
+		return 1
+	fi
+	rm -f -- "$path"
+	echo "removed ${path} (backup: ${FUNCTIONAL_BACKUP})"
+}
+
+# Unarmed publish drops the armed PortN files and gpio.conf. Each removed
+# file is copied first so a later failure can put it back. The glob is the
+# strict PortN name, not every ORP_ file. PortN files are removed before
+# gpio.conf so a symlink there rolls the PortN files back.
+function disarm_installed_wiring() {
+	local events gpio name
+	# A failed removal can leave the previous armed svxlink.conf live while
+	# start stays refused, because gpio.conf or a PortN file is still there.
+	FUNCTIONAL_BACKUP=""
 	COMPANION_DIR=$(mktemp -d "${TMPDIR:-/tmp}/orp-disarm.XXXXXX")
 	: > "$COMPANION_DIR/installed"
+	events=$(native_path /usr/local/share/svxlink/events.d)
+	if [ -d "$events" ] && [ ! -L "$events" ]; then
+		while IFS= read -r name; do
+			[ -n "$name" ] || continue
+			if ! port_logic_name_ok "$(basename "$name")"; then
+				continue
+			fi
+			record_existing_for_rollback "$name" || return 1
+			backup_removed_file "$name" || return 1
+		done < <(find -P "$events" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' -print)
+	fi
 	gpio=$(native_path /etc/svxlink/gpio.conf)
 	if [ -e "$gpio" ] || [ -L "$gpio" ]; then
 		record_existing_for_rollback "$gpio" || return 1
-		if ! cp -p "$gpio" "$backup/$(basename "$gpio")"; then
-			echo "refused: ${gpio} was not backed up. It was not removed." >&2
-			return 1
-		fi
-		rm -f -- "$gpio"
-		echo "removed ${gpio} (backup: ${backup})"
+		backup_removed_file "$gpio" || return 1
 	fi
-	events=$(native_path /usr/local/share/svxlink/events.d)
-	[ -d "$events" ] && [ ! -L "$events" ] || return 0
-	while IFS= read -r name; do
-		[ -n "$name" ] || continue
-		if ! port_logic_name_ok "$(basename "$name")"; then
-			continue
-		fi
-		record_existing_for_rollback "$name" || return 1
-		if ! cp -p "$name" "$backup/$(basename "$name")"; then
-			echo "refused: ${name} was not backed up. It was not removed." >&2
-			return 1
-		fi
-		rm -f -- "$name"
-		echo "removed ${name} (backup: ${backup})"
-	done < <(find -P "$events" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' -print)
 }
 
 function rollback_armed_companions() {

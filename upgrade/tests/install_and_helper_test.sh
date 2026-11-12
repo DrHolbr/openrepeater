@@ -1291,6 +1291,15 @@ sudo chmod 775 "$dir_root/etc/openrepeater"
 expect_token "openrepeater directory group-writable" "$dir_root" refuse
 sudo chmod 755 "$dir_root/etc/openrepeater"
 expect_token "openrepeater directory root-owned" "$dir_root" accept
+link_dir=$(orp_mktemp_dir)
+mkdir -p "$link_dir/etc/mode-target"
+printf 'orp-test\n' > "$link_dir/etc/hostname"
+printf 'functional-test\n' > "$link_dir/etc/mode-target/operating-mode"
+chmod 644 "$link_dir/etc/mode-target/operating-mode"
+sudo chown 0:0 "$link_dir/etc/mode-target" "$link_dir/etc/mode-target/operating-mode"
+sudo chmod 755 "$link_dir/etc/mode-target"
+ln -s mode-target "$link_dir/etc/openrepeater"
+expect_token "symlinked openrepeater directory" "$link_dir" refuse
 ok "the openrepeater directory anchor agrees"
 tx_verdict() {
 	local root=$1 helper php
@@ -1319,6 +1328,27 @@ printf 'armed\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
 sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
 sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
 tx_verdict "$tx_root" accept "exact armed"
+tx_dir=$(new_token_root functional-test 644 root)
+printf 'armed\n' | sudo -n tee "$tx_dir/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chmod 644 "$tx_dir/etc/openrepeater/tx-armed"
+sudo -n chown 0:0 "$tx_dir/etc/openrepeater/tx-armed"
+sudo chown "$(id -u):$(id -g)" "$tx_dir/etc/openrepeater"
+tx_verdict "$tx_dir" refuse "directory not root-owned"
+sudo chown 0:0 "$tx_dir/etc/openrepeater"
+sudo chmod 775 "$tx_dir/etc/openrepeater"
+tx_verdict "$tx_dir" refuse "directory group-writable"
+sudo chmod 755 "$tx_dir/etc/openrepeater"
+tx_verdict "$tx_dir" accept "directory root-owned"
+tx_link=$(orp_mktemp_dir)
+mkdir -p "$tx_link/etc/real-orp"
+printf 'orp-test\n' > "$tx_link/etc/hostname"
+printf 'functional-test\n' > "$tx_link/etc/real-orp/operating-mode"
+printf 'armed\n' > "$tx_link/etc/real-orp/tx-armed"
+chmod 644 "$tx_link/etc/real-orp/operating-mode" "$tx_link/etc/real-orp/tx-armed"
+sudo chown 0:0 "$tx_link/etc/real-orp" "$tx_link/etc/real-orp/operating-mode" "$tx_link/etc/real-orp/tx-armed"
+sudo chmod 755 "$tx_link/etc/real-orp"
+ln -s real-orp "$tx_link/etc/openrepeater"
+tx_verdict "$tx_link" refuse "symlinked openrepeater directory"
 printf 'armed \n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
 sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
 sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"

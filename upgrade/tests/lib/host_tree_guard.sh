@@ -40,7 +40,7 @@ host_tree_meta() {
 		cat "$raw" >> "$dest"
 	done
 	rm -f "$raw"
-	sort -o "$dest" "$dest"
+	LC_ALL=C sort -o "$dest" "$dest"
 }
 
 # One pipeline for every existing path. -print0 and xargs -0 keep spaces.
@@ -57,13 +57,13 @@ host_tree_sha() {
 		existing+=("$path")
 	done
 	if [ "${#existing[@]}" -eq 0 ]; then
-		sort -o "$dest" "$dest"
+		LC_ALL=C sort -o "$dest" "$dest"
 		return 0
 	fi
 	raw=$(mktemp)
 	set +e
 	set +o pipefail
-	sudo -n find -P "${existing[@]}" -xdev -type f -print0 | sudo -n xargs -0 -r sha256sum | sort > "$raw"
+	sudo -n find -P "${existing[@]}" -xdev -type f -print0 | sudo -n xargs -0 -r sha256sum | LC_ALL=C sort > "$raw"
 	st=("${PIPESTATUS[@]}")
 	set -o pipefail
 	set -e
@@ -74,5 +74,5 @@ host_tree_sha() {
 	fi
 	cat "$raw" >> "$dest"
 	rm -f "$raw"
-	sort -o "$dest" "$dest"
+	LC_ALL=C sort -o "$dest" "$dest"
 }

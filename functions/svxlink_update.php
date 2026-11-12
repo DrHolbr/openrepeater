@@ -7,6 +7,27 @@ This script reads settings from the OpenRepeater database and builds new configu
 files for SVXLink. 
 */
 
+function orp_last_output_line($output) {
+	if (!is_string($output)) {
+		return '';
+	}
+	$text = str_replace("\r\n", "\n", $output);
+	$text = rtrim($text, "\n");
+	if ($text === '') {
+		return '';
+	}
+	$pos = strrpos($text, "\n");
+	if ($pos === false) {
+		return $text;
+	}
+	return substr($text, $pos + 1);
+}
+
+function orp_gpio_output_ok($output) {
+	$last = orp_last_output_line($output);
+	return $last === 'up' || $last === 'down';
+}
+
 /* ---------------------------------------------------------- */
 /* SESSION, VERB, AND CSRF BEFORE ANY DATABASE OR HELPER USE */
 require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
@@ -247,9 +268,16 @@ if ($benchGuard->uiBlocksLifted()) {
 # PTT_TYPE other than NONE and a config that does not match the snapshot.
 if ($benchGuard->txArmed()) {
 	$gpioDown = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_down 2>&1');
+	if (!orp_gpio_output_ok($gpioDown)) {
+		$notice = 'gpio_setup_failed=1';
+		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
+		$join = (strpos($url, '?') === false) ? '?' : '&';
+		header('Location: '.$url.$join.$notice);
+		exit;
+	}
 	$gpioUp = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up 2>&1');
-	if ((is_string($gpioDown) && strpos($gpioDown, 'refused:') !== false) || (is_string($gpioUp) && strpos($gpioUp, 'refused:') !== false)) {
-		$notice = 'functional_publish_failed=1';
+	if (!orp_gpio_output_ok($gpioUp)) {
+		$notice = 'gpio_setup_failed=1';
 		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
 		$join = (strpos($url, '?') === false) ? '?' : '&';
 		header('Location: '.$url.$join.$notice);
