@@ -554,6 +554,33 @@ if grep -q 'gpio23' "$pubroot/etc/svxlink/svxlink.conf"; then
 fi
 grep -q '^STALE$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl"
 echo "ok: tx-armed publish installs the staged set and rolls it back"
+failcp="$tmp/fail-cp"
+mkdir -p "$failcp"
+port9="$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl"
+cat > "$failcp/cp" <<EOF
+#!/bin/bash
+dest="\${@: -1}"
+if [ "\$dest" = "$port9" ]; then
+	echo "refused: restore copy failed" >&2
+	exit 1
+fi
+exec /bin/cp "\$@"
+EOF
+chmod 755 "$failcp/cp"
+set +e
+bad_cp=$(sudo -n env PATH="$failcp:/usr/bin:/bin" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish 2>&1)
+bad_cp_rc=$?
+set -e
+[ "$bad_cp_rc" -ne 0 ]
+printf '%s\n' "$bad_cp" | grep -q 'Backup remains at '
+kept_backup=$(printf '%s\n' "$bad_cp" | sed -n 's/.*Backup remains at //p' | head -n 1)
+[ -d "$kept_backup" ]
+grep -q '^STALE$' "$kept_backup/ORP_RepeaterLogic_Port9.tcl"
+echo "ok: a failed restore keeps the functional-test backup"
 ptt_sample="$tmp/ptt-sample"
 for sample in ' PTT_TYPE=GPIO' 'PTT_TYPE = GPIO' 'PTT_TYPE="GPIO"'; do
 	printf '%s\n' "$sample" > "$ptt_sample"

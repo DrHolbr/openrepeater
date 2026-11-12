@@ -125,6 +125,10 @@ fail_closed() {
 }
 trap fail_closed EXIT
 
+# Refuse an empty legacy symlink before any install write. A dangling link
+# is removed or kept here, and does not abort after the web tree exists.
+bench_remove_legacy_module_symlinks
+
 # Stop web writers before repairing paths. Stopping them is not the
 # boundary; a planted symlink is still refused below.
 orp_systemctl stop nginx || true
@@ -608,7 +612,6 @@ fi
 bench_verify_protected
 bench_assert_masks
 bench_unmask_radio_units
-bench_remove_legacy_module_symlinks
 
 echo "OpenRepeater UI files are staged for orp-test."
 echo "Radio units were not started and their masks were checked again."

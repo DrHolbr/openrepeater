@@ -1122,7 +1122,8 @@ bench_unmask_radio_units() {
 }
 
 bench_remove_legacy_module_symlinks() {
-	local modules share path target joined resolved modules_real
+	local modules share path target joined resolved modules_real root_prefix i
+	local -a drop_paths=() drop_targets=()
 	modules=$(p /var/www/openrepeater/modules)
 	modules=${modules%/}
 	for share in "$(p /usr/share/svxlink)" "$(p /usr/local/share/svxlink)"; do
@@ -1134,14 +1135,14 @@ bench_remove_legacy_module_symlinks() {
 			echo "refused: ${share} is not a directory" >&2
 			return 1
 		}
-		modules_real=$(readlink -f "$modules") || {
-			echo "refused: ${modules} was not resolved" >&2
-			return 1
-		}
+		# -m canonicalizes a missing component. -f would refuse a dangling link.
+		modules_real=$(readlink -m "$modules") || true
 		if [ -z "$modules_real" ]; then
 			echo "refused: ${modules} was not resolved" >&2
 			return 1
 		fi
+		drop_paths=()
+		drop_targets=()
 		while IFS= read -r -d '' path; do
 			target=$(readlink "$path") || {
 				echo "refused: ${path} target was not read" >&2
@@ -1152,23 +1153,33 @@ bench_remove_legacy_module_symlinks() {
 					echo "refused: ${path} has an empty target" >&2
 					return 1
 					;;
-				/*) joined=$target ;;
+				/*)
+					joined=$target
+					if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+						if root_prefix=$(bench_root_prefix); then
+							joined="${root_prefix}${target}"
+						fi
+					fi
+					;;
 				*) joined="$(dirname "$path")/$target" ;;
 			esac
-			resolved=$(readlink -f "$joined") || {
-				echo "refused: ${path} target was not resolved" >&2
-				return 1
-			}
+			resolved=$(readlink -m "$joined") || true
 			if [ -z "$resolved" ]; then
 				echo "refused: ${path} target was not resolved" >&2
 				return 1
 			fi
 			case "$resolved" in
 				"$modules_real"|"$modules_real"/*)
-					rm -f -- "$path"
-					printf 'removed legacy module symlink %s -> %s\n' "$path" "$target"
+					drop_paths+=("$path")
+					drop_targets+=("$target")
 					;;
 			esac
 		done < <(find -P "$share" -xdev -type l -print0)
+		if [ "${#drop_paths[@]}" -gt 0 ]; then
+			for i in "${!drop_paths[@]}"; do
+				rm -f -- "${drop_paths[$i]}"
+				printf 'removed legacy module symlink %s -> %s\n' "${drop_paths[$i]}" "${drop_targets[$i]}"
+			done
+		fi
 	done
 }

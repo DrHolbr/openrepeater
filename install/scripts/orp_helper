@@ -1739,14 +1739,33 @@ function disarm_installed_wiring() {
 }
 
 function rollback_armed_companions() {
-	local action path bak
+	local action path bak failed=0
 	[ -n "${COMPANION_DIR:-}" ] && [ -f "$COMPANION_DIR/installed" ] || return 0
-	tac "$COMPANION_DIR/installed" | while read -r action path bak; do
+	while read -r action path bak; do
 		case "$action" in
-			restore) cp -p "$bak" "$path" ;;
-			remove) rm -f "$path" ;;
+			restore)
+				if ! cp -p "$bak" "$path"; then
+					echo "refused: ${path} was not restored" >&2
+					failed=1
+				fi
+				;;
+			remove) rm -f "$path" || failed=1 ;;
 		esac
-	done
+	done < <(tac "$COMPANION_DIR/installed")
+	return "$failed"
+}
+
+function rollback_publish_dirs() {
+	if ! rollback_armed_companions; then
+		echo "refused: rollback did not finish. Backup remains at ${FUNCTIONAL_BACKUP:-${COMPANION_DIR}}"
+		return 1
+	fi
+	rm -rf "${COMPANION_DIR:-}"
+	COMPANION_DIR=""
+	if [ -n "${FUNCTIONAL_BACKUP:-}" ]; then
+		rm -rf "$FUNCTIONAL_BACKUP"
+		FUNCTIONAL_BACKUP=""
+	fi
 }
 
 function config_matches_snapshot() {
@@ -1906,7 +1925,10 @@ function config_publish {
 	fi
 	if native_functional_token && tx_armed; then
 		if ! commit_armed_companions; then
-			rollback_armed_companions
+			if ! rollback_publish_dirs; then
+				rm -f "$courtesy_backup"
+				return 1
+			fi
 			rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"
 			if [ "$courtesy_had" = 1 ]; then
 				cp -p "$courtesy_backup" "$courtesy_dest"
@@ -1914,13 +1936,15 @@ function config_publish {
 				rm -f "$courtesy_dest"
 			fi
 			rm -f "$courtesy_backup"
-			rm -rf "${COMPANION_DIR:-}"
 			echo "refused: staged companion was not installed. The published set was rolled back."
 			return 1
 		fi
 	else
 		if ! disarm_installed_wiring; then
-			rollback_armed_companions
+			if ! rollback_publish_dirs; then
+				rm -f "$courtesy_backup"
+				return 1
+			fi
 			rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"
 			if [ "$courtesy_had" = 1 ]; then
 				cp -p "$courtesy_backup" "$courtesy_dest"
@@ -1928,11 +1952,6 @@ function config_publish {
 				rm -f "$courtesy_dest"
 			fi
 			rm -f "$courtesy_backup"
-			rm -rf "${COMPANION_DIR:-}"
-			if [ -n "${FUNCTIONAL_BACKUP:-}" ]; then
-				rm -rf "$FUNCTIONAL_BACKUP"
-				FUNCTIONAL_BACKUP=""
-			fi
 			echo "refused: armed wiring was not removed. The published set was rolled back."
 			return 1
 		fi

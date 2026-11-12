@@ -1457,13 +1457,14 @@ orp_mkdir "$legacy/usr/share/svxlink/events.d" "$legacy/usr/local/share/svxlink/
 	"$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d"
 printf 'tcl\n' > "$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl"
 printf 'stock\n' > "$legacy/usr/share/svxlink/events.d/Logic.tcl"
-ln -s "$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl" \
+ln -s /var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl \
 	"$legacy/usr/share/svxlink/events.d/ModuleFoo.tcl"
 ln -s ../../../../../var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl \
 	"$legacy/usr/local/share/svxlink/events.d/ModuleFoo.tcl"
 ln -s /etc/hostname "$legacy/usr/share/svxlink/events.d/hostname.tcl"
 (
 	export ROOT="$legacy"
+	export ORP_BENCH_TEST_HARNESS=1
 	# shellcheck source=../lib/bench-target.sh
 	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
 	bench_remove_legacy_module_symlinks
@@ -1564,6 +1565,28 @@ if [ -L "$legacy/usr/local/share/svxlink/events.d/ModuleFoo-again.tcl" ]; then
 	bad "a relative module symlink was kept when python3 was absent"
 else
 	ok "a relative module symlink is removed without python3"
+fi
+dangling=$(orp_mktemp_dir)
+orp_mkdir "$dangling/usr/share/svxlink/events.d" "$dangling/usr/local/share/svxlink/events.d" \
+	"$dangling/var/www/openrepeater/modules"
+ln -s /var/www/openrepeater/modules/gone/Missing.tcl \
+	"$dangling/usr/share/svxlink/events.d/Missing.tcl"
+ln -s /etc/svxlink/missing.conf \
+	"$dangling/usr/local/share/svxlink/events.d/other.tcl"
+(
+	export ROOT="$dangling"
+	export ORP_BENCH_TEST_HARNESS=1
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_remove_legacy_module_symlinks
+)
+if [ ! -e "$dangling/usr/share/svxlink/events.d/Missing.tcl" ] \
+	&& [ ! -L "$dangling/usr/share/svxlink/events.d/Missing.tcl" ] \
+	&& [ -L "$dangling/usr/local/share/svxlink/events.d/other.tcl" ]
+then
+	ok "a dangling module symlink is removed and another dangling link is kept"
+else
+	bad "dangling legacy symlinks were not classified"
 fi
 pyhide="$tmp/no-python3"
 mkdir -p "$pyhide"
