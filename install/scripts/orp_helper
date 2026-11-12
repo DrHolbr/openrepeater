@@ -243,7 +243,7 @@ function ptt_value_from_line() {
 }
 
 function cfg_dir_from_file() {
-	local file=$1 line value
+	local file=$1 line value count=0 found=""
 	[ -f "$file" ] && [ ! -L "$file" ] || return 0
 	while IFS= read -r line || [ -n "$line" ]; do
 		line=${line%$'\r'}
@@ -265,9 +265,15 @@ function cfg_dir_from_file() {
 			\"*\") value=${value#\"}; value=${value%\"} ;;
 			\'*\') value=${value#\'}; value=${value%\'} ;;
 		esac
-		printf '%s' "$value"
-		return 0
+		found=$value
+		count=$((count + 1))
 	done < "$file"
+	# Async::Config keeps the last CFG_DIR. More than one line is refused.
+	if [ "$count" -gt 1 ]; then
+		echo "refused: CFG_DIR is set more than once. Start was not called." >&2
+		return 2
+	fi
+	printf '%s' "$found"
 }
 
 # A missing file has no PTT_TYPE lines and is treated as disconnected.
@@ -301,13 +307,17 @@ function ptt_lines_are() {
 	return 0
 }
 
-# Resolve a CFG_DIR value onto the fixture when the harness is on.
+# Absolute values are fixture-prefixed in the harness. Relative values are
+# resolved against the conf file, not the process cwd.
 function resolve_cfg_dir() {
-	local value=$1
+	local value=$1 conf=$2 base
 	case "$value" in
-		""|.) return 0 ;;
+		"") return 0 ;;
 		/*) native_path "$value" ;;
-		*) printf '%s' "$value" ;;
+		*)
+			base=$(dirname "$conf")
+			python3 -c 'import os, sys; print(os.path.normpath(os.path.join(sys.argv[1], sys.argv[2])))' "$base" "$value"
+			;;
 	esac
 }
 
@@ -325,7 +335,7 @@ function tx_transmit_allowed() {
 				echo "refused: svxlink.conf has a PTT_TYPE other than NONE. Start was not called."
 				return 1
 			fi
-			if ! cfg_dir_is_empty "$(cfg_dir_from_file "$dest")"; then
+			if ! cfg_dir_is_empty "$dest"; then
 				return 1
 			fi
 			if armed_wiring_installed; then
@@ -869,9 +879,26 @@ function tx_armed_path() {
 	native_token_path /etc/openrepeater/tx-armed
 }
 
+# The directory that holds the token. A named ACL entry that grants write
+# shows up as group-write in the mode, which perm&022 already refuses.
+# getfacl is not consulted. A parent that is not named openrepeater is a
+# loose harness file and is not this anchor.
+function openrepeater_dir_trusted() {
+	local dir=$1 perm owner
+	[ "$(basename "$dir")" = "openrepeater" ] || return 0
+	[ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+	perm=$(stat -c %a "$dir")
+	case "$perm" in
+		''|*[!0-7]*) return 1 ;;
+	esac
+	[ $((8#$perm & 022)) -eq 0 ] || return 1
+	owner=$(stat -c %u "$dir")
+	[ "$owner" = "0" ]
+}
+
 # Root-only flag. Absent unless root creates it over SSH. Same trust checks
 # as the functional-test token: not a symlink, mode has no group or world
-# write, owner uid 0, and no extended ACL when getfacl is installed.
+# write, owner uid 0.
 function tx_armed() {
 	local file perm owner
 	file=$(tx_armed_path)
@@ -883,11 +910,7 @@ function tx_armed() {
 	[ $((8#$perm & 022)) -eq 0 ] || return 1
 	owner=$(stat -c %u "$file")
 	[ "$owner" = "0" ] || return 1
-	if command -v getfacl >/dev/null 2>&1; then
-		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
-			return 1
-		fi
-	fi
+	openrepeater_dir_trusted "$(dirname "$file")" || return 1
 	# Exact bytes: armed, or armed plus one newline. Nothing else.
 	local exact nl
 	exact=$(mktemp)
@@ -916,13 +939,7 @@ function native_functional_token() {
 	[ $((8#$perm & 022)) -eq 0 ] || return 1
 	owner=$(stat -c %u "$file")
 	[ "$owner" = "0" ] || return 1
-	# getfacl absent, or getfacl with no stdout, is not an extended ACL.
-	# Refuse only when its stdout shows user:<name>:, group:<name>:, or mask:.
-	if command -v getfacl >/dev/null 2>&1; then
-		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
-			return 1
-		fi
-	fi
+	openrepeater_dir_trusted "$(dirname "$file")" || return 1
 	token=$(tr -d '[:space:]' < "$file")
 	[ "$token" = "functional-test" ]
 }
@@ -1451,10 +1468,10 @@ function logics_include() {
 }
 
 function cfg_dir_is_empty() {
-	local value dir
-	value=$1
+	local conf=$1 value dir
+	value=$(cfg_dir_from_file "$conf") || return 1
 	[ -n "$value" ] || return 0
-	dir=$(resolve_cfg_dir "$value")
+	dir=$(resolve_cfg_dir "$value" "$conf")
 	if [ ! -e "$dir" ]; then
 		return 0
 	fi
@@ -1471,9 +1488,9 @@ function cfg_dir_is_empty() {
 
 function remotetrx_cfg_dir_safe() {
 	local conf=$1 value dir entry base
-	value=$(cfg_dir_from_file "$conf")
+	value=$(cfg_dir_from_file "$conf") || return 1
 	[ -n "$value" ] || return 0
-	dir=$(resolve_cfg_dir "$value")
+	dir=$(resolve_cfg_dir "$value" "$conf")
 	if [ ! -e "$dir" ]; then
 		return 0
 	fi
@@ -1587,7 +1604,11 @@ function rename_into_dest() {
 	# Same directory as the destination, so the final rename does not cross
 	# filesystems.
 	local_tmp=$(mktemp "$parent/.orp-companion.XXXXXX")
-	cp -p "$tmp" "$local_tmp"
+	if ! cp -p "$tmp" "$local_tmp"; then
+		rm -f "$local_tmp"
+		echo "refused: ${dest} was not copied. The filesystem may be full." >&2
+		return 1
+	fi
 	if ! mv -f "$local_tmp" "$dest"; then
 		rm -f "$local_tmp"
 		echo "refused: ${dest} was not installed" >&2
@@ -1600,6 +1621,25 @@ function commit_armed_companions() {
 	local tmp dest parent events name keep
 	[ -n "${COMPANION_DIR:-}" ] && [ -f "$COMPANION_DIR/manifest" ] || return 0
 	: > "$COMPANION_DIR/installed"
+	events=$(native_path /usr/local/share/svxlink/events.d)
+	if [ -d "$events" ] && [ ! -L "$events" ]; then
+		while IFS= read -r name; do
+			[ -n "$name" ] || continue
+			if ! port_logic_name_ok "$(basename "$name")"; then
+				continue
+			fi
+			keep=0
+			while read -r tmp dest; do
+				if [ "$dest" = "$name" ]; then
+					keep=1
+				fi
+			done < "$COMPANION_DIR/manifest"
+			if [ "$keep" = 0 ]; then
+				record_existing_for_rollback "$name" || return 1
+				rm -f -- "$name"
+			fi
+		done < <(find -P "$events" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' -print)
+	fi
 	while read -r tmp dest; do
 		[ -n "$tmp" ] || continue
 		if [ -L "$dest" ]; then
@@ -1613,37 +1653,31 @@ function commit_armed_companions() {
 		record_existing_for_rollback "$dest" || return 1
 		rename_into_dest "$tmp" "$dest" || return 1
 	done < "$COMPANION_DIR/manifest"
-	events=$(native_path /usr/local/share/svxlink/events.d)
-	[ -d "$events" ] && [ ! -L "$events" ] || return 0
-	while IFS= read -r name; do
-		[ -n "$name" ] || continue
-		if ! port_logic_name_ok "$(basename "$name")"; then
-			continue
-		fi
-		keep=0
-		while read -r tmp dest; do
-			if [ "$dest" = "$name" ]; then
-				keep=1
-			fi
-		done < "$COMPANION_DIR/manifest"
-		if [ "$keep" = 0 ]; then
-			record_existing_for_rollback "$name" || return 1
-			rm -f -- "$name"
-		fi
-	done < <(find -P "$events" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' -print)
 }
 
 # Unarmed publish drops the armed PortN files and gpio.conf. Each removed
 # file is copied first so a later failure can put it back. The glob is the
 # strict PortN name, not every ORP_ file.
 function disarm_installed_wiring() {
-	local events gpio name backup_name
+	local events gpio name backup
+	# A failed removal can leave the previous armed svxlink.conf live while
+	# start stays refused, because gpio.conf or a PortN file is still there.
+	backup=$(native_path "/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%SZ)-$$")
+	if ! mkdir -p "$backup"; then
+		echo "refused: disarm backup directory was not created" >&2
+		return 1
+	fi
 	COMPANION_DIR=$(mktemp -d "${TMPDIR:-/tmp}/orp-disarm.XXXXXX")
 	: > "$COMPANION_DIR/installed"
 	gpio=$(native_path /etc/svxlink/gpio.conf)
 	if [ -e "$gpio" ] || [ -L "$gpio" ]; then
 		record_existing_for_rollback "$gpio" || return 1
+		if ! cp -p "$gpio" "$backup/$(basename "$gpio")"; then
+			echo "refused: ${gpio} was not backed up. It was not removed." >&2
+			return 1
+		fi
 		rm -f -- "$gpio"
+		echo "removed ${gpio} (backup: ${backup})"
 	fi
 	events=$(native_path /usr/local/share/svxlink/events.d)
 	[ -d "$events" ] && [ ! -L "$events" ] || return 0
@@ -1653,7 +1687,12 @@ function disarm_installed_wiring() {
 			continue
 		fi
 		record_existing_for_rollback "$name" || return 1
+		if ! cp -p "$name" "$backup/$(basename "$name")"; then
+			echo "refused: ${name} was not backed up. It was not removed." >&2
+			return 1
+		fi
 		rm -f -- "$name"
+		echo "removed ${name} (backup: ${backup})"
 	done < <(find -P "$events" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' -print)
 }
 

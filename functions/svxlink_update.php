@@ -246,8 +246,15 @@ if ($benchGuard->uiBlocksLifted()) {
 # the snapshot and native-start checks. An unarmed start still refuses a
 # PTT_TYPE other than NONE and a config that does not match the snapshot.
 if ($benchGuard->txArmed()) {
-	$shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_down');
-	$shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up');
+	$gpioDown = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_down 2>&1');
+	$gpioUp = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up 2>&1');
+	if ((is_string($gpioDown) && strpos($gpioDown, 'refused:') !== false) || (is_string($gpioUp) && strpos($gpioUp, 'refused:') !== false)) {
+		$notice = 'functional_publish_failed=1';
+		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
+		$join = (strpos($url, '?') === false) ? '?' : '&';
+		header('Location: '.$url.$join.$notice);
+		exit;
+	}
 }
 ########
 

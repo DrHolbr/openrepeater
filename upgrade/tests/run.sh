@@ -22,7 +22,49 @@ if [ "${ORP_UMASK_MATRIX:-0}" != 1 ]; then
 		esac
 		sudo -n rm -rf -- "$payload" 2>/dev/null || rm -rf -- "$payload"
 	}
-	trap cleanup_payload EXIT
+	# shellcheck source=lib/host_tree_guard.sh
+	. "$ROOT_DIR/upgrade/tests/lib/host_tree_guard.sh"
+	mapfile -t guard_paths < <(host_tree_default_paths)
+	guard_meta_before=$(mktemp)
+	guard_sha_before=$(mktemp)
+	if ! host_tree_meta "$guard_meta_before" "${guard_paths[@]}"; then
+		echo "FAIL: live-tree guard could not take the before listing" >&2
+		cleanup_payload || true
+		exit 1
+	fi
+	if ! host_tree_sha "$guard_sha_before" "${guard_paths[@]}"; then
+		echo "FAIL: live-tree guard could not take the before sha listing" >&2
+		cleanup_payload || true
+		exit 1
+	fi
+	finish_matrix() {
+		local status=$?
+		trap - EXIT
+		local meta_after sha_after
+		meta_after=$(mktemp)
+		sha_after=$(mktemp)
+		if ! host_tree_meta "$meta_after" "${guard_paths[@]}"; then
+			status=1
+		elif ! cmp -s "$guard_meta_before" "$meta_after"; then
+			echo "FAIL: the umask matrix or the offline harness changed a live host tree. Live database writes or apt activity can also trip this guard." >&2
+			diff -u "$guard_meta_before" "$meta_after" >&2 || true
+			status=1
+		fi
+		if ! host_tree_sha "$sha_after" "${guard_paths[@]}"; then
+			status=1
+		elif ! cmp -s "$guard_sha_before" "$sha_after"; then
+			echo "FAIL: the umask matrix or the offline harness changed a live file hash. Live database writes or apt activity can also trip this guard." >&2
+			diff -u "$guard_sha_before" "$sha_after" >&2 || true
+			status=1
+		fi
+		rm -f "$meta_after" "$sha_after"
+		cleanup_payload || true
+		if [ "$status" -eq 0 ]; then
+			echo "ok: live host trees were not changed"
+		fi
+		exit "$status"
+	}
+	trap finish_matrix EXIT
 	matrix_fail=0
 	for mask in 0022 0002; do
 		echo "=== umask ${mask} read-only payload ==="
@@ -50,99 +92,44 @@ export ORP_BENCH_TEST_HARNESS=1
 export PYTHONDONTWRITEBYTECODE=1
 export ORP_LIVE_ETC_LOG="$(orp_fixture_root)/orp-live-etc-reads.log"
 : > "$ORP_LIVE_ETC_LOG"
-# sudo -n is required so the guard can read root-owned trees. A find failure
-# is reported here. It is not left for pipefail to abort the suite silently.
-host_tree_paths=(
-	/var/www/openrepeater
-	/etc/openrepeater
-	/etc/svxlink
-	/etc/sudoers.d
-	/etc/systemd/system
-	/var/lib/openrepeater
-	/usr/local/share/svxlink
-	/usr/sbin/orp_helper
-)
-host_tree_listing() {
-	local dest=$1 path raw rc=0 kind file sha line
-	: > "$dest"
-	raw=$(mktemp)
-	for path in "${host_tree_paths[@]}"; do
-		if [ ! -e "$path" ] && [ ! -L "$path" ]; then
-			printf 'absent %s\n' "$path" >> "$dest"
-			continue
-		fi
-		set +e
-		sudo -n find -P "$path" -xdev -printf '%p %y %u %g %m %s %T@\n' > "$raw" 2>"$raw.err"
-		rc=$?
-		set -e
-		if [ "$rc" -ne 0 ]; then
-			echo "FAIL: live-tree guard could not list ${path} (sudo find exit ${rc}). Unreadable directories are read with sudo -n, not as the invoking user. This is not a pipefail abort." >&2
-			cat "$raw.err" >&2 || true
-			rm -f "$raw" "$raw.err"
-			return 1
-		fi
-		rm -f "$raw.err"
-		hashes=$(mktemp)
-		files=$(mktemp)
-		set +e
-		sudo -n find -P "$path" -xdev -type f -print0 > "$files"
-		find_rc=$?
-		hash_rc=0
-		if [ "$find_rc" -eq 0 ] && [ -s "$files" ]; then
-			sudo -n xargs -0 sha256sum < "$files" > "$hashes"
-			hash_rc=$?
-		fi
-		set -e
-		if [ "$find_rc" -ne 0 ] || [ "$hash_rc" -ne 0 ]; then
-			echo "FAIL: live-tree guard could not hash regular files under ${path} (find exit ${find_rc}, sha256sum exit ${hash_rc}). sudo -n is required to read root-owned files. This is not a pipefail abort." >&2
-			rm -f "$raw" "$hashes" "$files"
-			return 1
-		fi
-		rm -f "$files"
-		while IFS= read -r line || [ -n "$line" ]; do
-			[ -n "$line" ] || continue
-			kind=$(printf '%s\n' "$line" | awk '{print $(NF-5)}')
-			if [ "$kind" = "f" ]; then
-				file=$(printf '%s\n' "$line" | awk '{
-					n = NF
-					for (i = 1; i <= n - 6; i++) printf "%s%s", $i, (i < n - 6 ? " " : "")
-				}')
-				sha=$(awk -v p="$file" '$2 == p { print $1; exit }' "$hashes")
-				if [ -z "$sha" ]; then
-					echo "FAIL: live-tree guard hashed no bytes for ${file}" >&2
-					rm -f "$raw" "$hashes"
-					return 1
-				fi
-				printf '%s %s\n' "$line" "$sha" >> "$dest"
-			else
-				printf '%s\n' "$line" >> "$dest"
-			fi
-		done < "$raw"
-		rm -f "$hashes"
-	done
-	rm -f "$raw"
-	sort -o "$dest" "$dest"
-}
-host_tree_before=$(mktemp)
-if ! host_tree_listing "$host_tree_before"; then
+# shellcheck source=lib/host_tree_guard.sh
+. "$ROOT_DIR/upgrade/tests/lib/host_tree_guard.sh"
+mapfile -t host_tree_paths < <(host_tree_default_paths)
+host_tree_meta_before=$(mktemp)
+host_tree_sha_before=$(mktemp)
+if ! host_tree_meta "$host_tree_meta_before" "${host_tree_paths[@]}"; then
 	echo "FAIL: live-tree guard could not take the before listing" >&2
 	exit 1
 fi
+if ! host_tree_sha "$host_tree_sha_before" "${host_tree_paths[@]}"; then
+	echo "FAIL: live-tree guard could not take the before sha listing" >&2
+	exit 1
+fi
 host_tree_check() {
-	local after
-	after=$(mktemp)
-	if ! host_tree_listing "$after"; then
-		rm -f "$after"
-		echo "FAIL: live-tree guard could not take the after listing" >&2
+	local meta_after sha_after
+	meta_after=$(mktemp)
+	sha_after=$(mktemp)
+	if ! host_tree_meta "$meta_after" "${host_tree_paths[@]}"; then
+		rm -f "$meta_after" "$sha_after"
 		return 1
 	fi
-	if ! cmp -s "$host_tree_before" "$after"; then
-		echo "FAIL: a test changed a live host tree" >&2
-		diff -u "$host_tree_before" "$after" >&2 || true
-		rm -f "$after"
+	if ! host_tree_sha "$sha_after" "${host_tree_paths[@]}"; then
+		rm -f "$meta_after" "$sha_after"
 		return 1
 	fi
-	rm -f "$after"
+	if ! cmp -s "$host_tree_meta_before" "$meta_after"; then
+		echo "FAIL: a test changed a live host tree. Live database writes or apt activity can also trip this guard." >&2
+		diff -u "$host_tree_meta_before" "$meta_after" >&2 || true
+		rm -f "$meta_after" "$sha_after"
+		return 1
+	fi
+	if ! cmp -s "$host_tree_sha_before" "$sha_after"; then
+		echo "FAIL: a test changed a live file hash. Live database writes or apt activity can also trip this guard." >&2
+		diff -u "$host_tree_sha_before" "$sha_after" >&2 || true
+		rm -f "$meta_after" "$sha_after"
+		return 1
+	fi
+	rm -f "$meta_after" "$sha_after"
 	echo "ok: live host trees were not changed"
 	return 0
 }
@@ -180,6 +167,7 @@ fi
 echo "ok: php -l"
 
 bash "$ROOT_DIR/upgrade/tests/fixture_tmpdir_test.sh"
+bash "$ROOT_DIR/upgrade/tests/host_tree_guard_test.sh"
 php "$ROOT_DIR/upgrade/tests/php_safety_test.php"
 bash "$ROOT_DIR/upgrade/tests/harness_isolation_test.sh"
 bash "$ROOT_DIR/upgrade/tests/install_and_helper_test.sh"

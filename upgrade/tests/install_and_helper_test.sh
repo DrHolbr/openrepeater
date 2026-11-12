@@ -967,7 +967,8 @@ chmod 755 "$tmp/mask-systemctl"
 printf 'orp-test\n' > "$mask_root/etc/hostname"
 printf 'functional-test\n' > "$mask_root/etc/openrepeater/operating-mode"
 chmod 644 "$mask_root/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$mask_root/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$mask_root/etc/openrepeater" "$mask_root/etc/openrepeater/operating-mode"
+sudo chmod 755 "$mask_root/etc/openrepeater"
 (
 	export ROOT="$mask_root"
 	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
@@ -1005,12 +1006,11 @@ if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; the
 		export ROOT="$mask_root"
 		export ORP_SYSTEMCTL="$tmp/mask-systemctl"
 		. "$ROOT_DIR/upgrade/lib/bench-target.sh"
-		if MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks; then
-			exit 1
-		fi
-	) || bad "a functional-test token with an ACL was accepted"
+		MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks
+	) || bad "a read-only named ACL was refused; group-write is the mode check"
 	sudo setfacl -b "$mask_root/etc/openrepeater/operating-mode" || true
-	ok "a functional-test token with an ACL is refused"
+	sudo chmod 644 "$mask_root/etc/openrepeater/operating-mode"
+	ok "a read-only named ACL is not a separate refusal"
 fi
 user_token=$(orp_mktemp_dir)
 orp_mkdir "$user_token/etc/openrepeater"
@@ -1060,7 +1060,8 @@ orp_mkdir "$lib_only/etc/openrepeater" "$lib_only/usr/lib/systemd/system"
 printf 'orp-test\n' > "$lib_only/etc/hostname"
 printf 'functional-test\n' > "$lib_only/etc/openrepeater/operating-mode"
 chmod 644 "$lib_only/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$lib_only/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$lib_only/etc/openrepeater" "$lib_only/etc/openrepeater/operating-mode"
+sudo chmod 755 "$lib_only/etc/openrepeater"
 for unit in svxlink.service remotetrx.service svxreflector.service; do
 	printf '%s\n' '[Unit]' 'Description=library' > "$lib_only/usr/lib/systemd/system/$unit"
 done
@@ -1109,7 +1110,8 @@ unmask_units "$with_token"
 orp_mkdir "$with_token/etc/openrepeater"
 printf 'functional-test\n' > "$with_token/etc/openrepeater/operating-mode"
 chmod 644 "$with_token/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$with_token/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$with_token/etc/openrepeater" "$with_token/etc/openrepeater/operating-mode"
+sudo chmod 755 "$with_token/etc/openrepeater"
 sudo chown -R 0:0 "$with_token"
 : > "$tmp/ft-token.log"
 unit_before=$(sha256sum \
@@ -1248,7 +1250,8 @@ new_token_root() {
 		printf '%s\n' "$contents" > "$root/etc/openrepeater/operating-mode"
 		chmod "$mode" "$root/etc/openrepeater/operating-mode"
 		if [ "$owner" = root ]; then
-			sudo chown 0:0 "$root/etc/openrepeater/operating-mode"
+			sudo chown 0:0 "$root/etc/openrepeater" "$root/etc/openrepeater/operating-mode"
+			sudo chmod 755 "$root/etc/openrepeater"
 		elif [ "$owner" = user ]; then
 			sudo chown 1000:1000 "$root/etc/openrepeater/operating-mode"
 		fi
@@ -1280,22 +1283,15 @@ expect_token "contents bench" "$wrong_text" refuse
 expect_token "missing file" "$missing_token" refuse
 expect_token "wrong hostname" "$wrong_host" refuse
 expect_token "symlink token" "$link_token" refuse
-expect_token "getfacl present with no extended ACL" "$good_token" accept
-ok "getfacl present with no extended ACL agrees"
-nogetfacl=$(orp_mktemp_dir)
-for bin in /usr/bin/* /bin/*; do
-	base=$(basename "$bin")
-	if [ "$base" = "getfacl" ]; then
-		continue
-	fi
-	ln -s "$bin" "$nogetfacl/$base" 2>/dev/null || true
-done
-absent_root=$(new_token_root functional-test 644 root)
-saved_path=$PATH
-export PATH="$nogetfacl"
-expect_token "getfacl absent" "$absent_root" accept
-export PATH="$saved_path"
-ok "getfacl absent agrees across installer, helper, and PHP"
+dir_root=$(new_token_root functional-test 644 root)
+sudo chown "$(id -u):$(id -g)" "$dir_root/etc/openrepeater"
+expect_token "openrepeater directory not root-owned" "$dir_root" refuse
+sudo chown 0:0 "$dir_root/etc/openrepeater"
+sudo chmod 775 "$dir_root/etc/openrepeater"
+expect_token "openrepeater directory group-writable" "$dir_root" refuse
+sudo chmod 755 "$dir_root/etc/openrepeater"
+expect_token "openrepeater directory root-owned" "$dir_root" accept
+ok "the openrepeater directory anchor agrees"
 tx_verdict() {
 	local root=$1 helper php
 	if ORP_HELPER_SOURCE_ONLY=1 ORP_ROOT="$root" ORP_BENCH_TEST_HARNESS=1 \
@@ -1319,18 +1315,36 @@ tx_verdict() {
 }
 tx_root=$(new_token_root functional-test 644 root)
 tx_verdict "$tx_root" refuse "missing flag"
-printf 'armed\n' > "$tx_root/etc/openrepeater/tx-armed"
-chmod 644 "$tx_root/etc/openrepeater/tx-armed"
-sudo chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+printf 'armed\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
 tx_verdict "$tx_root" accept "exact armed"
 printf 'armed \n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
 sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
 sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
 tx_verdict "$tx_root" refuse "padded armed"
+printf 'armed\r\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" refuse "armed with crlf"
+printf 'armed\n\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" refuse "armed with two newlines"
+: | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" refuse "empty flag"
+printf 'ARMED\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" refuse "uppercase ARMED"
 if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; then
 	acl_token=$(new_token_root functional-test 644 root)
 	sudo setfacl -m u:nobody:r "$acl_token/etc/openrepeater/operating-mode"
-	expect_token "extended ACL" "$acl_token" refuse
+	expect_token "read-only named ACL" "$acl_token" accept
+	sudo setfacl -m u:nobody:w "$acl_token/etc/openrepeater/operating-mode"
+	expect_token "write named ACL" "$acl_token" refuse
 	sudo setfacl -b "$acl_token/etc/openrepeater/operating-mode" || true
 fi
 expect_masks "disabled inactive with a token" "$good_token" disabled inactive accept
@@ -1354,7 +1368,8 @@ chmod 755 "$attack/usr/sbin/orp_helper"
 printf 'orp-test\n' > "$attack/etc/hostname"
 printf 'functional-test\n' > "$attack/etc/openrepeater/operating-mode"
 chmod 644 "$attack/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$attack/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$attack/etc/openrepeater" "$attack/etc/openrepeater/operating-mode"
+sudo chmod 755 "$attack/etc/openrepeater"
 attack_db="$attack/var/lib/openrepeater/db/openrepeater.db"
 cp "$ROOT_DIR/install/sql/openrepeater.db" "$attack_db"
 chmod 600 "$attack_db"

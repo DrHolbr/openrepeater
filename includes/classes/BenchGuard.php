@@ -151,7 +151,7 @@ class BenchGuard {
 		if ($this->hostname() !== 'orp-test') {
 			return false;
 		}
-		if ($this->extendedAcl($path)) {
+		if (!$this->openrepeaterDirTrusted(dirname($path))) {
 			return false;
 		}
 		$raw = file_get_contents($path);
@@ -179,7 +179,7 @@ class BenchGuard {
 		if ($owner === false || (int) $owner !== 0) {
 			return false;
 		}
-		if ($this->extendedAcl($file)) {
+		if (!$this->openrepeaterDirTrusted(dirname($file))) {
 			return false;
 		}
 		$raw = file_get_contents($file);
@@ -207,20 +207,15 @@ class BenchGuard {
 			return false;
 		}
 		$cfg = $this->cfgDirValue($raw);
+		if ($cfg === false) {
+			return false;
+		}
 		if ($cfg === null || $cfg === '') {
 			return true;
 		}
-		if ($cfg[0] === '/') {
-			if (self::testHarnessActive()) {
-				$root = getenv('ORP_ROOT');
-				if (!is_string($root) || rtrim($root, '/') === '' || rtrim($root, '/') === '/') {
-					return false;
-				}
-				$cfg = rtrim($root, '/') . $cfg;
-				if (!self::harnessPathAllowed($cfg)) {
-					return false;
-				}
-			}
+		$cfg = $this->resolveCfgDir($path, $cfg);
+		if ($cfg === '') {
+			return false;
 		}
 		if (is_link($cfg) || (file_exists($cfg) && !is_dir($cfg))) {
 			return false;
@@ -271,7 +266,11 @@ class BenchGuard {
 		return true;
 	}
 
+	// false means the key is repeated. Async::Config keeps the last one,
+	// so more than one line is refused instead of guessing.
 	private function cfgDirValue($raw) {
+		$found = null;
+		$count = 0;
 		foreach (preg_split('/\r\n|\n|\r/', (string) $raw) as $line) {
 			$line = trim($line);
 			if (!preg_match('/^CFG_DIR\s*=\s*(.*)$/', $line, $match)) {
@@ -285,9 +284,63 @@ class BenchGuard {
 					$value = substr($value, 1, -1);
 				}
 			}
-			return $value;
+			$found = $value;
+			$count++;
 		}
-		return null;
+		if ($count > 1) {
+			return false;
+		}
+		return $found;
+	}
+
+	private function resolveCfgDir($conf, $value) {
+		if ($value === '') {
+			return '';
+		}
+		if ($value[0] !== '/') {
+			$value = dirname($conf) . '/' . $value;
+		} elseif (self::testHarnessActive()) {
+			$root = getenv('ORP_ROOT');
+			if (!is_string($root) || rtrim($root, '/') === '' || rtrim($root, '/') === '/') {
+				return '';
+			}
+			$value = rtrim($root, '/') . $value;
+			if (!self::harnessPathAllowed($value)) {
+				return '';
+			}
+		}
+		$parts = array();
+		foreach (explode('/', $value) as $part) {
+			if ($part === '' || $part === '.') {
+				continue;
+			}
+			if ($part === '..') {
+				array_pop($parts);
+				continue;
+			}
+			$parts[] = $part;
+		}
+		return '/' . implode('/', $parts);
+	}
+
+	// The directory that holds the token. A loose harness file whose parent
+	// is not named openrepeater keeps the file checks only. A named ACL
+	// entry that grants write shows up as group-write in the mode, which
+	// the file's perm&022 check already refuses. getfacl is not used.
+	private function openrepeaterDirTrusted($dir) {
+		if (basename($dir) !== 'openrepeater') {
+			return true;
+		}
+		clearstatcache(true, $dir);
+		if (!is_dir($dir) || is_link($dir)) {
+			return false;
+		}
+		$owner = fileowner($dir);
+		if ($owner === false || (int) $owner !== 0) {
+			return false;
+		}
+		$perms = fileperms($dir);
+		return $perms !== false && ($perms & 0022) === 0;
 	}
 
 	private function remotetrxConf() {
@@ -325,76 +378,6 @@ class BenchGuard {
 			return rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-tx-armed';
 		}
 		return '/etc/openrepeater/tx-armed';
-	}
-
-	// An extended ACL is a reason to refuse only when getfacl runs and its
-	// stdout contains user:<name>:, group:<name>:, or mask:. getfacl is the
-	// Debian acl package. It is not part of php8.4-cli, and Raspberry Pi OS
-	// Trixie does not disable shell_exec in the default CLI php.ini. If
-	// getfacl is absent, or this process cannot spawn it, or it prints
-	// nothing, that is not an extended ACL. The installer and the helper
-	// use the same rule.
-	private function extendedAcl($path) {
-		$getfacl = trim($this->commandOutput('command -v getfacl 2>/dev/null'));
-		if ($getfacl === '') {
-			return false;
-		}
-		$out = $this->commandOutput($getfacl . ' -p -- ' . escapeshellarg($path) . ' 2>/dev/null');
-		if ($out === '') {
-			return false;
-		}
-		return preg_match('/^(user|group):[^:]+:|^mask:/m', $out) === 1;
-	}
-
-	private function commandOutput($command) {
-		$runners = array('shell_exec', 'exec', 'proc_open', 'popen');
-		foreach ($runners as $name) {
-			if (!function_exists($name) || $this->functionDisabled($name)) {
-				continue;
-			}
-			if ($name === 'shell_exec') {
-				$out = shell_exec($command);
-				return is_string($out) ? $out : '';
-			}
-			if ($name === 'exec') {
-				$lines = array();
-				$code = 0;
-				exec($command, $lines, $code);
-				return implode("\n", $lines);
-			}
-			if ($name === 'proc_open') {
-				$proc = proc_open($command, array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
-				if (!is_resource($proc)) {
-					continue;
-				}
-				$out = stream_get_contents($pipes[1]);
-				fclose($pipes[1]);
-				fclose($pipes[2]);
-				proc_close($proc);
-				return is_string($out) ? $out : '';
-			}
-			$handle = popen($command, 'r');
-			if (!is_resource($handle)) {
-				continue;
-			}
-			$out = stream_get_contents($handle);
-			pclose($handle);
-			return is_string($out) ? $out : '';
-		}
-		return '';
-	}
-
-	private function functionDisabled($name) {
-		$disabled = (string) ini_get('disable_functions');
-		if ($disabled === '') {
-			return false;
-		}
-		foreach (array_map('trim', explode(',', $disabled)) as $item) {
-			if (strcasecmp($item, $name) === 0) {
-				return true;
-			}
-		}
-		return false;
 	}
 
 	public function hostname() {

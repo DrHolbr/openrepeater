@@ -157,7 +157,8 @@ mkdir -p "$layout/etc/openrepeater"
 printf 'orp-test\n' > "$layout/etc/hostname"
 printf 'functional-test\n' > "$layout/etc/openrepeater/operating-mode"
 chmod 644 "$layout/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$layout/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$layout/etc/openrepeater" "$layout/etc/openrepeater/operating-mode"
+sudo chmod 755 "$layout/etc/openrepeater"
 HELPER="$ROOT_DIR/install/scripts/orp_helper"
 ctl="$tmp/systemctl"
 cat > "$ctl" <<'EOF'
@@ -295,7 +296,8 @@ mkdir -p "$unmask_root/etc/openrepeater" \
 printf 'orp-test\n' > "$unmask_root/etc/hostname"
 printf 'functional-test\n' > "$unmask_root/etc/openrepeater/operating-mode"
 chmod 644 "$unmask_root/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$unmask_root/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$unmask_root/etc/openrepeater" "$unmask_root/etc/openrepeater/operating-mode"
+sudo chmod 755 "$unmask_root/etc/openrepeater"
 for unit in svxlink.service remotetrx.service svxreflector.service; do
 	ln -sfn /dev/null "$unmask_root/etc/systemd/system/$unit"
 	ln -sfn "/lib/systemd/system/$unit" "$unmask_root/etc/systemd/system/multi-user.target.wants/$unit"
@@ -340,10 +342,10 @@ putenv("ORP_BENCH_HOSTNAME_FILE=" . $argv[2]);
 putenv("ORP_OPERATING_MODE_FILE=" . $argv[3]);
 $guard = BenchGuard::detect();
 if (!$guard->trustedFunctionalTest()) {
-	fwrite(STDERR, "FAIL: a token with no ACL was refused because PHP could not spawn getfacl\n");
+	fwrite(STDERR, "FAIL: a root-owned token was refused with shell_exec disabled\n");
 	exit(1);
 }
-echo "ok: getfacl that cannot be spawned is not an extended ACL\n";
+echo "ok: the token check does not spawn a helper\n";
 ' "$ROOT_DIR" "$host" "$mode"
 
 # shellcheck source=lib/native_layout.sh
@@ -351,7 +353,9 @@ echo "ok: getfacl that cannot be spawned is not an extended ACL\n";
 pubroot="$tmp/publish"
 db="$tmp/publish.db"
 plant_native_layout "$pubroot"
-chmod 755 "$pubroot" "$pubroot/etc" "$pubroot/etc/svxlink"
+mkdir -p "$pubroot/var/backups/orp-ui"
+chmod 755 "$pubroot" "$pubroot/etc" "$pubroot/etc/svxlink" \
+	"$pubroot/var" "$pubroot/var/backups" "$pubroot/var/backups/orp-ui"
 orp_copy_writable "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 apply_ident_profile "$db"
 sqlite3 "$db" "UPDATE settings SET value='FIXTURE' WHERE keyID='callSign'; UPDATE settings SET value='repeater' WHERE keyID='orp_Mode';"
@@ -359,7 +363,8 @@ mkdir -p "$pubroot/etc/openrepeater" "$pubroot/var/lib/openrepeater/bench-previe
 printf 'orp-test\n' > "$pubroot/etc/hostname"
 printf 'functional-test\n' > "$pubroot/etc/openrepeater/operating-mode"
 chmod 644 "$pubroot/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$pubroot/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$pubroot/etc/openrepeater" "$pubroot/etc/openrepeater/operating-mode"
+sudo chmod 755 "$pubroot/etc/openrepeater"
 printf '%s\n' 'LOGICS=ORP_RepeaterLogic_Port1' '[Tx1]' 'PTT_TYPE=GPIO' 'PTT_PIN=gpio26' '[Tx2]' 'PTT_TYPE=NONE' \
 	> "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
 printf 'GPIOCONF\n' > "$pubroot/var/lib/openrepeater/bench-preview/gpio.conf"
@@ -444,11 +449,9 @@ dummy_rtx=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH
 	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
 	"$HELPER" remotetrx start)
 grep -q 'start remotetrx.service' "$start_log"
-mkdir -p "$pubroot/var/backups/orp-ui"
-chmod 755 "$pubroot/var" "$pubroot/var/backups" "$pubroot/var/backups/orp-ui"
-printf 'armed\n' > "$pubroot/etc/openrepeater/tx-armed"
-chmod 644 "$pubroot/etc/openrepeater/tx-armed"
-sudo chown 0:0 "$pubroot/etc/openrepeater/tx-armed"
+printf 'armed\n' | sudo -n tee "$pubroot/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chmod 644 "$pubroot/etc/openrepeater/tx-armed"
+sudo -n chown 0:0 "$pubroot/etc/openrepeater/tx-armed"
 on_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
 	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
 	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
@@ -471,6 +474,11 @@ disarm_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PAT
 	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
 	"$HELPER" config publish)
 printf '%s\n' "$disarm_pub" | grep -q 'PTT_TYPE=NONE'
+printf '%s\n' "$disarm_pub" | grep -q 'removed .*/gpio.conf (backup: '
+printf '%s\n' "$disarm_pub" | grep -q 'removed .*/ORP_RepeaterLogic_Port1.tcl (backup: '
+backup_dir=$(printf '%s\n' "$disarm_pub" | sed -n 's/.*backup: \(.*\))$/\1/p' | head -n 1)
+[ -f "$backup_dir/gpio.conf" ]
+[ -f "$backup_dir/ORP_RepeaterLogic_Port1.tcl" ]
 [ ! -e "$pubroot/etc/svxlink/gpio.conf" ]
 [ ! -e "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl" ]
 printf 'GPIO\n' > "$pubroot/etc/svxlink/gpio.conf"
@@ -487,14 +495,15 @@ set -e
 [ "$wired_rc" -ne 0 ]
 printf '%s\n' "$wired_start" | grep -q 'armed wiring'
 rm -f "$pubroot/etc/svxlink/gpio.conf"
-printf 'armed\n' > "$pubroot/etc/openrepeater/tx-armed"
-chmod 644 "$pubroot/etc/openrepeater/tx-armed"
-sudo chown 0:0 "$pubroot/etc/openrepeater/tx-armed"
+printf 'armed\n' | sudo -n tee "$pubroot/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chmod 644 "$pubroot/etc/openrepeater/tx-armed"
+sudo -n chown 0:0 "$pubroot/etc/openrepeater/tx-armed"
 armed_sum=$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")
 canary="$pubroot/gpio-canary"
 printf 'CANARY\n' > "$canary"
 sudo -n rm -f "$pubroot/etc/svxlink/gpio.conf"
 sudo -n ln -s "$canary" "$pubroot/etc/svxlink/gpio.conf"
+printf 'STALE\n' > "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl"
 printf '%s\n' '[Tx1]' 'PTT_TYPE=GPIO' 'PTT_PIN=gpio23' > "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
 chmod 644 "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
 set +e
@@ -514,6 +523,7 @@ if grep -q 'gpio23' "$pubroot/etc/svxlink/svxlink.conf"; then
 	echo "FAIL: rolled-back publish left the new svxlink.conf in place" >&2
 	exit 1
 fi
+grep -q '^STALE$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl"
 echo "ok: tx-armed publish installs the staged set and rolls it back"
 ptt_sample="$tmp/ptt-sample"
 for sample in ' PTT_TYPE=GPIO' 'PTT_TYPE = GPIO' 'PTT_TYPE="GPIO"'; do
@@ -546,4 +556,56 @@ if (BenchGuard::detect()->remotetrxPttDisconnected()) {
 }
 echo "ok: PTT_TYPE whitespace and quotes are real wiring\n";
 ' "$ROOT_DIR" "$ptt_root"
+cfg_root="$tmp/cfg-root"
+mkdir -p "$cfg_root/etc/openrepeater" "$cfg_root/etc/svxlink/remotetrx.d" "$cfg_root/etc/svxlink/functional-test.d"
+printf 'orp-test\n' > "$cfg_root/etc/hostname"
+printf 'functional-test\n' > "$cfg_root/etc/openrepeater/operating-mode"
+chmod 644 "$cfg_root/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$cfg_root/etc/openrepeater" "$cfg_root/etc/openrepeater/operating-mode"
+sudo chmod 755 "$cfg_root/etc/openrepeater"
+printf '%s\n' 'PTT_TYPE=NONE' 'CFG_DIR=remotetrx.d' > "$cfg_root/etc/svxlink/remotetrx.conf"
+printf 'PTT_TYPE=GPIO\n' > "$cfg_root/etc/svxlink/remotetrx.d/radio.conf"
+ctl_cfg="$tmp/cfg-systemctl"
+printf '%s\n' '#!/bin/bash' 'printf "%s\n" "$*" >> "${ORP_SYSTEMCTL_LOG:?}"' 'exit 0' > "$ctl_cfg"
+chmod 755 "$ctl_cfg"
+: > "$tmp/cfg-systemctl.log"
+set +e
+cfg_out=$(cd / && ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$cfg_root" ORP_SYSTEMCTL="$ctl_cfg" \
+	ORP_SYSTEMCTL_LOG="$tmp/cfg-systemctl.log" "$HELPER" remotetrx start 2>&1)
+cfg_rc=$?
+set -e
+[ "$cfg_rc" -ne 0 ]
+printf '%s\n' "$cfg_out" | grep -q 'CFG_DIR'
+if grep -q 'start remotetrx.service' "$tmp/cfg-systemctl.log"; then
+	echo "FAIL: relative CFG_DIR was resolved from cwd /" >&2
+	exit 1
+fi
+printf '%s\n' 'PTT_TYPE=NONE' 'CFG_DIR=functional-test.d' > "$cfg_root/etc/svxlink/svxlink.conf"
+printf 'PTT_TYPE=GPIO\n' > "$cfg_root/etc/svxlink/functional-test.d/radio.conf"
+set +e
+svx_cfg=$(cd / && ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$cfg_root" ORP_SYSTEMCTL="$ctl_cfg" \
+	ORP_SYSTEMCTL_LOG="$tmp/cfg-systemctl.log" "$HELPER" svxlink start 2>&1)
+svx_cfg_rc=$?
+set -e
+[ "$svx_cfg_rc" -ne 0 ]
+printf '%s\n' "$svx_cfg" | grep -q 'CFG_DIR is not empty'
+printf '%s\n' 'PTT_TYPE=NONE' 'CFG_DIR=empty.d' 'CFG_DIR=remotetrx.d' > "$cfg_root/etc/svxlink/remotetrx.conf"
+mkdir -p "$cfg_root/etc/svxlink/empty.d"
+set +e
+multi=$(cd / && ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$cfg_root" "$HELPER" remotetrx start 2>&1)
+multi_rc=$?
+set -e
+[ "$multi_rc" -ne 0 ]
+printf '%s\n' "$multi" | grep -q 'more than once'
+printf '%s\n' 'PTT_TYPE=NONE' 'CFG_DIR=remotetrx.d' > "$cfg_root/etc/svxlink/remotetrx.conf"
+php -r '
+require $argv[1] . "/includes/classes/BenchGuard.php";
+putenv("ORP_BENCH_TEST_HARNESS=1");
+putenv("ORP_ROOT=" . $argv[2]);
+if (BenchGuard::detect()->remotetrxPttDisconnected()) {
+	fwrite(STDERR, "FAIL: PHP resolved a relative CFG_DIR from the wrong directory\n");
+	exit(1);
+}
+echo "ok: a relative CFG_DIR is resolved beside the conf file\n";
+' "$ROOT_DIR" "$cfg_root"
 echo "functional-test lift checks passed"

@@ -159,8 +159,10 @@ bench_assert_bootstrap_idle() {
 # Installer copy of the functional-test token check. orp_helper keeps an
 # inlined copy and does not source this file. A trusted functional-test token
 # is a regular file on hostname orp-test, owned by uid 0, not a symlink,
-# not group or world writable, and without an extended ACL when getfacl
-# is installed. The contents are exactly functional-test.
+# not group or world writable. The directory /etc/openrepeater is owned by
+# root and is not group or world writable. A named ACL entry that grants
+# write shows up as group-write in the mode. getfacl is not consulted.
+# The contents are exactly functional-test.
 bench_mode_is_functional_test() {
 	local file perm owner host token
 	file=$(p /etc/openrepeater/operating-mode)
@@ -185,12 +187,17 @@ bench_mode_is_functional_test() {
 	if [ "$owner" != "0" ]; then
 		return 1
 	fi
-	# Same rule as orp_helper and BenchGuard. getfacl absent, or getfacl
-	# with no stdout, is not an extended ACL.
-	if command -v getfacl >/dev/null 2>&1; then
-		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
-			return 1
-		fi
+	local dir perm_dir owner_dir
+	dir=$(dirname "$file")
+	if [ "$(basename "$dir")" = "openrepeater" ]; then
+		[ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+		perm_dir=$(stat -c %a "$dir")
+		case "$perm_dir" in
+			''|*[!0-7]*) return 1 ;;
+		esac
+		[ $((8#$perm_dir & 022)) -eq 0 ] || return 1
+		owner_dir=$(stat -c %u "$dir")
+		[ "$owner_dir" = "0" ] || return 1
 	fi
 	token=$(tr -d '[:space:]' < "$file")
 	[ "$token" = "functional-test" ]
