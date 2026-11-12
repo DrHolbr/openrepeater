@@ -2,6 +2,10 @@
 // --------------------------------------------------------
 // SESSION CHECK TO SEE IF USER IS LOGGED IN.
 session_start();
+require_once(__DIR__ . '/includes/classes/RequestGuard.php');
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] !== 'GET' && $_SERVER['REQUEST_METHOD'] !== 'HEAD') {
+	RequestGuard::requireMutation();
+}
 if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
 	header('location: login.php'); // If they aren't logged in, send them to login page.
 } elseif (!isset($_SESSION['callsign'])) {
@@ -50,7 +54,27 @@ include('includes/header.php');
 
 			<?php if (isset($alert)) { echo $alert; } ?>
 
-			<?php if (!$settings['callSign']) { ?><div class="alert alert-error"><button type="button" class="close" data-dismiss="alert">×</button><strong>Oops!</strong> It's going to be a little hard to send identification without a callsign defined. Please <a href="settings.php">set it here</a>.</div><?php } else { ?>
+			<?php
+				$idCheck = new SVXLink($settings, array(), array());
+				$idProblems = $idCheck->identificationProblems();
+			?>
+			<?php if ((isset($settings['ID_Short_IdentOnlyAfterTX']) ? $settings['ID_Short_IdentOnlyAfterTX'] : '') === 'True') { ?>
+			<div class="alert alert-info" id="ident_only_after_tx_note">
+				Identify only after transmit stays as stored and will be published as IDENT_ONLY_AFTER_TX=1. In SvxLink 26.05 src/svxlink/svxlink/Logic.tcl, checkPeriodicIdentify still treats SHORT_IDENT_INTERVAL as minutes. When ident_only_after_tx is set and need_ident is 0, that function returns without calling send_short_ident. transmit sets need_ident when the transmitter turns on. LONG_IDENT_INTERVAL is not gated by the flag. The svxlink.conf.5 sentence that the interval becomes seconds is not what that 26.05 procedure does. This note is not evidence of an identification at the end of a communication.
+			</div>
+			<?php } ?>
+			<?php if ($idProblems) { ?>
+			<div class="alert alert-error" id="identification_problems">
+				<strong>Identification is not ready to publish.</strong>
+				<ul>
+				<?php foreach ($idProblems as $idProblem) { ?>
+					<li><?php echo htmlspecialchars($idProblem); ?></li>
+				<?php } ?>
+				</ul>
+				<p>Stored call sign, Morse speed, intervals, and tones were not changed.</p>
+			</div>
+			<?php } ?>
+			<?php if (!$settings['callSign']) { ?><div class="alert alert-error"><button type="button" class="close" data-dismiss="alert">×</button><strong>Oops!</strong> It's going to be a little hard to send identification without a callsign defined. Please <a href="settings.php">set it here</a>. No other call sign is filled in.</div><?php } else { ?>
 
 
 			<form class="form-inline" role="form" action="functions/ajax_db_update.php" method="post" id="short_ID_settings">
@@ -290,7 +314,7 @@ include('includes/header.php');
 							<?php echo strtoupper($settings['callSign']); ?><strong>/RPT</strong></label>							
 
 							<hr>
-							<p>Set the speed (WPM) and tone of ALL morse code identification.</p>
+							<p>Set the speed (WPM) and tone of ALL morse code identification. Automatic Morse identification faster than 20 WPM is not published (47 CFR 97.119(b)(1)). Voice mode writes the TCL command spellWord for the station call sign. That command is not proof that an English speech clip exists or that the spoken call sign matches the stored value.</p>
 
 							<select name="ID_Morse_WPM">
 								<option value="10" <?php if ($settings['ID_Morse_WPM'] == '10') { echo "selected"; } ?>>10 WPM</option>

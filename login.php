@@ -1,5 +1,16 @@
 <?php
 session_start();
+require_once(__DIR__ . '/includes/classes/RequestGuard.php');
+$loginMethod = isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : 'GET';
+if ($loginMethod === 'POST') {
+	if (isset($_POST['action']) && $_POST['action'] === 'setPassword') {
+		RequestGuard::requireMutation();
+	} else {
+		RequestGuard::requireLoginPost();
+	}
+} else {
+	RequestGuard::ensureToken();
+}
 
 ################################################################################
 # AUTOLOAD CLASSES
@@ -44,12 +55,10 @@ if (isset($_POST['action'])){
 		$usr = $_SESSION['username'];
 		$resetQuery = "SELECT username, salt FROM users WHERE username = '$usr';";
  		$resetData = $Database->select_single($resetQuery);
-		if (!$resetData['salt']){
+		if (!$resetData || empty($resetData['salt'])){
 			header('location: login.php?action=setPassword');
+			die();
 		}
-
-		$resetHash = hash('sha256', $salt . hash('sha256', $password1));
-		$hash = hash('sha256', $password1);
 
 		function createSalt(){
 			$string = md5(uniqid(rand(), true));
@@ -57,7 +66,7 @@ if (isset($_POST['action'])){
 		}
 
 		$salt = createSalt();
-		$hash = hash('sha256', $salt . $hash);
+		$hash = hash('sha256', $salt . hash('sha256', $password1));
 
 		$updateSQL = "UPDATE users SET password='$hash', salt='$salt' WHERE username='$usr'";
 		$Database->update($updateSQL);
@@ -95,6 +104,7 @@ if ((isset($_POST['username'])) && (isset($_POST['password']))){
 	}
 
 	session_regenerate_id(true);
+	RequestGuard::rotateToken();
 	$_SESSION['username'] = $username;
 	$_SESSION['userID'] = $loginUserID;
 	$_SESSION['version_num'] = $versionNum;
@@ -138,6 +148,7 @@ if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
 		<div class="well span5 center login-box">
 			'.$login_msg.'
 			<form name="login" action="login.php" method="post" class="form-horizontal">
+				<input type="hidden" name="csrf_token" value="' . htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8') . '">
 				<fieldset>
 					<div class="input-prepend" title="Username" data-rel="tooltip">
 						<span class="add-on"><i class="icon-user"></i></span><input autofocus class="input-large span10" name="username" id="username" type="text" placeholder="Username" />
@@ -207,6 +218,7 @@ if (isset($_GET['action'])){
 		<div class="well span5 center login-box">
 			'.$login_msg.'
 			<form name="changePassword" action="login.php" method="post" class="form-horizontal">
+			<input type="hidden" name="csrf_token" value="' . htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8') . '">
 			<h3>Change Password</h3><br>
 				<fieldset>
 

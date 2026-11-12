@@ -19,13 +19,22 @@ class Modules {
 
 	public function __construct() {
 		$this->Database = new Database();
-		$this->modules_path = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/modules/';
+		$modulesOverride = getenv('ORP_MODULES_PATH');
+		if (is_string($modulesOverride) && $modulesOverride !== '' && $modulesOverride[0] === '/'
+			&& strpos($modulesOverride, '..') === false && is_dir($modulesOverride) && !is_link($modulesOverride)) {
+			$this->modules_path = rtrim($modulesOverride, '/') . '/';
+		} elseif (is_string($modulesOverride) && $modulesOverride !== '') {
+			$this->modules_path = rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-modules/';
+		} else {
+			$this->modules_path = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/modules/';
+		}
 		$this->includes_path = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/';
 		$this->modulesUploadTempDir = $this->modules_path . 'tempModuleDir/';
 		$guard = BenchGuard::detect();
 		if ($guard->isBench()) {
-			$preview = rtrim($guard->previewDir(), '/');
-			if (BenchGuard::previewAllowed($preview) && !is_link($preview)) {
+			$preview = $guard->previewDir();
+			if (is_string($preview) && BenchGuard::previewAllowed($preview) && !is_link($preview)) {
+				$preview = rtrim($preview, '/');
 				$this->svxlink_events_d_path = $preview . '/events.d/';
 				$this->svxlink_modules_d_path = $preview . '/modules.d/';
 				$this->svxlink_sounds = $preview . '/sounds/en_US/';
@@ -107,11 +116,7 @@ class Modules {
 		##########
 
 		$serializedSettings = serialize($settings_array);
-		$sql = "UPDATE modules SET moduleOptions = '$serializedSettings' WHERE moduleKey = '$moduleID';";
-		$insert_result = $this->Database->insert($sql);
-
-		if ($insert_result) { 
-			$this->Database->set_update_flag(true);
+		if ($this->Database->write_module_options($moduleID, $serializedSettings) === true) {
 			return array(
 				'msgType' => 'success',
 				'msgText' => 'Successfully saved module settings.'
@@ -139,10 +144,19 @@ class Modules {
 		# REWRITE PENDING
 		# Currently Redirects to Database Class
 		# Plan to pull logic form those classes once everything points here
-		$this->Database->active_module($id);
-
-		$this->initialize_module($svxlink_name);		
-		$this->Database->set_update_flag(true);
+		if ($this->Database->set_module_enabled($id, 1) !== true) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The module was not activated. The previous row was left unchanged.'
+			);
+		}
+		if ($this->initialize_module($svxlink_name, 1) !== true) {
+			$this->Database->set_module_enabled($id, 0);
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The module was not activated. No SvxLink files were installed.'
+			);
+		}
 
 		return array(
 			'msgType' => 'success',
@@ -157,11 +171,21 @@ class Modules {
 	###############################################
 
 	public function deactivateMod($id) {
-		# REWRITE PENDING
-		# Currently Redirects to Database Class
-		# Plan to pull logic form those classes once everything points here
-		$this->Database->deactive_module($id);
-		$this->Database->set_update_flag(true);
+		$sql = 'SELECT * FROM "modules" WHERE "moduleKey" = "'.$id.'";';
+		$select_result = $this->Database->select_key_value($sql, 'moduleKey', 'svxlinkName');
+		$svxlink_name = isset($select_result[$id]) ? $select_result[$id] : '';
+		if ($this->unlink_module_files($svxlink_name) !== true) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The module was not deactivated. The previous links were left unchanged.'
+			);
+		}
+		if ($this->Database->set_module_enabled($id, 0) !== true) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The module was not deactivated. The previous row was left unchanged.'
+			);
+		}
 
 		return array(
 			'msgType' => 'success',
@@ -176,8 +200,14 @@ class Modules {
 	###############################################
 
 	public function upload_module($fileNameArray) {
+		if (!class_exists('ZipArchive', false)) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => self::zipSupportMessage()
+			);
+		}
 
-		$maxFileSize = 500000000; // size in bytes
+		$maxFileSize = 8388608; // size in bytes
 		$allowedExts = array('zip');
 	
 		//Loop through each file
@@ -186,7 +216,7 @@ class Modules {
 			$tmpFile1 = $fileNameArray['tmp_name'][$i];
 			
 			$temp_ext = explode(".", $fileNameArray['name'][$i]);
-			$extension = end($temp_ext);
+			$extension = strtolower((string) end($temp_ext));
 
 			$uploadedModuleZip = $this->modules_path . 'tempModule.' . $extension;
 			
@@ -292,41 +322,133 @@ class Modules {
 	# Archive Functions
 	###############################################
 
+	public static function zipSupportMessage() {
+		return 'PHP ZipArchive is not available. Install the php8.4-zip package.';
+	}
+
 	public function unzip_module($selected_archive) {
-		try	{
-			if (!file_exists($this->modulesUploadTempDir)) {
-			    mkdir($this->modulesUploadTempDir, 0777, true);
+		if (!class_exists('ZipArchive', false)) {
+			return false;
+		}
+		if (!is_string($selected_archive) || $selected_archive === '' || is_link($selected_archive) || !is_file($selected_archive)) {
+			return false;
+		}
+		$archiveBytes = filesize($selected_archive);
+		if ($archiveBytes === false || $archiveBytes < 22 || $archiveBytes > self::ZIP_MAX_ARCHIVE) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		$temp = $this->modulesUploadTempDir;
+		if (is_link($temp)) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		if (!is_dir($temp) && !mkdir($temp, 0755, true) && !is_dir($temp)) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		if (is_link($temp)) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		$root = realpath($temp);
+		if ($root === false || !is_dir($root) || is_link($temp)) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		$this->discardChildren($root, $root);
+
+		$zip = new ZipArchive();
+		if ($zip->open($selected_archive) !== true) {
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		$count = $zip->numFiles;
+		if ($count < 1 || $count > self::ZIP_MAX_ENTRIES) {
+			$zip->close();
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		$plans = array();
+		$total = 0;
+		for ($i = 0; $i < $count; $i++) {
+			$name = $zip->getNameIndex($i);
+			if ($this->zipEntrySkipped($name)) {
+				continue;
 			}
-
-			// Clean up any Mac OS trash in user zip file if it exists
-			exec('zip -d '.$selected_archive.' "__MACOSX*"');
-
-			$zip = new ZipArchive;
-			$res = $zip->open($selected_archive);
-			if ($res === TRUE) {
-				$zip->extractTo($this->modulesUploadTempDir);
-				$zip->close();
-				unlink($selected_archive);
-
-				// If zip contains parent folder, move child files and remove folder
-				$folder_list  = glob($this->modulesUploadTempDir."*", GLOB_ONLYDIR);
-				$file_count  = count( glob($this->modulesUploadTempDir."*") ) - count($folder_list);
-				if (count($folder_list) == 1 && $file_count == 0) {
-					$get_sub_dir = glob($this->modulesUploadTempDir."*", GLOB_ONLYDIR);
-					$get_sub_dir = $get_sub_dir[0];
-					exec('mv ' . $get_sub_dir . '/* ' . $this->modulesUploadTempDir);
-					exec('rm ' . $get_sub_dir . ' -R');
+			$stat = $zip->statIndex($i);
+			if (is_array($stat)) {
+				$opsys = 0;
+				$attr = 0;
+				if ($zip->getExternalAttributesIndex($i, $opsys, $attr)) {
+					$stat['external_attributes'] = $attr;
 				}
-
-				return true;
-
-			} else {
+			}
+			if (!is_array($stat) || !$this->zipEntryAllowed($name, $stat)) {
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
 				return false;
 			}
-
-		} catch (Exception $e) {
-		    echo "Exception : " . $e;
+			$uncompressed = (int) $stat['size'];
+			$compressed = isset($stat['comp_size']) ? (int) $stat['comp_size'] : 0;
+			$attr = isset($stat['external_attributes']) ? (int) $stat['external_attributes'] : 0;
+			$isDir = substr($name, -1) === '/' || (($attr >> 16) & 0170000) === 0040000;
+			$total += $uncompressed;
+			if ($total > self::ZIP_MAX_TOTAL) {
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
+				return false;
+			}
+			$plans[] = array($i, rtrim($name, '/'), $isDir, $uncompressed, $compressed);
 		}
+		if (count($plans) < 1) {
+			$zip->close();
+			$this->discardUploadedArchive($selected_archive);
+			return false;
+		}
+		foreach ($plans as $plan) {
+			$relative = $plan[1];
+			$isDir = $plan[2];
+			$expected = $plan[3];
+			$parent = $isDir ? $relative : dirname($relative);
+			if ($parent !== '.' && !$this->mkdirInside($root, $parent)) {
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
+				return false;
+			}
+			$target = $root . '/' . $relative;
+			if ($isDir) {
+				if (!$this->mkdirInside($root, $relative)) {
+					$zip->close();
+					$this->discardChildren($root, $root);
+					$this->discardUploadedArchive($selected_archive);
+					return false;
+				}
+				continue;
+			}
+			if (is_link($target) || is_dir($target)) {
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
+				return false;
+			}
+			if (!$this->writeMemberCapped($zip, $plan[0], $target, $root, $expected)) {
+				$zip->close();
+				$this->discardChildren($root, $root);
+				$this->discardUploadedArchive($selected_archive);
+				return false;
+			}
+		}
+		$zip->close();
+		$this->discardUploadedArchive($selected_archive);
+		if (!$this->flattenSingleFolder($root)) {
+			$this->discardChildren($root, $root);
+			return false;
+		}
+		return true;
 	}
 
 
@@ -337,80 +459,155 @@ class Modules {
 
 	public function initialize_module($svxlink_name, $enabled = 0) {
 		$svxlink_name = trim($svxlink_name);
+		if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $svxlink_name)) {
+			return false;
+		}
 
-		// Preceed only if module is not listed as a core module
-		if ( !in_array($svxlink_name, $this->core_modules) ) {
+		if ($this->Database->exists('modules','svxlinkName',$svxlink_name) == false) {
+			$nextId = $this->find_next_svxlink_id();
+			if ($this->Database->insert_module_row($svxlink_name, $enabled, $nextId) !== true) {
+				return false;
+			}
+		}
 
-			### Check for SVXLink Components and link into place ###
-	
-			// events.d directory
-			$mod_events_d_path = $this->modules_path . $svxlink_name . '/svxlink/events.d/';
-			if (file_exists($mod_events_d_path)) {
-				$fileArray = $this->read_dir($mod_events_d_path);
-				
-				// Create link for each file
-				// Files stay in ORP module folder and a link is created in SVXLink folder
-				foreach($fileArray as $file) {
-					$currTarget = $file['filePath'];
-					$currLink = $this->svxlink_events_d_path . $file['fileName'];
-					if (file_exists($currLink)) { unlink($currLink); } // Clean old link/file
-					symlink($currTarget, $currLink); // Set New Link
+		// An inactive install does not copy anything onto a path SvxLink
+		// loads, and it does not remove a sounds directory. The root helper
+		// copies files only when an authenticated admin activates the module.
+		if ((int) $enabled === 1 && !in_array($svxlink_name, $this->core_modules, true)) {
+			$links = $this->link_module_files($svxlink_name);
+			if ($links === false) {
+				return false;
+			}
+		}
+
+		// An uploaded default_settings.php is not included. The file can sit in
+		// the module directory, but this request does not execute it.
+		return true;
+
+	}
+
+	public function link_module_files($svxlink_name) {
+		if (!$this->modulePublish('activate', $svxlink_name)) {
+			return false;
+		}
+		return array('installed' => $svxlink_name);
+	}
+
+	public function undo_module_links($undo) {
+		if (!is_array($undo) || !isset($undo['installed']) || !is_string($undo['installed'])) {
+			return;
+		}
+		$this->modulePublish('deactivate', $undo['installed']);
+	}
+
+	public function unlink_module_files($svxlink_name) {
+		if (!is_string($svxlink_name) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $svxlink_name)) {
+			return false;
+		}
+		if (in_array($svxlink_name, $this->core_modules, true)) {
+			return true;
+		}
+		return $this->modulePublish('deactivate', $svxlink_name);
+	}
+
+	// Root copies the module onto the SvxLink load path. This process does
+	// not symlink the uploaded tree, and a live call does not pass ORP_ROOT.
+	private function modulePublish($action, $svxlink_name) {
+		if ($action !== 'activate' && $action !== 'deactivate') {
+			return false;
+		}
+		if (!is_string($svxlink_name) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $svxlink_name)) {
+			return false;
+		}
+		if (in_array($svxlink_name, $this->core_modules, true)) {
+			return false;
+		}
+		$helper = '/usr/sbin/orp_helper';
+		$command = 'sudo -n ';
+		if (BenchGuard::testHarnessActive()) {
+			$bin = getenv('ORP_HELPER_BIN');
+			if (is_string($bin) && $bin !== '' && $bin[0] === '/' && strpos($bin, '..') === false
+				&& is_file($bin) && !is_link($bin)) {
+				$helper = $bin;
+			}
+			$command .= 'env ' . escapeshellarg('ORP_BENCH_TEST_HARNESS=1');
+			foreach (array('ORP_ROOT', 'ORP_MODULES_PATH') as $key) {
+				$value = getenv($key);
+				if (is_string($value) && $value !== '' && strpos($value, "\0") === false) {
+					$command .= ' ' . escapeshellarg($key . '=' . $value);
 				}
 			}
-	
-			// modules.d directory
-			$mod_modules_d_path = $this->modules_path . $svxlink_name . '/svxlink/modules.d/';
-			if (file_exists($mod_modules_d_path)) {
-				$fileArray = $this->read_dir($mod_modules_d_path);
-				
-				// Create link for each file
-				// Files stay in ORP module folder and a link is created in SVXLink folder
-				foreach($fileArray as $file) {
-					$currTarget = $file['filePath'];
-					$currLink = $this->svxlink_modules_d_path . $file['fileName'];
-					if (file_exists($currLink)) { unlink($currLink); } // Clean old link/file
-					symlink($currTarget, $currLink); // Set New Link
-				}
-			}
-	
-	
-			### Check for SVXLink Sounds and link into place ###
-	
-			$svxlink_sounds_path = $this->svxlink_sounds . $svxlink_name;
-			$mod_sounds_path = $this->modules_path . $svxlink_name . '/svxlink/sounds/en_US/';
-			if (file_exists($mod_sounds_path)) {
-				if (file_exists($svxlink_sounds_path)) { exec('rm ' . $svxlink_sounds_path . ' -R'); }
-				symlink($mod_sounds_path, $svxlink_sounds_path); // Set New Link
-			}
-
+			$command .= ' ';
 		}
+		$command .= escapeshellarg($helper) . ' module ' . $action . ' ' . escapeshellarg($svxlink_name);
+		$unused = array();
+		$rc = 1;
+		exec($command, $unused, $rc);
+		return $rc === 0;
+	}
 
-
-		### Created DB record in modules table, if it doesn't exist, and set as deactive ###
-
-		if ($this->Database->exists('modules','svxlinkName',$svxlink_name) == false) { 
-			$sql = 'INSERT INTO "modules" ("moduleKey","moduleEnabled","svxlinkName","svxlinkID") VALUES (NULL,'.$enabled.',\''.$svxlink_name.'\',\''.$this->find_next_svxlink_id().'\')';
-			$insert_result = $this->Database->insert($sql);
+	private function removeModuleTree($path) {
+		$path = rtrim((string) $path, '/');
+		if ($path === '' || $path === '.' || is_link(dirname($path))) {
+			return false;
 		}
+		return BenchGuard::removeTreeConfined($path, dirname($path));
+	}
 
-	
-		### If no options are set in DB, check for default settings file and load if one exists ###
-
-		$sql = 'SELECT * FROM "modules" WHERE "svxlinkName" = \''.$svxlink_name.'\';';
-		$module = $this->Database->select_single($sql);
-		$module_key = $module['moduleKey'];
-		$module_options = $module['moduleOptions'];
-
-		if ($module_options == NULL || $module_options == '') {
-			$default_settings_file = $this->modules_path . $svxlink_name . '/default_settings.php';
-			if (file_exists($default_settings_file)) {
-				include($default_settings_file);
-				$default_settings['moduleKey'] = $module_key;
-				$this->save_module_settings($default_settings, 'install');
+	private function writeMemberCapped($zip, $index, $target, $root, $expected) {
+		$stream = $zip->getStreamIndex($index);
+		if (!is_resource($stream)) {
+			return false;
+		}
+		$tmpName = $root . '/.orp-member-' . bin2hex(random_bytes(6));
+		$out = fopen($tmpName, 'wb');
+		if ($out === false) {
+			fclose($stream);
+			return false;
+		}
+		$written = 0;
+		while (!feof($stream)) {
+			$chunk = fread($stream, 8192);
+			if (!is_string($chunk)) {
+				fclose($stream);
+				fclose($out);
+				@unlink($tmpName);
+				return false;
 			}
-			
+			if ($chunk === '') {
+				break;
+			}
+			$written += strlen($chunk);
+			if ($written > self::ZIP_MAX_ENTRY) {
+				fclose($stream);
+				fclose($out);
+				@unlink($tmpName);
+				return false;
+			}
+			if (fwrite($out, $chunk) !== strlen($chunk)) {
+				fclose($stream);
+				fclose($out);
+				@unlink($tmpName);
+				return false;
+			}
 		}
-
+		fclose($stream);
+		fclose($out);
+		if ($written !== $expected) {
+			@unlink($tmpName);
+			return false;
+		}
+		if (is_link($tmpName) || !rename($tmpName, $target) || is_link($target)) {
+			@unlink($tmpName);
+			return false;
+		}
+		$real = realpath($target);
+		if ($real === false || !$this->pathIsInside($root, $real)) {
+			@unlink($target);
+			return false;
+		}
+		chmod($target, 0644);
+		return true;
 	}
 
 
@@ -429,7 +626,7 @@ class Modules {
 		if (!file_exists($modules_d_path)) { $error_level++; }
 
 		if ($error_level > 0) {
-			exec('rm ' . $tempModulePath. ' -R');
+			$this->removeModuleTree($tempModulePath);
 			return false;
 		}
 
@@ -442,9 +639,13 @@ class Modules {
 
 		if ( isset($mod_ini_array['Module_Info']['mod_name']) ) {
 			$svxlink_name = trim($mod_ini_array['Module_Info']['mod_name']);
+			if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $svxlink_name) || in_array($svxlink_name, $this->core_modules, true)) {
+				$this->removeModuleTree($tempModulePath);
+				return false;
+			}
 			$new_module_path = $this->modules_path . $svxlink_name;
 		} else {
-			exec('rm ' . $tempModulePath. ' -R');
+			$this->removeModuleTree($tempModulePath);
 			return false;			
 		}
 		
@@ -452,7 +653,7 @@ class Modules {
 		if (file_exists($new_module_path)) { $error_level++; }
 
 		if ($error_level > 0) {
-			exec('rm ' . $tempModulePath. ' -R');
+			$this->removeModuleTree($tempModulePath);
 			return false;
 		}
 		
@@ -462,15 +663,23 @@ class Modules {
 		if (!file_exists($new_module_path)) { $error_level++; }
 
 		if ($error_level > 0) {
-			exec('rm ' . $tempModulePath. ' -R');
+			$this->removeModuleTree($tempModulePath);
 			return false;
 		}
 		
 		# Initiate Install and set module as inactive
-		$this->initialize_module($svxlink_name, 0);
+		if ($this->initialize_module($svxlink_name, 0) !== true) {
+			if (is_dir($new_module_path) && !is_link($new_module_path)) {
+				rename($new_module_path, $tempModulePath);
+			}
+			if (is_dir($tempModulePath)) {
+				$this->removeModuleTree($tempModulePath);
+			}
+			return false;
+		}
 
 		# Final Cleanup
-		if (file_exists($tempModulePath)) { exec('rm ' . $tempModulePath. ' -R'); }
+		if (file_exists($tempModulePath) || is_link($tempModulePath)) { $this->removeModuleTree($tempModulePath); }
 		
 		return $mod_ini_array;
 
@@ -490,43 +699,16 @@ class Modules {
 			exit("This is a core module and cannot be removed!");
 		}
 
-		### Check for SVXLink Components and remove ###
-
-		// events.d directory
-		$mod_events_d_path = $this->modules_path . $svxlink_name . '/svxlink/events.d/';
-		if (file_exists($mod_events_d_path)) {
-			$fileArray = $this->read_dir($mod_events_d_path);
-			
-			// Remove link for each file
-			foreach($fileArray as $file) {
-				$currLink = $this->svxlink_events_d_path . $file['fileName'];
-				if (file_exists($currLink)) { unlink($currLink); }
-			}
-		}
-
-		// modules.d directory
-		$mod_modules_d_path = $this->modules_path . $svxlink_name . '/svxlink/modules.d/';
-		if (file_exists($mod_modules_d_path)) {
-			$fileArray = $this->read_dir($mod_modules_d_path);
-			
-			// Remove link for each file
-			foreach($fileArray as $file) {
-				$currLink = $this->svxlink_modules_d_path . $file['fileName'];
-				if (file_exists($currLink)) { unlink($currLink); }
-			}
-		}
-
-		### Check for SVXLink Sounds and remove ###
-
-		$svxlink_sounds_path = $this->svxlink_sounds . $svxlink_name;
-		$mod_sounds_path = $this->modules_path . $svxlink_name . '/svxlink/sounds/en_US/';
-		if (file_exists($mod_sounds_path)) {
-			if (file_exists($svxlink_sounds_path)) { exec('rm ' . $svxlink_sounds_path . ' -R'); }
+		if ($this->unlink_module_files($svxlink_name) !== true) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'There was a problem deleting the module.'
+			);
 		}
 
 		### Remove module dir ###
 		
-		exec('rm ' . $this->modules_path . $svxlink_name . ' -R');
+		$this->removeModuleTree($this->modules_path . $svxlink_name);
 		if ( !file_exists( $this->modules_path . $svxlink_name ) ) {
 
 		### Remove GPIO pins if module uses them ###
@@ -605,11 +787,13 @@ class Modules {
 			
 			$return_html .= '</div><div>';
 			
-			// Activate / Deactiveate Link
+			// Activate and deactivate are POST forms. A GET query does not change the module.
+			$module_token = htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8');
+			$module_key = htmlspecialchars((string) $cur_mod['moduleKey'], ENT_QUOTES, 'UTF-8');
 			if ($cur_mod['moduleEnabled']==1) {
-				$return_html .= '<a href="?deactivate='.$cur_mod['moduleKey'].'">Deactivate</a>';
+				$return_html .= '<form method="post" action="modules.php" style="display:inline"><input type="hidden" name="csrf_token" value="'.$module_token.'"><input type="hidden" name="deactivate" value="'.$module_key.'"><button type="submit">Deactivate</button></form>';
 			} else {
-				$return_html .= '<a href="?activate='.$cur_mod['moduleKey'].'">Activate</a>';													
+				$return_html .= '<form method="post" action="modules.php" style="display:inline"><input type="hidden" name="csrf_token" value="'.$module_token.'"><input type="hidden" name="activate" value="'.$module_key.'"><button type="submit">Activate</button></form>';
 			}
 
 			// Settings Link...if Applicable
@@ -890,26 +1074,181 @@ class Modules {
 	# Read Directory and Generate Paths to Files
 	###############################################
 
-	private function read_dir($path) {
-	
-		// Read Files into 1 dimensional array
-		if ($handle = opendir($path)) {
-				while (false !== ($file = readdir($handle))) {
-				if ('.' === $file) continue;
-				if ('..' === $file) continue;
-				$fileList[] = $file;
-			}
-			closedir($handle);	
-		}
-	
-		// Build array with full file paths
-		foreach($fileList as $fileName) {	
-			$filePath = $path . $fileName;
-			$filesArray[] = array('fileName' => $fileName, 'filePath' => $filePath);	
-		}
+	const ZIP_MAX_ARCHIVE = 8388608;
+	const ZIP_MAX_ENTRIES = 500;
+	const ZIP_MAX_ENTRY = 8388608;
+	const ZIP_MAX_TOTAL = 33554432;
 
-		return $filesArray;
+	private function zipEntrySkipped($name) {
+		return $name === '__MACOSX' || (is_string($name) && strpos($name, '__MACOSX/') === 0);
 	}
+
+	private function zipEntryAllowed($name, $stat) {
+		if (!is_string($name) || $name === '' || strlen($name) > 240) {
+			return false;
+		}
+		if (strpos($name, "\0") !== false || strpos($name, '\\') !== false || strpos($name, ':') !== false) {
+			return false;
+		}
+		if ($name[0] === '/' || $name[0] === '.') {
+			return false;
+		}
+		$trimmed = rtrim($name, '/');
+		if ($trimmed === '' || strpos($trimmed, '//') !== false) {
+			return false;
+		}
+		$parts = explode('/', $trimmed);
+		if (count($parts) > 8) {
+			return false;
+		}
+		foreach ($parts as $part) {
+			if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/', $part)) {
+				return false;
+			}
+		}
+		$attr = isset($stat['external_attributes']) ? (int) $stat['external_attributes'] : 0;
+		$mode = ($attr >> 16) & 0170000;
+		if ($mode === 0120000) {
+			return false;
+		}
+		$uncompressed = isset($stat['size']) ? (int) $stat['size'] : -1;
+		$compressed = isset($stat['comp_size']) ? (int) $stat['comp_size'] : 0;
+		if ($uncompressed < 0 || $uncompressed > self::ZIP_MAX_ENTRY) {
+			return false;
+		}
+		if ($compressed < 0 || $compressed > self::ZIP_MAX_ARCHIVE) {
+			return false;
+		}
+		if ($compressed > 0 && $uncompressed > ($compressed * 100)) {
+			return false;
+		}
+		if ($compressed === 0 && $uncompressed > 1048576) {
+			return false;
+		}
+		if (!empty($stat['encryption_method'])) {
+			return false;
+		}
+		return true;
+	}
+
+	private function pathIsInside($root, $path) {
+		$root = rtrim($root, '/');
+		$path = rtrim($path, '/');
+		return $path === $root || strpos($path, $root . '/') === 0;
+	}
+
+	private function mkdirInside($root, $relative) {
+		$relative = trim($relative, '/');
+		if ($relative === '' || $relative === '.') {
+			return $this->pathIsInside($root, $root);
+		}
+		$current = $root;
+		foreach (explode('/', $relative) as $part) {
+			if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/', $part)) {
+				return false;
+			}
+			$next = $current . '/' . $part;
+			if (is_link($next)) {
+				return false;
+			}
+			if (!is_dir($next) && !mkdir($next, 0755) && !is_dir($next)) {
+				return false;
+			}
+			if (is_link($next)) {
+				return false;
+			}
+			$real = realpath($next);
+			if ($real === false || !$this->pathIsInside($root, $real)) {
+				return false;
+			}
+			$current = $real;
+		}
+		return true;
+	}
+
+	private function flattenSingleFolder($root) {
+		$list = scandir($root);
+		if (!is_array($list)) {
+			return false;
+		}
+		$dirs = array();
+		$files = 0;
+		foreach ($list as $name) {
+			if ($name === '.' || $name === '..') {
+				continue;
+			}
+			$path = $root . '/' . $name;
+			if (is_link($path)) {
+				return false;
+			}
+			if (is_dir($path)) {
+				$dirs[] = $name;
+			} else {
+				$files++;
+			}
+		}
+		if (count($dirs) !== 1 || $files !== 0) {
+			return true;
+		}
+		$sub = $root . '/' . $dirs[0];
+		$children = scandir($sub);
+		if (!is_array($children)) {
+			return false;
+		}
+		foreach ($children as $child) {
+			if ($child === '.' || $child === '..') {
+				continue;
+			}
+			$from = $sub . '/' . $child;
+			$to = $root . '/' . $child;
+			if (is_link($from) || file_exists($to) || is_link($to)) {
+				return false;
+			}
+			if (!rename($from, $to)) {
+				return false;
+			}
+		}
+		return rmdir($sub);
+	}
+
+	private function discardUploadedArchive($path) {
+		if (is_string($path) && is_file($path) && !is_link($path)) {
+			unlink($path);
+		}
+	}
+
+	private function discardChildren($dir, $root) {
+		if (!is_string($dir) || is_link($dir) || !is_dir($dir)) {
+			return;
+		}
+		$real = realpath($dir);
+		if ($real === false || !$this->pathIsInside($root, $real)) {
+			return;
+		}
+		$list = scandir($real);
+		if (!is_array($list)) {
+			return;
+		}
+		foreach ($list as $name) {
+			if ($name === '.' || $name === '..') {
+				continue;
+			}
+			$path = $real . '/' . $name;
+			if (is_link($path)) {
+				unlink($path);
+				continue;
+			}
+			if (is_dir($path)) {
+				$this->discardChildren($path, $root);
+				rmdir($path);
+				continue;
+			}
+			if (is_file($path)) {
+				unlink($path);
+			}
+		}
+	}
+
 
 
 

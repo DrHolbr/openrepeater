@@ -9,40 +9,107 @@ class AudioFiles {
     private $temp_dir = "/tmp/";
     private $sound_dir = '/sounds/';
 
+	public function __construct() {
+		$override = getenv('ORP_AUDIO_PATH');
+		if (is_string($override) && $override !== '' && $override[0] === '/'
+			&& strpos($override, "\0") === false && strpos($override, '..') === false) {
+			$this->path = rtrim($override, '/') . '/';
+		} elseif (is_string($override) && $override !== '') {
+			$this->path = rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-audio/';
+		}
+	}
+
+	private function allowedType($type) {
+		return $type === 'identification' || $type === 'courtesy_tones';
+	}
+
+	// A library is only the real directory for that type. A missing directory
+	// is an empty library. A symlink is not a library, so listing, rename,
+	// delete, and upload cannot follow it.
+	private function libraryDir($type) {
+		if (!$this->allowedType($type)) {
+			return null;
+		}
+		$base = $this->path;
+		if ($base === '' || is_link(rtrim($base, '/')) || !is_dir($base)) {
+			return null;
+		}
+		$dir = rtrim($base, '/') . '/' . $type;
+		if (is_link($dir) || !is_dir($dir)) {
+			return null;
+		}
+		return $dir;
+	}
+
+	private function plainFileName($name) {
+		if (!is_string($name) || $name === '' || $name !== basename($name)) {
+			return null;
+		}
+		if (strpos($name, "\0") !== false || strpos($name, '/') !== false || strpos($name, '\\') !== false) {
+			return null;
+		}
+		if (!preg_match('/^[A-Za-z0-9._ -]+$/', $name)) {
+			return null;
+		}
+		return $name;
+	}
+
+	private function refusal($text) {
+		return array(
+			'msgType' => 'error',
+			'msgText' => $text
+		);
+	}
+
 
 	###############################################
 	# Get Audio Files by Type
 	###############################################
 
 	public function get_audio_files($type) {
-	
-		$url = (!empty($_SERVER['HTTPS']) ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . $this->sound_dir . $type . '/';
-		
-		// Read Files into 1 dimensional array
-		if ($handle = opendir($this->path . $type)) {
-				while (false !== ($file = readdir($handle))) {
-				if ('.' === $file) continue;
-				if ('..' === $file) continue;
-				$fileList[] = $file;
-			}
-			closedir($handle);	
+		$fileList = array();
+		$filesArray = array();
+		$dir = $this->libraryDir($type);
+		if ($dir === null) {
+			return $filesArray;
 		}
-	
-		// Sort and reindex array
+		$host = isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : 'localhost';
+		$scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+		$url = $scheme . '://' . $host . $this->sound_dir . $type . '/';
+
+		$handle = opendir($dir);
+		if ($handle === false) {
+			return $filesArray;
+		}
+		while (false !== ($file = readdir($handle))) {
+			if ($file === '.' || $file === '..') {
+				continue;
+			}
+			$full = $dir . '/' . $file;
+			if (is_link($full) || !is_file($full)) {
+				continue;
+			}
+			if ($this->plainFileName($file) === null) {
+				continue;
+			}
+			$fileList[] = $file;
+		}
+		closedir($handle);
+
 		natsort($fileList);
 		$fileList = array_values($fileList);
-	
-		// Write into multidimensional array with clean file labels
-		foreach($fileList as $fileName) {	
-			$fileLabel = str_replace("_"," ",$fileName); //replace underscores with spaces for file labels
-			$fileLabel = preg_replace('/\\.[^.\\s]{2,5}$/', '', $fileLabel); //remove extention
-			$fileURL = $url . $fileName;
-			$filePath = $this->path . $type . '/' . $fileName;
-			$filesArray[] = array('fileName' => $fileName, 'fileLabel' => $fileLabel, 'fileURL' => $fileURL, 'filePath' => $filePath);			
-		}
-	
-		return $filesArray;
 
+		foreach ($fileList as $fileName) {
+			$fileLabel = str_replace("_", " ", $fileName);
+			$fileLabel = preg_replace('/\\.[^.\\s]{2,5}$/', '', $fileLabel);
+			$filesArray[] = array(
+				'fileName' => $fileName,
+				'fileLabel' => $fileLabel,
+				'fileURL' => $url . rawurlencode($fileName),
+				'filePath' => $dir . '/' . $fileName
+			);
+		}
+		return $filesArray;
 	}
 	
 
@@ -54,7 +121,8 @@ class AudioFiles {
 	public function display_audio_files($type, $selected, $settingName) {
 
 		$audioLib = $this->get_audio_files($type);
-		
+		$html_modal = '';
+
 		if ($audioLib) {
 			
 			switch ($settingName) {
@@ -219,17 +287,17 @@ class AudioFiles {
 				<!-- /.modal -->';
 		    }
 		
-		} else {
-			$html_table = '<h3>No Audio Files to Display, Please upload some.</h3>';
+			$html_table .= '
+			</tbody>
+		</table>
+		';
+			return array('table' => $html_table, 'modals' => $html_modal);
 		}
 
-		
-		$html_table .= '
-			</tbody>
-		</table>            
-		';
-
-		return array('table' => $html_table, 'modals' => $html_modal);
+		return array(
+			'table' => '<h3>No Audio Files to Display, Please upload some.</h3>',
+			'modals' => ''
+		);
 
 	}
 
@@ -241,7 +309,11 @@ class AudioFiles {
 
 	public function audio_upload_files($type, $fileNameArray) {
 
-		$final_file_dir = $this->path . $type . '/';
+		$library = $this->libraryDir($type);
+		if ($library === null || !is_array($fileNameArray) || !isset($fileNameArray['name'])) {
+			return $this->refusal('The audio library is not available. Nothing was written.');
+		}
+		$final_file_dir = rtrim($library, '/') . '/';
 		$maxFileSize = 45000000; // size in bytes
 		$allowedExts = array('wav','mp3','aif','aiff','gsm','ogg','flac');
 	
@@ -249,13 +321,27 @@ class AudioFiles {
 		for($i=0; $i<count($fileNameArray['name']); $i++) {
 			//Get the temp file path
 			$tmpFile1 = $fileNameArray['tmp_name'][$i];
-			$tmpFile2 = $this->temp_dir . str_replace(" ","_",$fileNameArray['name'][$i]);
+			$plainName = $this->plainFileName($fileNameArray['name'][$i]);
+			if ($plainName === null) {
+				return $this->refusal('The audio name is not a plain file name. Nothing was written.');
+			}
+			$tmpFile2 = tempnam($this->temp_dir, 'orp-audio-');
+			if ($tmpFile2 === false) {
+				return $this->refusal('The audio library is not available. Nothing was written.');
+			}
 			
-			$temp_ext = explode(".", $fileNameArray['name'][$i]);
-			$extension = end($temp_ext);
-			$filename_no_ext = pathinfo($fileNameArray['name'][$i], PATHINFO_FILENAME);
+			$temp_ext = explode(".", $plainName);
+			$extension = strtolower((string) end($temp_ext));
+			$filename_no_ext = pathinfo($plainName, PATHINFO_FILENAME);
+			if (!preg_match('/^[A-Za-z0-9._ -]+$/', $filename_no_ext)) {
+				return $this->refusal('The audio name is not a plain file name. Nothing was written.');
+			}
 
 			$soxOutFile = $final_file_dir . str_replace(" ","_",$filename_no_ext) . ".wav";
+			$parent = realpath($final_file_dir);
+			if ($parent === false || strpos($soxOutFile, $parent . '/') !== 0) {
+				return $this->refusal('The audio name is not a plain file name. Nothing was written.');
+			}
 			
 
 			# Check File Size isn't too large
@@ -369,12 +455,24 @@ class AudioFiles {
 	###############################################
 
 	public function audio_rename_file($type, $oldFileName, $newFileLabel) {
-		$renamePath = $this->path . $type. "/";
+		$library = $this->libraryDir($type);
+		$oldFileName = $this->plainFileName($oldFileName);
+		if ($library === null || $oldFileName === null || !is_string($newFileLabel) || $newFileLabel === '') {
+			return $this->refusal('The audio file was not renamed.');
+		}
+		$renamePath = rtrim($library, '/') . '/';
 		
-		$oldfile = $renamePath . $oldFileName; 
+		$oldfile = $renamePath . $oldFileName;
+		if (is_link($oldfile) || !is_file($oldfile)) {
+			return $this->refusal('The audio file was not renamed.');
+		} 
 		$ext = pathinfo($oldfile, PATHINFO_EXTENSION);
 		
-		$newFileName = str_replace(" ","_",$newFileLabel) . "." . $ext;
+		$safeLabel = str_replace(' ', '_', $newFileLabel);
+		if ($this->plainFileName($safeLabel . '.' . $ext) === null) {
+			return $this->refusal('The audio file was not renamed.');
+		}
+		$newFileName = $safeLabel . '.' . $ext;
 		$newfile = $renamePath . $newFileName;
 
 		# Don't Rename if there is no change
@@ -417,12 +515,25 @@ class AudioFiles {
 	###############################################
 
 	public function audio_delete_files($type, $fileNameArray) {
-		$deletePath = $this->path . $type. "/";
+		$library = $this->libraryDir($type);
+		if ($library === null) {
+			return $this->refusal('The audio file was not deleted.');
+		}
+		$deletePath = rtrim($library, '/') . '/';
 		
 		if (!is_array($fileNameArray)) { $fileNameArray = array($fileNameArray); } // if string is passed, turn into array
-	
-		foreach($fileNameArray as $currentFile) {
-			unlink($deletePath . $currentFile);
+		$currentFile = '';
+
+		foreach($fileNameArray as $requested) {
+			$currentFile = $this->plainFileName($requested);
+			if ($currentFile === null) {
+				return $this->refusal('The audio file was not deleted.');
+			}
+			$target = $deletePath . $currentFile;
+			if (is_link($target) || !is_file($target)) {
+				return $this->refusal('The audio file was not deleted.');
+			}
+			unlink($target);
 		}
 		
 		#This alert code does not yet handle multiple file deletes. Just the last file in the loop above. 

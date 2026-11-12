@@ -14,6 +14,12 @@ $benchGuard = BenchGuard::detect();
 <html lang="en">
 <head>
 	<meta charset="utf-8">
+	<?php
+	if (session_status() === PHP_SESSION_ACTIVE) {
+		require_once(__DIR__ . '/classes/RequestGuard.php');
+		echo '<meta name="csrf-token" content="' . htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8') . '">' . "\n";
+	}
+	?>
 	<title>OpenRepeater<?php if (isset($pageTitle)) { echo " | ".$pageTitle; } ?></title>
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
@@ -82,21 +88,44 @@ $benchGuard = BenchGuard::detect();
 	<!-- Server Notifications -->
 
 <?php
-	$scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-	$current_page_url = $scheme . '://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'];
+	$pageName = 'dashboard.php';
+	if (isset($_SERVER['SCRIPT_NAME']) && is_string($_SERVER['SCRIPT_NAME'])) {
+		$baseName = basename($_SERVER['SCRIPT_NAME']);
+		if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*\.php$/', $baseName)) {
+			$pageName = $baseName;
+		}
+	}
+	$current_page_url = '../' . $pageName;
 
 	/* CHECK FOR UPDATE FLAG AND NOTIFY USER IF SERVER NEEDS RESTARTED */
 	$updateFlage = $Database->get_update_flag();
 ?>
 
-<?php if (isset($_GET['bench_blocked'])) { ?>
+<?php if (isset($_GET['preview_failed'])) { ?>
+	<div class="alert alert-error">Configuration preview was not written. The radio was not restarted.</div>
+<?php } elseif (isset($_GET['bench_preview_ok'])) { ?>
+	<div class="alert alert-info">Configuration preview was written. The radio was not restarted.</div>
+<?php } elseif (isset($_GET['bench_blocked'])) { ?>
 	<div class="alert alert-error">Bench mode did not rebuild or restart the repeater.</div>
+<?php } elseif (isset($_GET['functional_published']) && isset($_GET['service_masked'])) { ?>
+	<div class="alert alert-info">Disconnected test config was published. svxlink.service is masked, so it was not started. Unmask was not performed. Stored wiring was not changed.</div>
+<?php } elseif (isset($_GET['functional_published'])) { ?>
+	<div class="alert alert-info">Disconnected test config was published and svxlink was restarted. PTT_TYPE=NONE does not key a radio. Stored wiring was not changed.</div>
+<?php } elseif (isset($_GET['functional_publish_failed'])) { ?>
+	<div class="alert alert-error">Functional-test publish was refused. Stored account, settings, and port wiring were not changed.</div>
+<?php } elseif (isset($_GET['gpio_setup_failed'])) { ?>
+	<div class="alert alert-error">GPIO setup was refused. svxlink was not restarted.</div>
 <?php } ?>
 
 	<div class="server_bar_wrap"<?php if ($updateFlage == false) { echo ' style="display: none;"'; } ?>>
 	<div class="server_bar">
-		<?php if ($benchGuard->isBench()) { ?>
-		<span>Bench mode: configuration rebuild will not publish files or restart the radio.</span>
+		<?php if ($benchGuard->uiBlocksLifted()) { ?>
+		<span>Functional test: this mode assumes no radio is attached. Start, stop, and restart are available. Enable stays blocked. Stored PTT wiring and GPIO run only after root creates /etc/openrepeater/tx-armed.</span>
+		<button class="rebuild_button" data-toggle="modal" data-target="#restartServer"><i class="icon-refresh icon-white"></i> Rebuild & Restart Repeater</button>
+		<?php } elseif ($benchGuard->operatingMode() === 'functional-test') { ?>
+		<span>Functional test publishes /etc/svxlink/svxlink.conf with UDP audio and PTT_TYPE=NONE. Stored GPIO numbers are not applied. Start and stop control svxlink only and do not unmask a unit. A masked unit is service-disabled. That is separate from an unresolved GPIO number, and neither means a transmitter has unkeyed.</span>
+		<?php } elseif ($benchGuard->isBench()) { ?>
+		<span>Bench mode: configuration rebuild will not publish files or restart the radio. A refused shutdown command is not evidence the transmitter is unkeyed.</span>
 		<?php } else { ?>
 		<span>Repeater Configuration Files Rebuild & Restart Required: </span>
 

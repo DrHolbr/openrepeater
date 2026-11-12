@@ -23,11 +23,26 @@ class BackupRestore {
 	
 	private $Database;
 	private $Modules;
+	private $markerIdentity = null;
 
 
 	public function __construct() {
 		$this->Database = new Database();
 		$this->Modules = new Modules();
+		$backupOverride = getenv('ORP_BACKUP_PATH');
+		if (is_string($backupOverride) && $backupOverride !== '' && $backupOverride[0] === '/'
+			&& strpos($backupOverride, '..') === false && is_dir($backupOverride) && !is_link($backupOverride)) {
+			$this->backupPath = rtrim($backupOverride, '/') . '/';
+		} elseif (is_string($backupOverride) && $backupOverride !== '') {
+			$this->backupPath = rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-backup/';
+		}
+		$soundsOverride = getenv('ORP_SOUNDS_PATH');
+		if (is_string($soundsOverride) && $soundsOverride !== '' && $soundsOverride[0] === '/'
+			&& strpos($soundsOverride, '..') === false && is_dir($soundsOverride) && !is_link($soundsOverride)) {
+			$this->orp_sounds_dir = rtrim($soundsOverride, '/') . '/';
+		} elseif (is_string($soundsOverride) && $soundsOverride !== '') {
+			$this->orp_sounds_dir = rtrim(sys_get_temp_dir(), '/') . '/orp-no-such-sounds/';
+		}
 
 		$this->dateString = date('Y/m/d H:i:s');
 
@@ -63,7 +78,13 @@ class BackupRestore {
 		
  		// Dump the sqlite database, specified tables only
 		$sql_file = $this->archive_build_dir . $this->backup_db_file;
-		$this->Database->db_export( $this->db_tables, $sql_file );
+		if ($this->Database->db_export( $this->db_tables, $sql_file ) !== true) {
+			$this->removeDirectory($this->archive_build_dir);
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The backup was not written. The previous database rows were left unchanged.'
+			);
+		}
 
 		// Backup of ALSA settings
 		exec('sudo orp_helper alsa backup "' . $this->archive_build_dir . $this->alsa_state_file . '"');
@@ -97,6 +118,9 @@ class BackupRestore {
 	###############################################
 
 	public function pre_restore_validation($selected_restore_file) {
+		if (!is_string($selected_restore_file) || !preg_match('/^[A-Za-z0-9._-]+\.orp$/', $selected_restore_file)) {
+			exit('Unable to locate file for restoration');
+		}
 		$data = [];
 		$errorLevel = 0;
 
@@ -149,78 +173,532 @@ class BackupRestore {
 
 
 	public function restore_backup() {
-		
-		########################################
-		# Copy Sounds into place
-
-		$existing_courtesy_tones = $this->orp_sounds_dir . 'courtesy_tones/';
-		$existing_identification = $this->orp_sounds_dir . 'identification/';
-		$restore_courtesy_tones = $this->backup_restore_dir . 'courtesy_tones/';
-		$restore_identification = $this->backup_restore_dir . 'identification/';
-		
-		// If Courtesy Tones exist in backup, then restore
-		if (file_exists($restore_courtesy_tones)) {
-			$this->removeDirectory($existing_courtesy_tones);
-			exec("cp $restore_courtesy_tones $existing_courtesy_tones -R");
+		// One SQLite commit is atomic for the four tables. Directory replacement
+		// is a separate rename. The mixer is applied only after both succeed and
+		// is not undone. The recovery note lists destination and stash paths for
+		// a person. This program does not replay that note.
+		if ($this->marker_path() === false) {
+			return $this->restore_unchanged();
 		}
-
-		// If Identification exist in backup, then restore
-		if (file_exists($restore_identification)) {
-			$this->removeDirectory($existing_identification);
-			exec("cp $restore_identification $existing_identification -R");
+		if ($this->marker_occupied()) {
+			return $this->restore_needs_recovery('A recovery note is already present and was not replaced.');
 		}
-
-
-		########################################
-		# Restore Modules (non-core / add-ons)
-		
-		$restore_module_path = $this->backup_restore_dir . 'modules/';
-		
-		if (file_exists($restore_module_path)) {
-			// Remove existing modules first (non-core)
-			$non_core_modules = $this->Modules->get_non_core_modules_path();
-			if(isset($non_core_modules)) {
-				foreach($non_core_modules as $mod_name => $mod_path) {
-					$this->Modules->remove_module($mod_name);
-				}				
-			}
-
-			// Restore backed up modules
-			$mod_folder_list  = glob($restore_module_path . '*', GLOB_ONLYDIR);
-			foreach($mod_folder_list as $mod_path) {
-				$mod_name = basename($mod_path);
-				exec('cp "' . $mod_path . '" "' . $this->Modules->modules_path . $mod_name . '" -R');			
-
-				// Init module just to create symlinks. DB will get overwritten below
-				$this->Modules->initialize_module($mod_name, 0);
-			}
-
-		}
-
-		########################################
-
-		// Restoration of ALSA settings
-		if (file_exists($this->backup_restore_dir . $this->alsa_state_file)) {
-			exec('sudo orp_helper alsa restore "' . $this->backup_restore_dir . $this->alsa_state_file . '"');
-		}
-
-		// Empty affected DB tables and import SQL file to DB.
 		$sql_file = $this->backup_restore_dir . $this->backup_db_file;
-		$this->Database->db_import( $this->db_tables, $sql_file );
-
-		// Cleanup/Delete Restore directory
-		$this->removeDirectory($this->backup_restore_dir);
-		
-		// Set Rebuild Flag
+		$rows = $this->Database->load_backup_rows($this->db_tables, $sql_file);
+		if ($rows === false) {
+			return $this->restore_unchanged();
+		}
+		$staged = $this->stage_restore_files();
+		if ($staged === false) {
+			return $this->restore_unchanged();
+		}
+		if (!$this->write_recovery_manifest($staged['moves'])) {
+			$this->remove_private_stages($staged['stages']);
+			return $this->restore_unchanged();
+		}
+		$published = $this->publish_staged_trees($staged['moves']);
+		if ($published['ok'] !== true) {
+			$this->remove_private_stages($staged['stages']);
+			if ($published['rolled_back'] === true) {
+				$this->clear_recovery_manifest();
+				return $this->restore_unchanged();
+			}
+			return $this->restore_needs_recovery('A file tree could not be put back after a failed publish.');
+		}
+		if (!$this->update_recovery_phase($staged['moves'], 'files-published')) {
+			return $this->restore_needs_recovery('The recovery note could not be updated after the file publish. It still lists each destination and stash.');
+		}
+		if ($this->Database->replace_backup_tables($this->db_tables, $rows) !== true) {
+			if ($this->undo_published($published['done']) === true) {
+				$this->remove_private_stages($staged['stages']);
+				$this->clear_recovery_manifest();
+				return $this->restore_unchanged();
+			}
+			return $this->restore_needs_recovery('The database transaction rolled back, but a file tree could not be put back.');
+		}
+		$this->discard_published_stashes($published['done']);
+		$this->remove_private_stages($staged['stages']);
+		$this->clear_recovery_manifest();
 		$this->Database->set_update_flag(true);
-
+		if (!$this->restore_alsa()) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The backup database and files were restored. The mixer state was not applied and is not part of that restore.'
+			);
+		}
+		$this->removeDirectory($this->backup_restore_dir);
 		return array(
 			'msgType' => 'success',
 			'msgText' => 'Backup was successfully restored.'
-		);	
-
+		);
 	}
 
+	private function recovery_manifest() {
+		$path = $this->marker_path();
+		return is_string($path) ? $path : $this->backupPath . 'restore-recovery.json';
+	}
+
+	private function marker_path() {
+		$anchor = $this->real_anchor(rtrim($this->backupPath, '/'));
+		if ($anchor === false) {
+			return false;
+		}
+		return $anchor . '/restore-recovery.json';
+	}
+
+	private function marker_occupied() {
+		$path = $this->marker_path();
+		if ($path === false) {
+			return true;
+		}
+		return @lstat($path) !== false;
+	}
+
+	private function restore_unchanged() {
+		return array(
+			'msgType' => 'error',
+			'msgText' => 'The backup was not restored. The previous database rows and files were left unchanged.'
+		);
+	}
+
+	private function restore_needs_recovery($reason) {
+		$path = $this->marker_path();
+		$where = is_string($path) ? ' Recovery notes were kept at ' . $path . '.' : '';
+		return array(
+			'msgType' => 'error',
+			'msgText' => 'The backup restore needs recovery. ' . $reason . $where . ' The backup archive was not deleted. These notes are not an automated recovery.'
+		);
+	}
+
+	private function write_recovery_manifest($moves) {
+		return $this->exclusive_marker_create($this->marker_note($moves, 'ready'));
+	}
+
+	private function update_recovery_phase($moves, $phase) {
+		if (getenv('ORP_RESTORE_FAULT') === 'marker-update') {
+			return false;
+		}
+		$encoded = $this->marker_note($moves, $phase);
+		if ($encoded === false) {
+			return false;
+		}
+		return $this->replace_regular_marker($encoded);
+	}
+
+	private function marker_note($moves, $phase) {
+		$encoded = json_encode(array(
+			'phase' => $phase,
+			'automated_recovery' => false,
+			'crash_atomic' => false,
+			'moves' => $moves,
+		));
+		return is_string($encoded) ? $encoded : false;
+	}
+
+	private function exclusive_marker_create($bytes) {
+		$path = $this->marker_path();
+		if ($path === false || !is_string($bytes) || $this->marker_occupied()) {
+			return false;
+		}
+		$created = $this->exclusive_nofollow_write($path, $bytes);
+		if ($created === false) {
+			return false;
+		}
+		$this->markerIdentity = $created;
+		return true;
+	}
+
+	private function replace_regular_marker($bytes) {
+		$path = $this->marker_path();
+		if ($path === false || !is_string($bytes)) {
+			return false;
+		}
+		$current = @lstat($path);
+		if ($current === false || !$this->is_regular_mode($current['mode'])) {
+			return false;
+		}
+		$tmp = dirname($path) . '/.restore-recovery-' . bin2hex(random_bytes(6)) . '.tmp';
+		$created = $this->exclusive_nofollow_write($tmp, $bytes);
+		if ($created === false) {
+			return false;
+		}
+		$still = @lstat($path);
+		if ($still === false || !$this->is_regular_mode($still['mode']) || !rename($tmp, $path)) {
+			$this->unlink_owned($tmp, $created['dev'], $created['ino']);
+			return false;
+		}
+		$after = @lstat($path);
+		if ($after === false || !$this->is_regular_mode($after['mode']) || (int) $after['size'] !== strlen($bytes) || (int) $after['dev'] !== $created['dev'] || (int) $after['ino'] !== $created['ino']) {
+			return false;
+		}
+		$this->markerIdentity = $created;
+		return true;
+	}
+
+	private function exclusive_nofollow_write($path, $bytes) {
+		if (@lstat($path) !== false) {
+			return false;
+		}
+		// PHP fopen mode x follows a dangling symlink and creates the target.
+		// Python os.open with O_NOFOLLOW|O_EXCL does not. The web SAPI disables FFI.
+		$script = <<<'PY'
+import os, stat, sys, time
+path = sys.stdin.buffer.readline()[:-1].decode()
+data = sys.stdin.buffer.read()
+pause = os.environ.get("ORP_MARKER_PAUSE_FILE", "")
+if pause:
+    open(pause, "w").close()
+    while not os.path.exists(pause + ".go"):
+        time.sleep(0.02)
+flags = os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_WRONLY | getattr(os, "O_CLOEXEC", 0)
+try:
+    fd = os.open(path, flags, 0o600)
+except OSError:
+    sys.stdout.write("open-failed\n")
+    sys.exit(1)
+owned = os.fstat(fd)
+try:
+    if os.environ.get("ORP_MARKER_SHORT_WRITE") == "1":
+        os.write(fd, b"x")
+        raise OSError("short write")
+    view = memoryview(data)
+    off = 0
+    while off < len(view):
+        wrote = os.write(fd, view[off:])
+        if wrote <= 0:
+            raise OSError("short write")
+        off += wrote
+    os.fsync(fd)
+    os.fchmod(fd, 0o600)
+except OSError:
+    os.close(fd)
+    try:
+        now = os.lstat(path)
+        if now.st_dev == owned.st_dev and now.st_ino == owned.st_ino and stat.S_ISREG(now.st_mode):
+            os.unlink(path)
+    except OSError:
+        pass
+    sys.stdout.write("write-failed\n")
+    sys.exit(1)
+os.close(fd)
+sys.stdout.write("owned %d %d\n" % (owned.st_dev, owned.st_ino))
+PY;
+		$script = implode("\n", array_map(function ($line) {
+			return ltrim($line, "\t");
+		}, explode("\n", $script)));
+		$proc = proc_open('python3 -c ' . escapeshellarg($script), array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+		if (!is_resource($proc)) {
+			return false;
+		}
+		fwrite($pipes[0], $path . "\n" . $bytes);
+		fclose($pipes[0]);
+		$out = stream_get_contents($pipes[1]);
+		fclose($pipes[1]);
+		fclose($pipes[2]);
+		$rc = proc_close($proc);
+		if ($rc !== 0 || !is_string($out) || !preg_match('/^owned ([0-9]+) ([0-9]+)$/', trim($out), $owned)) {
+			return false;
+		}
+		$dev = (int) $owned[1];
+		$ino = (int) $owned[2];
+		$st = @lstat($path);
+		if ($st === false || !$this->is_regular_mode($st['mode']) || (int) $st['dev'] !== $dev || (int) $st['ino'] !== $ino || (int) $st['size'] !== strlen($bytes)) {
+			$this->unlink_owned($path, $dev, $ino);
+			return false;
+		}
+		return array('dev' => $dev, 'ino' => $ino);
+	}
+
+	private function is_regular_mode($mode) {
+		return ((int) $mode & 0170000) === 0100000;
+	}
+
+	private function unlink_owned($path, $dev, $ino) {
+		$st = @lstat($path);
+		if ($st !== false && $this->is_regular_mode($st['mode']) && (int) $st['dev'] === (int) $dev && (int) $st['ino'] === (int) $ino) {
+			unlink($path);
+		}
+	}
+
+	private function clear_recovery_manifest() {
+		$path = $this->marker_path();
+		if (!is_string($path) || !is_array($this->markerIdentity)) {
+			return;
+		}
+		$this->unlink_owned($path, $this->markerIdentity['dev'], $this->markerIdentity['ino']);
+		$this->markerIdentity = null;
+	}
+
+	private function stage_restore_files() {
+		$sounds = $this->real_anchor(rtrim($this->orp_sounds_dir, '/'));
+		$modules = $this->real_anchor(rtrim($this->Modules->modules_path, '/'));
+		$restore = $this->real_anchor(rtrim($this->backup_restore_dir, '/'));
+		if ($sounds === false || $modules === false || $restore === false) {
+			return false;
+		}
+		$stageId = bin2hex(random_bytes(6));
+		$soundsStage = $sounds . '/.orp-stage-' . $stageId;
+		$modulesStage = $modules . '/.orp-stage-' . $stageId;
+		$stages = array();
+		$moves = array();
+		foreach (array('courtesy_tones', 'identification') as $name) {
+			$incoming = $restore . '/' . $name;
+			if (!file_exists($incoming)) {
+				continue;
+			}
+			$live = $this->anchored_child($sounds, $name);
+			if ($live === false || !$this->stage_one_tree($incoming, $soundsStage, $name, $stages)) {
+				$this->remove_private_stages($stages);
+				return false;
+			}
+			$stash = $this->plan_stash($live);
+			if ($stash === false) {
+				$this->remove_private_stages($stages);
+				return false;
+			}
+			$moves[] = array('destination' => $live, 'live' => $live, 'staged' => $soundsStage . '/' . $name, 'stash' => $stash, 'links' => null);
+		}
+		$moduleRoot = $restore . '/modules';
+		if (is_dir($moduleRoot) && !is_link($moduleRoot)) {
+			$existing = $this->Modules->get_non_core_modules_path();
+			if (is_array($existing)) {
+				foreach ($existing as $mod_name => $mod_path) {
+					$live = $this->anchored_child($modules, $mod_name);
+					if ($live === false) {
+						$this->remove_private_stages($stages);
+						return false;
+					}
+					$stash = $this->plan_stash($live);
+					if ($stash === false) {
+						$this->remove_private_stages($stages);
+						return false;
+					}
+					$moves[] = array('destination' => $live, 'live' => $live, 'staged' => null, 'stash' => $stash, 'links' => null);
+				}
+			}
+			$incoming = glob($moduleRoot . '/*', GLOB_ONLYDIR);
+			if ($incoming === false) {
+				$this->remove_private_stages($stages);
+				return false;
+			}
+			foreach ($incoming as $mod_path) {
+				$mod_name = basename($mod_path);
+				$live = $this->anchored_child($modules, $mod_name);
+				if ($live === false || is_link($mod_path) || !$this->stage_one_tree($mod_path, $modulesStage, $mod_name, $stages)) {
+					$this->remove_private_stages($stages);
+					return false;
+				}
+				$stash = $this->plan_stash($live);
+				if ($stash === false) {
+					$this->remove_private_stages($stages);
+					return false;
+				}
+				$moves[] = array('destination' => $live, 'live' => $live, 'staged' => $modulesStage . '/' . $mod_name, 'stash' => $stash, 'links' => $mod_name);
+			}
+		}
+		return array('moves' => $moves, 'stages' => $stages);
+	}
+
+	private function stage_one_tree($incoming, $stageRoot, $name, &$stages) {
+		if (!is_dir($incoming) || is_link($incoming) || $this->tree_has_link($incoming)) {
+			return false;
+		}
+		if (!in_array($stageRoot, $stages, true)) {
+			if (!mkdir($stageRoot, 0700) || is_link($stageRoot)) {
+				return false;
+			}
+			$stages[] = $stageRoot;
+		}
+		$dest = $stageRoot . '/' . $name;
+		exec('cp -a ' . escapeshellarg($incoming) . ' ' . escapeshellarg($dest), $unused, $rc);
+		if ($rc !== 0 || !is_dir($dest) || is_link($dest) || $this->tree_has_link($dest)) {
+			return false;
+		}
+		return true;
+	}
+
+	private function publish_staged_trees($moves) {
+		$done = array();
+		foreach ($moves as $move) {
+			$live = $move['destination'];
+			$stash = $move['stash'];
+			if (file_exists($live)) {
+				if (!is_string($stash) || is_link($live) || @lstat($stash) !== false || !rename($live, $stash)) {
+					return array('ok' => false, 'rolled_back' => $this->undo_published($done), 'done' => $done);
+				}
+				if (getenv('ORP_RESTORE_FAULT') === 'publish-collision' && count($done) === 0) {
+					mkdir($live, 0755);
+					file_put_contents($live . '/collision', 'occupied');
+				}
+			}
+			if (is_string($move['staged'])) {
+				if (!rename($move['staged'], $live)) {
+					$rolled = $this->undo_published($done) && $this->restore_unmoved($live, $stash);
+					return array('ok' => false, 'rolled_back' => $rolled, 'done' => $done);
+				}
+			}
+			$links = null;
+			if (is_string($move['links'])) {
+				$links = $this->Modules->link_module_files($move['links']);
+				if ($links === false) {
+					$done[] = array('live' => $live, 'stash' => $stash, 'links' => null);
+					return array('ok' => false, 'rolled_back' => $this->undo_published($done), 'done' => $done);
+				}
+			}
+			$done[] = array('live' => $live, 'stash' => $stash, 'links' => $links);
+		}
+		return array('ok' => true, 'rolled_back' => true, 'done' => $done);
+	}
+
+	private function plan_stash($live) {
+		if (!file_exists($live)) {
+			return null;
+		}
+		if (is_link($live)) {
+			return false;
+		}
+		for ($i = 0; $i < 5; $i++) {
+			$stash = dirname($live) . '/.orp-stash-' . bin2hex(random_bytes(6));
+			if (@lstat($stash) === false) {
+				return $stash;
+			}
+		}
+		return false;
+	}
+
+	private function restore_unmoved($live, $stash) {
+		if (!is_string($stash) || !file_exists($stash)) {
+			return !file_exists($live);
+		}
+		if (file_exists($live)) {
+			return false;
+		}
+		return rename($stash, $live);
+	}
+
+	private function undo_published($done) {
+		if (!is_array($done)) {
+			return false;
+		}
+		for ($i = count($done) - 1; $i >= 0; $i--) {
+			$item = $done[$i];
+			if (isset($item['links']) && is_array($item['links'])) {
+				$this->Modules->undo_module_links($item['links']);
+			}
+			if (file_exists($item['live'])) {
+				$discard = $item['live'] . '.orp-discard-' . bin2hex(random_bytes(4));
+				if (!rename($item['live'], $discard)) {
+					return false;
+				}
+				if (is_dir($discard) && !is_link($discard)) {
+					if (BenchGuard::removeTreeConfined($discard, dirname($discard)) !== true) {
+						return false;
+					}
+				}
+			}
+			if (is_string($item['stash']) && file_exists($item['stash'])) {
+				if (!rename($item['stash'], $item['live'])) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	private function discard_published_stashes($done) {
+		if (!is_array($done)) {
+			return;
+		}
+		foreach ($done as $item) {
+			if (isset($item['stash']) && is_string($item['stash']) && file_exists($item['stash']) && !is_link($item['stash'])) {
+				BenchGuard::removeTreeConfined($item['stash'], dirname($item['stash']));
+			}
+		}
+	}
+
+	private function remove_private_stages($stages) {
+		if (!is_array($stages)) {
+			return;
+		}
+		foreach ($stages as $stage) {
+			if (is_string($stage) && is_dir($stage) && !is_link($stage)) {
+				BenchGuard::removeTreeConfined($stage, dirname($stage));
+			}
+		}
+	}
+
+	private function real_anchor($path) {
+		if (!is_string($path) || $path === '' || $path[0] !== '/' || strpos($path, '..') !== false) {
+			return false;
+		}
+		$path = rtrim($path, '/');
+		$built = '';
+		foreach (explode('/', $path) as $part) {
+			if ($part === '') {
+				continue;
+			}
+			$built .= '/' . $part;
+			if (is_link($built) || !is_dir($built)) {
+				return false;
+			}
+		}
+		$real = realpath($path);
+		if ($real === false || $real !== $path) {
+			return false;
+		}
+		return $real;
+	}
+
+	private function anchored_child($anchor, $name) {
+		if (!is_string($name) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,64}$/', $name)) {
+			return false;
+		}
+		$live = $anchor . '/' . $name;
+		if (is_link($live)) {
+			return false;
+		}
+		if (file_exists($live)) {
+			$real = realpath($live);
+			if ($real !== $live) {
+				return false;
+			}
+		}
+		return $live;
+	}
+
+	private function tree_has_link($path) {
+		if (is_link($path)) {
+			return true;
+		}
+		if (!is_dir($path)) {
+			return false;
+		}
+		$items = scandir($path);
+		if ($items === false) {
+			return true;
+		}
+		foreach ($items as $item) {
+			if ($item === '.' || $item === '..') {
+				continue;
+			}
+			if ($this->tree_has_link($path . '/' . $item)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private function restore_alsa() {
+		if (getenv('ORP_RESTORE_FAULT') === 'alsa-fail') {
+			return false;
+		}
+		$state = $this->backup_restore_dir . $this->alsa_state_file;
+		if (!is_file($state) || is_link($state)) {
+			return true;
+		}
+		exec('sudo orp_helper alsa restore ' . escapeshellarg($state), $unused, $rc);
+		return $rc === 0;
+	}
 
 
 	###############################################
@@ -350,7 +828,14 @@ class BackupRestore {
 			$temp_ext = explode(".", $fileNameArray['name'][$i]);
 			$extension = end($temp_ext);
 
-			$currFile = $this->backupPath . str_replace(" ","_",$fileNameArray['name'][$i]);
+			$storedName = str_replace(' ', '_', $fileNameArray['name'][$i]);
+			if (!is_string($storedName) || !preg_match('/^[A-Za-z0-9._-]+\.orp$/', $storedName)) {
+				return array(
+					'msgType' => 'error',
+					'msgText' => 'The backup name is not a plain file name. Nothing was written.'
+				);
+			}
+			$currFile = $this->backupPath . $storedName;
 			
 
 			# Check File Size isn't too large
@@ -498,7 +983,10 @@ class BackupRestore {
 							<button type="button" class="btn btn-success" data-toggle="modal" data-target="#restoreFile" onclick="restoreFile(\'' . $fileArray['fileName'] . '\'); return false;"><i class="icon-refresh icon-white"></i> Restore</button>
 						
 							<!-- Button triggered modal -->
-							<button class="btn" onclick="location.href=\'' . $this->baseDownloadPath . $fileArray['fileName'] . '\'"><i class="icon-download-alt"></i></button>
+							<form method="post" action="../functions/backup_download.php" style="display:inline">'
+							. '<input type="hidden" name="csrf_token" value="' . htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8') . '">'
+							. '<input type="hidden" name="file" value="' . htmlspecialchars($fileArray['fileName'], ENT_QUOTES, 'UTF-8') . '">'
+							. '<button class="btn" type="submit"><i class="icon-download-alt"></i></button></form>
 			
 							<!-- Button triggered modal -->
 							<button type="button" class="btn btn-danger" data-toggle="modal" data-target="#deleteFile" onclick="deleteFile(\'' . $fileArray['fileName'] . '\'); return false;"><i class="icon-trash icon-white"></i></button>
@@ -526,7 +1014,36 @@ class BackupRestore {
 	# Delete Backup
 	###############################################
 
+	public function resolveBackupDownload($name) {
+		if (!is_string($name) || !preg_match('/^[A-Za-z0-9_.-]+\.orp$/', $name)) {
+			return null;
+		}
+		$dir = rtrim($this->backupPath, '/');
+		if ($dir === '' || is_link($dir) || !is_dir($dir)) {
+			return null;
+		}
+		$root = realpath($dir);
+		if ($root === false) {
+			return null;
+		}
+		$path = $root . '/' . $name;
+		if (is_link($path) || !is_file($path)) {
+			return null;
+		}
+		$real = realpath($path);
+		if ($real === false || $real !== $root . '/' . $name) {
+			return null;
+		}
+		return $real;
+	}
+
 	public function deleteBackup($file) {
+		if (!is_string($file) || !preg_match('/^[A-Za-z0-9._-]+\.orp$/', $file)) {
+			return array(
+				'msgType' => 'error',
+				'msgText' => 'The backup name is not a plain file name. Nothing was deleted.'
+			);
+		}
 	    unlink($this->backupPath . $file);
 
 		if (!file_exists($this->backupPath . $file)) {
@@ -565,7 +1082,10 @@ class BackupRestore {
 		}
 		rmdir($path);
 */
-		exec('rm ' . $path . ' -R');
+		$path = rtrim((string) $path, '/');
+		if ($path !== '') {
+			BenchGuard::removeTreeConfined($path, dirname($path));
+		}
 		return;
 	}
 

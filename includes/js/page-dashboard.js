@@ -180,15 +180,35 @@ function updateDisk(){
 // AJAX FUNCTIONS
 var ajax_url = 'functions/ajax_system.php'; //Used by all ajax request in this script
 
+function orpCsrfToken() {
+	var meta = document.querySelector('meta[name="csrf-token"]');
+	return meta ? meta.getAttribute('content') : '';
+}
+
+function hostActionAccepted(xhr, data) {
+	if (!xhr || xhr.status !== 200) {
+		return false;
+	}
+	if (typeof data !== 'string') {
+		return false;
+	}
+	var text = $.trim(data);
+	if (text === '' || text.indexOf('refused:') === 0) {
+		return false;
+	}
+	return text.indexOf('host-action-accepted') === 0;
+}
+
 function reboot_orp_system() {
     $.ajax({
 		type: 'POST',
 		dataType: 'text',
 		url: ajax_url,
-		data: { post_service: 'system', post_option: 'restart' },
-		success: function (data) {
-			if (typeof data === 'string' && data.indexOf('refused:') === 0) {
-				window.alert(data);
+		data: { post_service: 'system', post_option: 'restart', csrf_token: orpCsrfToken() },
+		complete: function (xhr) {
+			var data = xhr ? xhr.responseText : '';
+			if (!hostActionAccepted(xhr, data)) {
+				window.alert(data && String(data).length ? data : 'Host restart was not accepted.');
 				return;
 			}
 			clearInterval(updateTimeInterval);
@@ -227,10 +247,11 @@ function shutdown_orp_system() {
 		type: 'POST',
 		dataType: 'text',
 		url: ajax_url,
-		data: { post_service: 'system', post_option: 'stop' },
-		success: function (data) {
-			if (typeof data === 'string' && data.indexOf('refused:') === 0) {
-				window.alert(data);
+		data: { post_service: 'system', post_option: 'stop', csrf_token: orpCsrfToken() },
+		complete: function (xhr) {
+			var data = xhr ? xhr.responseText : '';
+			if (!hostActionAccepted(xhr, data)) {
+				window.alert(data && String(data).length ? data : 'Host shutdown was not accepted.');
 				return;
 			}
 			clearInterval(updateTimeInterval);
@@ -271,7 +292,7 @@ function toggleRepeaterState() {
 
 function svxlink_toggle_check_status(service, option) {
     $.ajax({ async: true, type: 'POST', dataType: 'text', url: ajax_url,
-        data: { post_service: service, post_option: option },
+        data: { post_service: service, post_option: option, csrf_token: orpCsrfToken() },
         success: function (status) {
 			var status = $.trim(status);
 			if(status==="active") {
@@ -288,7 +309,7 @@ function svxlink_toggle_check_status(service, option) {
 
 function svxlink_toggle_state(service, option) {
     $.ajax({ async: true, type: 'POST', dataType: 'text', url: ajax_url,
-        data: { post_service: service, post_option: option },
+        data: { post_service: service, post_option: option, csrf_token: orpCsrfToken() },
         success: function (state) {
 			var state = $.trim(state);
 			if(state==="active") {

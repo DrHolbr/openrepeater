@@ -2,6 +2,10 @@
 // --------------------------------------------------------
 // SESSION CHECK TO SEE IF USER IS LOGGED IN.
 session_start();
+require_once(__DIR__ . '/includes/classes/RequestGuard.php');
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] !== 'GET' && $_SERVER['REQUEST_METHOD'] !== 'HEAD') {
+	RequestGuard::requireMutation();
+}
 if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
 	header('location: login.php'); // If they aren't logged in, send them to login page.
 } elseif (!isset($_SESSION['callsign'])) {
@@ -17,6 +21,11 @@ require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/autoloadClasses.
 $Database = new Database();
 $ModulesClass = new Modules();
 
+// Before any HTML. A query-string activate or deactivate is not a mutation.
+if (isset($_GET['activate']) || isset($_GET['deactivate'])) {
+	RequestGuard::deny(405);
+}
+
 ?>
 
 		<?php
@@ -25,15 +34,13 @@ $ModulesClass = new Modules();
 			$alert = '<div class="alert alert-'.$results['msgType'].'">'.$results['msgText'].'</div>';
 		}
 
-		if ( isset($_GET['deactivate']) ) {
-			$module_id = $_GET['deactivate'];
-			$results = $ModulesClass->deactivateMod($module_id);
+		if ( isset($_POST['deactivate']) ) {
+			$results = $ModulesClass->deactivateMod($_POST['deactivate']);
 			$alert = '<div class="alert alert-'.$results['msgType'].'">'.$results['msgText'].'</div>';
 		}
 
-		if ( isset($_GET['activate']) ) {
-			$module_id = $_GET['activate'];
-			$results = $ModulesClass->activateMod($module_id);
+		if ( isset($_POST['activate']) ) {
+			$results = $ModulesClass->activateMod($_POST['activate']);
 			$alert = '<div class="alert alert-'.$results['msgType'].'">'.$results['msgText'].'</div>';
 		}
 
@@ -83,7 +90,7 @@ $ModulesClass = new Modules();
 			</div><!--/row-->
 
 			<!-- Modal - UPLOAD DIALOG -->
-			<form action="<?php htmlspecialchars($_SERVER["PHP_SELF"]); ?>" method="post" enctype="multipart/form-data">
+			<form action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]); ?>" method="post" enctype="multipart/form-data">
 			<div class="modal fade" id="uploadFile" tabindex="-1" role="dialog" aria-labelledby="myModalLabel" aria-hidden="true">
 			  <div class="modal-dialog">
 			    <div class="modal-content">
@@ -106,7 +113,7 @@ $ModulesClass = new Modules();
 
 
 			<!-- Modal - DELETE DIALOG -->
-			<form action="<?php htmlspecialchars($_SERVER["PHP_SELF"]); ?>" method="post">
+			<form action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]); ?>" method="post">
 			<div class="modal fade" id="deleteModule" tabindex="-1" role="dialog" aria-labelledby="myModalLabel" aria-hidden="true">
 			  <div class="modal-dialog">
 			    <div class="modal-content">

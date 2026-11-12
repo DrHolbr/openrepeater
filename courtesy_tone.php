@@ -2,6 +2,10 @@
 // --------------------------------------------------------
 // SESSION CHECK TO SEE IF USER IS LOGGED IN.
 session_start();
+require_once(__DIR__ . '/includes/classes/RequestGuard.php');
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] !== 'GET' && $_SERVER['REQUEST_METHOD'] !== 'HEAD') {
+	RequestGuard::requireMutation();
+}
 if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
 	header('location: login.php'); // If they aren't logged in, send them to login page.
 } elseif (!isset($_SESSION['callsign'])) {
@@ -75,15 +79,17 @@ include('includes/header.php');
 			</div><!--/row-->
 			</form>
 
+			<p id="courtesyStatus">Stored for publish. Disabled and beep are applied by the root publisher to events.d/local/Logic.tcl. This page does not play audio.</p>
 			<div id="disabled" style="display: none;"> <!-- Expand Setting -->
-				<div class="alert alert-error"><strong>Courtesy Tone Disabled:</strong> No courtesy tone will be played when the carrier is dropped. This may be preferred for a &quot;Quite&quot; machine or for testing. Otherwise, please select a different mode above.</div>
+				<div class="alert alert-info"><strong>Stored for publish.</strong> send_rgr_sound plays silence. The root publish writes it. It is not executed on this page.</div>
 			</div>
 			
 			<div id="beep" style="display: none;"> <!-- Expand Setting -->
-				<div class="alert alert-success"><strong>Basic Beep:</strong> You have selected a basic beep for your courtesy tone. For more advance tones, please choose the custom mode from the menu above.</div>
+				<div class="alert alert-info"><strong>Stored for publish.</strong> send_rgr_sound plays a 660 Hz beep. The root publish writes it. It is not executed on this page.</div>
 			</div>
 			
 			<div id="custom" style="display: none;"> <!-- Expand Setting -->
+				<div class="alert alert-error"><strong>Unsupported.</strong> A custom courtesy file is not published and is not played. The previous runtime file is left unchanged.</div>
 
 			<div class="row-fluid sortable">
 

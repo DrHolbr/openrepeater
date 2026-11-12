@@ -35,6 +35,26 @@
 
 	<!-- jQuery -->
 	<script src="includes/js/jquery-1.7.2.min.js"></script>
+	<script>
+	(function () {
+		var meta = document.querySelector('meta[name="csrf-token"]');
+		var token = meta ? meta.getAttribute('content') : '';
+		if (!token) { return; }
+		var forms = document.getElementsByTagName('form');
+		for (var i = 0; i < forms.length; i++) {
+			if ((forms[i].method || '').toLowerCase() !== 'post') { continue; }
+			if (forms[i].querySelector('input[name="csrf_token"]')) { continue; }
+			var input = document.createElement('input');
+			input.type = 'hidden';
+			input.name = 'csrf_token';
+			input.value = token;
+			forms[i].appendChild(input);
+		}
+		if (window.jQuery) {
+			jQuery.ajaxSetup({ headers: { 'X-CSRF-Token': token } });
+		}
+	})();
+	</script>
 	<!-- jQuery UI -->
 	<script src="includes/js/jquery-ui-1.8.21.custom.min.js"></script>
 	<!-- transition / effect library -->

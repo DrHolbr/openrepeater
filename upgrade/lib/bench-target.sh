@@ -2,7 +2,52 @@
 # Shared target checks for the bench UI installer.
 # ROOT is a path prefix. Empty ROOT means the real filesystem root.
 
+bench_note_live_etc() {
+	if [ -n "${ORP_LIVE_ETC_LOG:-}" ]; then
+		printf '%s\n' "$1" >> "$ORP_LIVE_ETC_LOG"
+	fi
+}
+
+# "/" and "//" are not a prefix. They would alias the live /etc tree.
+bench_root_prefix() {
+	local root=${ROOT:-}
+	while [ -n "$root" ] && [ "${root%/}" != "$root" ]; do
+		root=${root%/}
+	done
+	case "$root" in
+		""|/) return 1 ;;
+	esac
+	printf '%s' "$root"
+}
+
+# ROOT prefixes a fixture. A harness run with an empty ROOT must not open
+# the live token or hostname. Production (harness unset) still uses /etc.
 p() {
+	local rel=$1 root resolved collapsed
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+		if ! root=$(bench_root_prefix); then
+			case "$rel" in
+				/etc/hostname|/etc/openrepeater|/etc/openrepeater/*)
+					bench_note_live_etc "$rel"
+					printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked${rel}"
+					return 0
+					;;
+			esac
+			printf '%s' "$rel"
+			return 0
+		fi
+		resolved="${root}${rel}"
+		collapsed=$(printf '%s' "$resolved" | sed -E 's#/+#/#g')
+		case "$collapsed" in
+			/etc|/etc/*)
+				bench_note_live_etc "$collapsed"
+				printf '%s' "${TMPDIR:-/tmp}/orp-harness-blocked${rel}"
+				return 0
+				;;
+		esac
+		printf '%s' "$resolved"
+		return 0
+	fi
 	printf '%s%s' "${ROOT}" "$1"
 }
 
@@ -111,14 +156,79 @@ bench_assert_bootstrap_idle() {
 	return 0
 }
 
+# Installer copy of the functional-test token check. orp_helper keeps an
+# inlined copy and does not source this file. A trusted functional-test token
+# is a regular file on hostname orp-test, owned by uid 0, not a symlink,
+# not group or world writable. The directory /etc/openrepeater is owned by
+# root and is not group or world writable. A named ACL entry that grants
+# write shows up as group-write in the mode. getfacl is not consulted.
+# The contents are exactly functional-test.
+bench_mode_is_functional_test() {
+	local file perm owner host token
+	file=$(p /etc/openrepeater/operating-mode)
+	if [ ! -f "$file" ] || [ -L "$file" ]; then
+		return 1
+	fi
+	host=$(p /etc/hostname)
+	if [ ! -f "$host" ] || [ -L "$host" ]; then
+		return 1
+	fi
+	if [ "$(tr -d '[:space:]' < "$host")" != "orp-test" ]; then
+		return 1
+	fi
+	perm=$(stat -c %a "$file")
+	case "$perm" in
+		''|*[!0-7]*) return 1 ;;
+	esac
+	if [ $((8#$perm & 022)) -ne 0 ]; then
+		return 1
+	fi
+	owner=$(stat -c %u "$file")
+	if [ "$owner" != "0" ]; then
+		return 1
+	fi
+	local dir perm_dir owner_dir
+	dir=$(dirname "$file")
+	# A loose harness file skips this anchor only while the harness is set.
+	# Production always checks the directory.
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" != 1 ] || [ "$(basename "$dir")" = "openrepeater" ]; then
+		[ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+		perm_dir=$(stat -c %a "$dir")
+		case "$perm_dir" in
+			''|*[!0-7]*) return 1 ;;
+		esac
+		[ $((8#$perm_dir & 022)) -eq 0 ] || return 1
+		owner_dir=$(stat -c %u "$dir")
+		[ "$owner_dir" = "0" ] || return 1
+	fi
+	token=$(tr -d '[:space:]' < "$file")
+	[ "$token" = "functional-test" ]
+}
+
+# Masked units are the install state. Functional-test may instead be
+# inactive and disabled, and only when the mode token is trusted. That
+# state is systemd's report (is-enabled=disabled, is-active=inactive).
+# The unit file may live only under /usr/lib/systemd/system. No file
+# under /etc/systemd/system is required. An enabled unit, a running unit,
+# or a disabled unit without that token is refused.
 bench_assert_masks() {
-	local unit state
+	local unit enabled active
+	# A trusted functional-test token means the radio units stay manageable.
+	# Masks are not required. Production without the token is unchanged.
+	if bench_mode_is_functional_test; then
+		return 0
+	fi
 	for unit in svxlink.service remotetrx.service svxreflector.service; do
-		state=$(unit_enabled_state "$unit")
-		if [ "$state" != "masked" ]; then
-			echo "refused: ${unit} is '${state}', expected masked" >&2
-			return 4
+		enabled=$(unit_enabled_state "$unit")
+		active=$(unit_active_state "$unit")
+		if [ "$enabled" = "masked" ]; then
+			continue
 		fi
+		if bench_mode_is_functional_test && [ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]; then
+			continue
+		fi
+		echo "refused: ${unit} is enabled '${enabled}' active '${active}', expected masked, or inactive and disabled with a functional-test token" >&2
+		return 4
 	done
 	return 0
 }
@@ -195,14 +305,9 @@ bench_render_nginx() {
 	sock=$1
 	dest=$2
 	case "$sock" in
-		*php5*|*php7*)
-			echo "refused: php-fpm socket is not PHP 8 (${sock})" >&2
-			return 5
-			;;
-		*php8*)
-			;;
+		*php8.4-fpm.sock) ;;
 		*)
-			echo "refused: php-fpm socket is not PHP 8 (${sock})" >&2
+			echo "refused: php-fpm socket is not Debian PHP 8.4 (${sock})" >&2
 			return 5
 			;;
 	esac
@@ -222,6 +327,13 @@ bench_render_nginx() {
 		echo "refused: nginx site still contains legacy TLS or PHP 5" >&2
 		return 5
 	fi
+	if ! grep -F -q 'location ~* ^/(modules|sounds)/' "$dest" \
+		|| ! grep -F -q 'location ~* ^/backup/' "$dest" \
+		|| ! grep -F -q 'deny all;' "$dest"
+	then
+		echo "refused: nginx site does not keep uploaded scripts out of PHP" >&2
+		return 5
+	fi
 	return 0
 }
 
@@ -233,10 +345,15 @@ bench_render_nginx() {
 
 bench_test_harness_allowed() {
 	[ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ] || return 1
-	local real
-	real=$(tr -d '[:space:]' < /etc/hostname 2>/dev/null || true)
-	[ "$real" = "orp-test" ] && return 1
-	[ -f /etc/openrepeater/bench-mode ] && return 1
+	# Fixture installs must name an isolated root. This does not read the
+	# installed hostname, operating-mode token, or bench marker.
+	[ -n "${ORP_ROOT:-}" ] || return 1
+	case "${ORP_ROOT}" in
+		/|/.|/etc|/etc/*|/usr|/usr/*|/var/www|/var/www/*|/var/lib/openrepeater|/var/lib/openrepeater/*)
+			return 1
+			;;
+	esac
+	[ -d "${ORP_ROOT}" ] || return 1
 	return 0
 }
 
@@ -358,10 +475,179 @@ bench_chown() {
 	if [ -n "${ORP_CHOWN_LOG:-}" ]; then
 		printf '%s %s %s\n' "" "$spec" "$path" >> "$ORP_CHOWN_LOG"
 	fi
-	if [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ]; then
+	if [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ] && ! bench_apply_real_ownership; then
 		return 0
 	fi
-	chown -h "$spec" "$path"
+	bench_attr_pause "$path"
+	bench_fd_apply chown "$spec" "$path"
+}
+
+# Real chown during an offline fixture run is allowed only for the cloud
+# harness. On hostname orp-test the harness is refused, so this cannot retarget
+# ownership of the bench.
+bench_apply_real_ownership() {
+	[ "${ORP_INSTALL_APPLY_OWNERSHIP:-0}" = 1 ] || return 1
+	bench_test_harness_allowed
+}
+
+# Pause after the path check and before the file-descriptor operation so a
+# test can replace the name. The operation below does not use that name.
+bench_attr_pause() {
+	local path=$1
+	local pause=${ORP_ATTR_PAUSE_FILE:-}
+	local want=${ORP_ATTR_PAUSE_PATH:-}
+	[ -n "$pause" ] || return 0
+	if [ -n "$want" ] && [ "$path" != "$want" ]; then
+		return 0
+	fi
+	: > "${pause}.ready"
+	while [ -e "$pause" ]; do
+		sleep 0.05
+	done
+}
+
+# Open each component with O_NOFOLLOW. chmod and chown use the resulting
+# descriptor, so a name swapped for a symlink is not followed.
+bench_fd_apply() {
+	local op=$1
+	local spec=$2
+	local path=$3
+	python3 - "$op" "$spec" "$path" <<'PY'
+import grp
+import os
+import pwd
+import sys
+
+op, spec, path = sys.argv[1], sys.argv[2], sys.argv[3]
+if not path.startswith("/") or "\0" in path or "//" in path:
+    sys.stderr.write("refused: unsafe path %s\n" % path)
+    sys.exit(1)
+parts = [part for part in path.split("/") if part]
+if not parts or any(part in (".", "..") for part in parts):
+    sys.stderr.write("refused: unsafe path %s\n" % path)
+    sys.exit(1)
+dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+leaf_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+parent = os.open("/", dir_flags)
+try:
+    for part in parts[:-1]:
+        nxt = os.open(part, dir_flags, dir_fd=parent)
+        os.close(parent)
+        parent = nxt
+    leaf = parts[-1]
+    if op == "mkdir":
+        os.mkdir(leaf, int(spec, 8), dir_fd=parent)
+    else:
+        opened = os.open(leaf, leaf_flags, dir_fd=parent)
+        try:
+            if op == "chmod":
+                os.fchmod(opened, int(spec, 8))
+            elif op == "chown":
+                user, group = spec.split(":", 1)
+                try:
+                    uid = int(user)
+                except ValueError:
+                    uid = pwd.getpwnam(user).pw_uid
+                try:
+                    gid = int(group)
+                except ValueError:
+                    gid = grp.getgrnam(group).gr_gid
+                os.fchown(opened, uid, gid)
+            else:
+                sys.stderr.write("refused: unknown operation %s\n" % op)
+                sys.exit(1)
+        finally:
+            os.close(opened)
+except OSError as exc:
+    sys.stderr.write("refused: no-follow %s %s: %s\n" % (op, path, exc.strerror))
+    sys.exit(1)
+finally:
+    os.close(parent)
+PY
+}
+
+# The published tree must not keep the source tree's mode. A read-only
+# payload is 0555, and tar applies that to the destination directory.
+# Walk with O_NOFOLLOW and fchmod the opened descriptor.
+bench_publish_tree_modes() {
+	local root=$1
+	python3 - "$root" \
+		install/scripts/orp_helper \
+		upgrade/install-orp-ui.sh \
+		upgrade/install-svxlink-sounds.sh \
+		upgrade/install_heather_sounds.py \
+		upgrade/set-operating-mode.sh \
+		upgrade/lib/bench-target.sh <<'PY'
+import os
+import stat
+import sys
+
+root = sys.argv[1]
+intended = set(sys.argv[2:])
+if not root.startswith("/") or "\0" in root or "//" in root:
+    sys.stderr.write("refused: unsafe tree %s\n" % root)
+    sys.exit(1)
+parts = [part for part in root.split("/") if part]
+if not parts or any(part in (".", "..") for part in parts):
+    sys.stderr.write("refused: unsafe tree %s\n" % root)
+    sys.exit(1)
+
+def open_at(parent, name, directory):
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    if directory:
+        flags |= os.O_DIRECTORY
+    return os.open(name, flags, dir_fd=parent)
+
+def walk(fd, rel):
+    os.fchmod(fd, 0o755)
+    for name in os.listdir(fd):
+        if name in (".", "..") or "/" in name or name in (".", ".."):
+            continue
+        info = os.lstat(name, dir_fd=fd)
+        child_rel = name if rel == "" else rel + "/" + name
+        if stat.S_ISLNK(info.st_mode):
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            child = open_at(fd, name, True)
+            try:
+                walk(child, child_rel)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(info.st_mode):
+            opened = open_at(fd, name, False)
+            try:
+                os.fchmod(opened, 0o755 if child_rel in intended else 0o644)
+            finally:
+                os.close(opened)
+
+dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+fd = os.open("/", dir_flags)
+try:
+    for part in parts:
+        nxt = os.open(part, dir_flags, dir_fd=fd)
+        os.close(fd)
+        fd = nxt
+    walk(fd, "")
+except OSError as exc:
+    sys.stderr.write("refused: no-follow tree mode %s: %s\n" % (root, exc.strerror))
+    sys.exit(1)
+finally:
+    os.close(fd)
+PY
+}
+
+bench_mkdir_nofollow() {
+	local path=$1
+	bench_require_real_components "$path" || return 1
+	if [ "$(bench_lstat_kind "$path")" = symlink ]; then
+		echo "refused: not mkdir through symbolic link $path" >&2
+		return 1
+	fi
+	if [ "$(bench_lstat_kind "$path")" != missing ]; then
+		return 0
+	fi
+	bench_attr_pause "$path"
+	bench_fd_apply mkdir 0755 "$path"
 }
 
 bench_chmod() {
@@ -376,7 +662,8 @@ bench_chmod() {
 		echo "refused: not chmodding missing path $path" >&2
 		return 1
 	fi
-	chmod "$mode" "$path"
+	bench_attr_pause "$path"
+	bench_fd_apply chmod "$mode" "$path"
 }
 
 bench_anchor_dir() {
@@ -425,13 +712,13 @@ bench_anchor_dir() {
 				;;
 			missing)
 				mkdir "$acc"
-				chmod 755 "$acc"
+				bench_fd_apply chmod 755 "$acc"
 				;;
 			dir)
 				if ! bench_assert_anchor "$acc"; then
-					chmod 755 "$acc"
+					bench_fd_apply chmod 755 "$acc"
 					if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
-						chown -h "$(bench_installer_uid):$(id -g)" "$acc"
+						bench_fd_apply chown "$(bench_installer_uid):$(id -g)" "$acc"
 					fi
 					if ! bench_assert_anchor "$acc"; then
 						echo "refused: $acc is still writable by someone other than the installer" >&2
@@ -493,4 +780,437 @@ bench_ensure_regular() {
 			;;
 	esac
 	return 1
+}
+
+# Debian Trixie PHP 8.4 from enabled Debian archive and security suites.
+# Raspberry Pi OS also enables archive.raspberrypi.com; that archive is not
+# a Debian origin for these packages. No apt source is added or edited.
+BENCH_PHP84_PACKAGES=(php8.4-fpm php8.4-cli php8.4-common php8.4-sqlite3 php8.4-opcache php8.4-zip)
+
+bench_apt() {
+	if [ -n "${ORP_APT_GET:-}" ]; then
+		"${ORP_APT_GET}" "$@"
+	else
+		apt-get "$@"
+	fi
+}
+
+bench_apt_cache() {
+	if [ -n "${ORP_APT_CACHE:-}" ]; then
+		"${ORP_APT_CACHE}" "$@"
+	else
+		apt-cache "$@"
+	fi
+}
+
+bench_php_uri_kind() {
+	local uri=${1%/}
+	case "$uri" in
+		http://deb.debian.org/debian-security|https://deb.debian.org/debian-security|\
+		http://security.debian.org|https://security.debian.org|\
+		http://security.debian.org/debian-security|https://security.debian.org/debian-security|\
+		http://ftp.debian.org/debian-security|https://ftp.debian.org/debian-security)
+			printf '%s' security
+			;;
+		http://deb.debian.org/debian|https://deb.debian.org/debian|\
+		http://ftp.debian.org/debian|https://ftp.debian.org/debian)
+			printf '%s' archive
+			;;
+		*)
+			printf '%s' other
+			;;
+	esac
+}
+
+bench_php_note_origin() {
+	local kind suite
+	kind=$(bench_php_uri_kind "$1")
+	suite=$2
+	case "${kind}:${suite}" in
+		security:trixie-security) BENCH_SAW_DEBIAN_SECURITY=1 ;;
+		archive:trixie|archive:trixie-updates) BENCH_SAW_DEBIAN_ARCHIVE=1 ;;
+	esac
+}
+
+bench_php_origin_authorized() {
+	local kind suite
+	kind=$(bench_php_uri_kind "$1")
+	suite=${2%%/*}
+	case "${kind}:${suite}" in
+		security:trixie-security|archive:trixie|archive:trixie-updates) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# Read one deb822 or one-line apt source file. Enabled: no, commented lines,
+# deb-src-only stanzas, and backup filenames are not treated as enabled.
+# Prints nothing. Sets BENCH_SAW_DEBIAN_SECURITY and BENCH_SAW_DEBIAN_ARCHIVE.
+bench_php_read_source_file() {
+	local file=$1
+	local base tmp_origins
+	base=$(basename "$file")
+	tmp_origins=$(mktemp)
+	case "$base" in
+		*.bak|*.save|*.disabled|*.dpkg-old|*~) return 0 ;;
+	esac
+	[ -f "$file" ] || return 0
+	[ -L "$file" ] && return 0
+	case "$base" in
+		*.sources)
+			awk '
+				function flush() {
+					if (types == "" && uris == "" && suites == "") return
+					enabled = tolower(enabled)
+					if (enabled == "no") return
+					n = split(types, tv, /[[:space:]]+/)
+					hasdeb = 0
+					for (i = 1; i <= n; i++) if (tv[i] == "deb") hasdeb = 1
+					if (!hasdeb) return
+					nu = split(uris, uv, /[[:space:]]+/)
+					ns = split(suites, sv, /[[:space:]]+/)
+					for (ui = 1; ui <= nu; ui++) {
+						if (uv[ui] == "") continue
+						for (si = 1; si <= ns; si++) {
+							if (sv[si] == "") continue
+							print uv[ui], sv[si]
+						}
+					}
+				}
+				BEGIN { types = ""; uris = ""; suites = ""; enabled = "yes"; key = "" }
+				/^[[:space:]]*#/ || /^[[:space:]]*$/ {
+					if ($0 ~ /^[[:space:]]*$/) flush()
+					if ($0 ~ /^[[:space:]]*$/) { types = ""; uris = ""; suites = ""; enabled = "yes"; key = "" }
+					next
+				}
+				{
+					line = $0
+					if (line ~ /^[[:space:]]/) {
+						sub(/^[[:space:]]+/, "", line)
+						if (key == "types") types = types " " line
+						else if (key == "uris") uris = uris " " line
+						else if (key == "suites") suites = suites " " line
+						else if (key == "enabled") enabled = enabled " " line
+						next
+					}
+					split(line, kv, /:[[:space:]]*/)
+					key = tolower(kv[1])
+					val = line
+					sub(/^[^:]+:[[:space:]]*/, "", val)
+					if (key == "types") types = val
+					else if (key == "uris") uris = val
+					else if (key == "suites") suites = val
+					else if (key == "enabled") enabled = val
+				}
+				END { flush() }
+			' "$file" > "$tmp_origins"
+			while read -r uri suite; do
+				bench_php_note_origin "$uri" "$suite"
+			done < "$tmp_origins"
+			;;
+		sources.list|*.list)
+			while IFS= read -r line || [ -n "$line" ]; do
+				case "$line" in
+					''|\#*) continue ;;
+				esac
+				set -- $line
+				[ "$1" = "deb" ] || continue
+				shift
+				if [ "${1#-}" != "$1" ] || [ "${1#\[}" != "$1" ]; then
+					opts=$1
+					shift
+					case "$(printf '%s' "$opts" | tr '[:upper:]' '[:lower:]')" in
+						*enabled=no*) continue ;;
+					esac
+				fi
+				[ $# -ge 2 ] || continue
+				bench_php_note_origin "$1" "$2"
+			done < "$file"
+			;;
+	esac
+	rm -f "$tmp_origins"
+}
+
+bench_php_security_enabled() {
+	local dir
+	dir="${ROOT:-}/etc/apt"
+	if [ ! -d "$dir" ]; then
+		echo "refused: apt sources directory $dir is absent" >&2
+		return 1
+	fi
+	BENCH_SAW_DEBIAN_SECURITY=0
+	BENCH_SAW_DEBIAN_ARCHIVE=0
+	if [ -f "$dir/sources.list" ]; then
+		bench_php_read_source_file "$dir/sources.list"
+	fi
+	local file
+	for file in "$dir"/sources.list.d/*.list "$dir"/sources.list.d/*.sources; do
+		[ -e "$file" ] || continue
+		bench_php_read_source_file "$file"
+	done
+	if [ "$BENCH_SAW_DEBIAN_SECURITY" != 1 ] || [ "$BENCH_SAW_DEBIAN_ARCHIVE" != 1 ]; then
+		echo "refused: enabled Debian trixie and trixie-security sources are required" >&2
+		return 1
+	fi
+	return 0
+}
+
+bench_php_candidate_origins_ok() {
+	local pkg=$1
+	local candidate=$2
+	local saw=0 bad=0 uri suitecomp
+	while read -r uri suitecomp; do
+		[ -n "$uri" ] || continue
+		saw=1
+		if ! bench_php_origin_authorized "$uri" "$suitecomp"; then
+			bad=1
+		fi
+	done < <(bench_apt_cache policy "$pkg" | awk -v cand="$candidate" '
+		BEGIN { inver = 0 }
+		{
+			line = $0
+			sub(/\r$/, "", line)
+		}
+		line ~ /^ +(\*\*\* +)?[^ ]+ +[0-9]+$/ {
+			ver = line
+			sub(/^ +\*+ +/, "", ver)
+			sub(/^ +/, "", ver)
+			split(ver, parts, /[[:space:]]+/)
+			inver = (parts[1] == cand)
+			next
+		}
+		inver && line ~ /^ +[0-9]+ +https?:\/\// {
+			print $2, $3
+			next
+		}
+		line ~ /^[^[:space:]]/ { inver = 0 }
+	')
+	if [ "$saw" != 1 ]; then
+		echo "refused: apt did not report a Debian origin for ${pkg} candidate ${candidate}" >&2
+		return 1
+	fi
+	if [ "$bad" != 0 ]; then
+		echo "refused: ${pkg} candidate ${candidate} is also published outside Debian trixie or trixie-security" >&2
+		return 1
+	fi
+	return 0
+}
+
+bench_php_policy_field() {
+	local pkg=$1
+	local field=$2
+	bench_apt_cache policy "$pkg" | awk -v field="${field}:" '$1 == field { print $2; exit }'
+}
+
+bench_php_candidate_is_84() {
+	local ver=$1
+	ver=${ver#*:}
+	case "$ver" in
+		8.4.*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# Refresh apt, then install or upgrade only the PHP 8.4 runtime packages
+# up to the candidate from enabled Debian trixie and trixie-security.
+# --no-upgrade is intentionally not used here: a reinstall must not keep an
+# older installed PHP when the candidate is newer. Returns 0 only when each
+# package's installed version equals that candidate.
+bench_install_php84() {
+	local pkg installed candidate
+	local -a stale=()
+	if ! bench_apt update; then
+		echo "refused: apt-get update failed" >&2
+		return 5
+	fi
+	if ! bench_php_security_enabled; then
+		return 5
+	fi
+	for pkg in "${BENCH_PHP84_PACKAGES[@]}"; do
+		candidate=$(bench_php_policy_field "$pkg" Candidate)
+		installed=$(bench_php_policy_field "$pkg" Installed)
+		if [ -z "$candidate" ] || [ "$candidate" = "(none)" ]; then
+			echo "refused: apt has no candidate for ${pkg}" >&2
+			return 5
+		fi
+		if ! bench_php_candidate_is_84 "$candidate"; then
+			echo "refused: candidate for ${pkg} is ${candidate}, expected PHP 8.4 from Debian" >&2
+			return 5
+		fi
+		if ! bench_php_candidate_origins_ok "$pkg" "$candidate"; then
+			return 5
+		fi
+		if [ "$installed" != "$candidate" ]; then
+			stale+=("$pkg")
+		fi
+	done
+	if [ "${#stale[@]}" -gt 0 ]; then
+		if ! bench_apt install -y --no-install-recommends "${stale[@]}"; then
+			echo "refused: PHP 8.4 package install failed" >&2
+			return 5
+		fi
+	fi
+	for pkg in "${BENCH_PHP84_PACKAGES[@]}"; do
+		candidate=$(bench_php_policy_field "$pkg" Candidate)
+		installed=$(bench_php_policy_field "$pkg" Installed)
+		if [ "$installed" != "$candidate" ] || ! bench_php_candidate_is_84 "$installed"; then
+			echo "refused: ${pkg} installed (${installed:-none}) is not the apt candidate (${candidate:-none})" >&2
+			return 5
+		fi
+		if ! bench_php_candidate_origins_ok "$pkg" "$candidate"; then
+			return 5
+		fi
+	done
+	return 0
+}
+
+# Remove symlinks under the SvxLink share trees that point at an uploaded
+# module. Those links are how 04d7dbe and older trees put www-data-owned Tcl
+# on the path svxlink loads. The link is removed. The target is not.
+#
+# Matching is lexical. The link text is normalized (. and .. removed) and is
+# not resolved through the filesystem. A chain through another symlink, which
+# then points into the module tree, is not caught.
+#
+# The share root and every parent must be real directories. A symlink there
+# is refused and nothing is deleted.
+bench_ancestors_are_real() {
+	local path=$1
+	while [ -n "$path" ] && [ "$path" != "/" ]; do
+		if [ -L "$path" ]; then
+			echo "refused: ${path} is a symlink" >&2
+			return 1
+		fi
+		path=$(dirname "$path")
+	done
+	return 0
+}
+
+# When the trusted functional-test token is present, a /dev/null mask is
+# removed so svxlink, remotetrx, and svxreflector can be started later.
+# Every unit is then disabled, and wants, requires, and upholds links for
+# all three units are removed. is-enabled must be disabled. The installer
+# does not enable them and does not start them.
+bench_unmask_radio_units() {
+	local unit link sys enabled
+	if ! bench_mode_is_functional_test; then
+		return 0
+	fi
+	sys=$(p /etc/systemd/system)
+	for unit in svxlink.service remotetrx.service svxreflector.service; do
+		link="${sys}/${unit}"
+		if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
+			rm -f -- "$link"
+			echo "unmasked ${unit} for functional-test"
+			orp_systemctl unmask "$unit" || true
+		fi
+		orp_systemctl disable "$unit" || true
+		if [ -d "$sys" ]; then
+			find -P "$sys" -xdev -type l -name "$unit" \
+				\( -path '*wants/*' -o -path '*requires/*' -o -path '*upholds/*' \) -delete
+		fi
+		enabled=$(orp_systemctl is-enabled "$unit" 2>/dev/null || true)
+		case "$enabled" in
+			disabled|not-found)
+				echo "is-enabled=disabled ${unit}"
+				;;
+			*)
+				echo "refused: ${unit} is-enabled=${enabled:-empty}, expected disabled" >&2
+				return 1
+				;;
+		esac
+	done
+}
+
+# Read-only. A refusal here must not remove links and must not be paired
+# with the installer's nginx fail-closed trap.
+bench_classify_legacy_module_symlinks() {
+	local modules share path target joined resolved modules_real root_prefix
+	LEGACY_SYMLINK_DROP=$(mktemp)
+	: > "$LEGACY_SYMLINK_DROP"
+	modules=$(p /var/www/openrepeater/modules)
+	modules=${modules%/}
+	for share in "$(p /usr/share/svxlink)" "$(p /usr/local/share/svxlink)"; do
+		if [ ! -e "$share" ] && [ ! -L "$share" ]; then
+			continue
+		fi
+		bench_ancestors_are_real "$share" || {
+			rm -f "$LEGACY_SYMLINK_DROP"
+			return 1
+		}
+		[ -d "$share" ] || {
+			echo "refused: ${share} is not a directory" >&2
+			rm -f "$LEGACY_SYMLINK_DROP"
+			return 1
+		}
+		# -m canonicalizes a missing component. -f would refuse a dangling link.
+		modules_real=$(readlink -m "$modules") || true
+		if [ -z "$modules_real" ]; then
+			echo "refused: ${modules} was not resolved" >&2
+			rm -f "$LEGACY_SYMLINK_DROP"
+			return 1
+		fi
+		while IFS= read -r -d '' path; do
+			case "$path" in
+				*$'\n'*|*$'\t'*)
+					echo "refused: legacy symlink path contains a newline or tab" >&2
+					rm -f "$LEGACY_SYMLINK_DROP"
+					return 1
+					;;
+			esac
+			target=$(readlink "$path") || {
+				echo "refused: ${path} target was not read" >&2
+				rm -f "$LEGACY_SYMLINK_DROP"
+				return 1
+			}
+			case "$target" in
+				*$'\n'*|*$'\t'*)
+					echo "refused: legacy symlink target contains a newline or tab" >&2
+					rm -f "$LEGACY_SYMLINK_DROP"
+					return 1
+					;;
+				"")
+					echo "refused: ${path} has an empty target" >&2
+					rm -f "$LEGACY_SYMLINK_DROP"
+					return 1
+					;;
+				/*)
+					joined=$target
+					if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+						if root_prefix=$(bench_root_prefix); then
+							joined="${root_prefix}${target}"
+						fi
+					fi
+					;;
+				*) joined="$(dirname "$path")/$target" ;;
+			esac
+			resolved=$(readlink -m "$joined") || true
+			if [ -z "$resolved" ]; then
+				echo "refused: ${path} target was not resolved" >&2
+				rm -f "$LEGACY_SYMLINK_DROP"
+				return 1
+			fi
+			case "$resolved" in
+				"$modules_real"|"$modules_real"/*)
+					printf '%s\0%s\0' "$path" "$target" >> "$LEGACY_SYMLINK_DROP"
+					;;
+			esac
+		done < <(find -P "$share" -xdev -type l -print0)
+	done
+}
+
+bench_apply_legacy_module_symlinks() {
+	local path target
+	[ -n "${LEGACY_SYMLINK_DROP:-}" ] && [ -f "$LEGACY_SYMLINK_DROP" ] || return 0
+	while IFS= read -r -d '' path && IFS= read -r -d '' target; do
+		[ -n "$path" ] || continue
+		rm -f -- "$path"
+		printf 'removed legacy module symlink %s -> %s\n' "$path" "$target"
+	done < "$LEGACY_SYMLINK_DROP"
+	rm -f "$LEGACY_SYMLINK_DROP"
+	LEGACY_SYMLINK_DROP=""
+}
+
+bench_remove_legacy_module_symlinks() {
+	bench_classify_legacy_module_symlinks || return 1
+	bench_apply_legacy_module_symlinks
 }
