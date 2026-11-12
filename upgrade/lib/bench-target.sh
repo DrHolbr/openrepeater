@@ -1121,36 +1121,44 @@ bench_unmask_radio_units() {
 	done
 }
 
-bench_remove_legacy_module_symlinks() {
-	local modules share path target joined resolved modules_real root_prefix i
-	local -a drop_paths=() drop_targets=()
+# Read-only. A refusal here must not remove links and must not be paired
+# with the installer's nginx fail-closed trap.
+bench_classify_legacy_module_symlinks() {
+	local modules share path target joined resolved modules_real root_prefix
+	LEGACY_SYMLINK_DROP=$(mktemp)
+	: > "$LEGACY_SYMLINK_DROP"
 	modules=$(p /var/www/openrepeater/modules)
 	modules=${modules%/}
 	for share in "$(p /usr/share/svxlink)" "$(p /usr/local/share/svxlink)"; do
 		if [ ! -e "$share" ] && [ ! -L "$share" ]; then
 			continue
 		fi
-		bench_ancestors_are_real "$share" || return 1
+		bench_ancestors_are_real "$share" || {
+			rm -f "$LEGACY_SYMLINK_DROP"
+			return 1
+		}
 		[ -d "$share" ] || {
 			echo "refused: ${share} is not a directory" >&2
+			rm -f "$LEGACY_SYMLINK_DROP"
 			return 1
 		}
 		# -m canonicalizes a missing component. -f would refuse a dangling link.
 		modules_real=$(readlink -m "$modules") || true
-		if [ -z "$modules_real" ]; then
+			if [ -z "$modules_real" ]; then
 			echo "refused: ${modules} was not resolved" >&2
+			rm -f "$LEGACY_SYMLINK_DROP"
 			return 1
 		fi
-		drop_paths=()
-		drop_targets=()
 		while IFS= read -r -d '' path; do
 			target=$(readlink "$path") || {
 				echo "refused: ${path} target was not read" >&2
+				rm -f "$LEGACY_SYMLINK_DROP"
 				return 1
 			}
 			case "$target" in
 				"")
 					echo "refused: ${path} has an empty target" >&2
+					rm -f "$LEGACY_SYMLINK_DROP"
 					return 1
 					;;
 				/*)
@@ -1166,20 +1174,31 @@ bench_remove_legacy_module_symlinks() {
 			resolved=$(readlink -m "$joined") || true
 			if [ -z "$resolved" ]; then
 				echo "refused: ${path} target was not resolved" >&2
+				rm -f "$LEGACY_SYMLINK_DROP"
 				return 1
 			fi
 			case "$resolved" in
 				"$modules_real"|"$modules_real"/*)
-					drop_paths+=("$path")
-					drop_targets+=("$target")
+					printf '%s\t%s\n' "$path" "$target" >> "$LEGACY_SYMLINK_DROP"
 					;;
 			esac
 		done < <(find -P "$share" -xdev -type l -print0)
-		if [ "${#drop_paths[@]}" -gt 0 ]; then
-			for i in "${!drop_paths[@]}"; do
-				rm -f -- "${drop_paths[$i]}"
-				printf 'removed legacy module symlink %s -> %s\n' "${drop_paths[$i]}" "${drop_targets[$i]}"
-			done
-		fi
 	done
+}
+
+bench_apply_legacy_module_symlinks() {
+	local path target
+	[ -n "${LEGACY_SYMLINK_DROP:-}" ] && [ -f "$LEGACY_SYMLINK_DROP" ] || return 0
+	while IFS=$'\t' read -r path target; do
+		[ -n "$path" ] || continue
+		rm -f -- "$path"
+		printf 'removed legacy module symlink %s -> %s\n' "$path" "$target"
+	done < "$LEGACY_SYMLINK_DROP"
+	rm -f "$LEGACY_SYMLINK_DROP"
+	LEGACY_SYMLINK_DROP=""
+}
+
+bench_remove_legacy_module_symlinks() {
+	bench_classify_legacy_module_symlinks || return 1
+	bench_apply_legacy_module_symlinks
 }

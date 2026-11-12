@@ -1590,6 +1590,27 @@ function prepare_armed_companions() {
 	fi
 }
 
+# A symlink here is refused before config_publish creates or replaces files.
+function refuse_unarmed_symlink_wiring() {
+	local gpio events name
+	gpio=$(native_path /etc/svxlink/gpio.conf)
+	if [ -L "$gpio" ]; then
+		echo "refused: ${gpio} is a symbolic link" >&2
+		return 1
+	fi
+	events=$(native_path /usr/local/share/svxlink/events.d)
+	if [ -d "$events" ] && [ ! -L "$events" ]; then
+		while IFS= read -r name; do
+			[ -n "$name" ] || continue
+			if port_logic_name_ok "$(basename "$name")"; then
+				echo "refused: ${name} is a symbolic link" >&2
+				return 1
+			fi
+		done < <(find -P "$events" -maxdepth 1 -type l -name 'ORP_*Logic_Port*.tcl' -print)
+	fi
+	return 0
+}
+
 function rollback_published_conf() {
 	local dest=$1 backup=$2 existed=$3
 	if [ "$existed" = 1 ] && [ -f "$backup" ]; then
@@ -1757,7 +1778,7 @@ function rollback_armed_companions() {
 
 function rollback_publish_dirs() {
 	if ! rollback_armed_companions; then
-		echo "refused: rollback did not finish. Backup remains at ${FUNCTIONAL_BACKUP:-${COMPANION_DIR}}"
+		echo "refused: rollback did not finish. Backup remains at ${FUNCTIONAL_BACKUP:-} companion ${COMPANION_DIR:-}"
 		return 1
 	fi
 	rm -rf "${COMPANION_DIR:-}"
@@ -1790,7 +1811,7 @@ function require_python3() {
 }
 
 function config_publish {
-	local dest parent snapshot backup sum_before sum_after
+	local dest parent snapshot backup sum_before sum_after rb_failed
 	if ! functional_test_on; then
 		echo "refused: config publish requires functional-test"
 		return 1
@@ -1819,6 +1840,11 @@ function config_publish {
 	if [ -L "$dest" ] || [ -L "${parent}/svxlink.d" ] || [ -L "${parent}/functional-test.d" ]; then
 		echo "refused: live svxlink path is a symbolic link"
 		return 1
+	fi
+	# Unarmed publish must not replace the conf, courtesy, or companions
+	# when installed wiring is still a symlink. Refuse before the first write.
+	if ! tx_armed; then
+		refuse_unarmed_symlink_wiring || return 1
 	fi
 	if [ -e "${parent}/functional-test.d" ] && [ ! -d "${parent}/functional-test.d" ]; then
 		echo "refused: functional-test.d is not a directory"
@@ -1925,10 +1951,8 @@ function config_publish {
 	fi
 	if native_functional_token && tx_armed; then
 		if ! commit_armed_companions; then
-			if ! rollback_publish_dirs; then
-				rm -f "$courtesy_backup"
-				return 1
-			fi
+			rb_failed=0
+			rollback_publish_dirs || rb_failed=1
 			rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"
 			if [ "$courtesy_had" = 1 ]; then
 				cp -p "$courtesy_backup" "$courtesy_dest"
@@ -1936,15 +1960,16 @@ function config_publish {
 				rm -f "$courtesy_dest"
 			fi
 			rm -f "$courtesy_backup"
+			if [ "$rb_failed" = 1 ]; then
+				return 1
+			fi
 			echo "refused: staged companion was not installed. The published set was rolled back."
 			return 1
 		fi
 	else
 		if ! disarm_installed_wiring; then
-			if ! rollback_publish_dirs; then
-				rm -f "$courtesy_backup"
-				return 1
-			fi
+			rb_failed=0
+			rollback_publish_dirs || rb_failed=1
 			rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"
 			if [ "$courtesy_had" = 1 ]; then
 				cp -p "$courtesy_backup" "$courtesy_dest"
@@ -1952,6 +1977,9 @@ function config_publish {
 				rm -f "$courtesy_dest"
 			fi
 			rm -f "$courtesy_backup"
+			if [ "$rb_failed" = 1 ]; then
+				return 1
+			fi
 			echo "refused: armed wiring was not removed. The published set was rolled back."
 			return 1
 		fi

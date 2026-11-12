@@ -474,27 +474,47 @@ grep -q '^STALE$' "$purge_backup/ORP_RepeaterLogic_Port9.tcl"
 grep -q '^PORT1$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
 sudo -n rm -f "$pubroot/etc/openrepeater/tx-armed"
 pre_disarm=$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")
-backup_before=$(find "$pubroot/var/backups/orp-ui" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | LC_ALL=C sort)
+# Companion backups end in Z-<pid>. The one-second svxlink.conf copy does not.
+backup_before=$(find "$pubroot/var/backups/orp-ui" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | grep -E 'Z-[0-9]+$' | LC_ALL=C sort || true)
 gpio_canary="$pubroot/gpio-link-target"
 printf 'LIVE-GPIO\n' > "$gpio_canary"
 sudo -n rm -f "$pubroot/etc/svxlink/gpio.conf"
 sudo -n ln -s "$gpio_canary" "$pubroot/etc/svxlink/gpio.conf"
+port1_before=$(sha256sum "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl")
+courtesy_before=""
+if [ -f "$pubroot/usr/local/share/svxlink/events.d/local/Logic.tcl" ]; then
+	courtesy_before=$(sha256sum "$pubroot/usr/local/share/svxlink/events.d/local/Logic.tcl")
+fi
 set +e
 unarmed_roll=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
 	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
 	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
 	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
-	"$HELPER" config publish)
+	"$HELPER" config publish 2>&1)
 unarmed_roll_rc=$?
 set -e
 [ "$unarmed_roll_rc" -ne 0 ]
-printf '%s\n' "$unarmed_roll" | grep -q 'rolled back'
+printf '%s\n' "$unarmed_roll" | grep -q 'is a symbolic link'
+if printf '%s\n' "$unarmed_roll" | grep -q 'rolled back'; then
+	echo "FAIL: unarmed symlink refusal wrote and then rolled back" >&2
+	printf '%s\n' "$unarmed_roll" >&2
+	exit 1
+fi
 [ "$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")" = "$pre_disarm" ]
-grep -q '^PORT1$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
+[ "$(sha256sum "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl")" = "$port1_before" ]
+if [ -n "$courtesy_before" ]; then
+	[ "$(sha256sum "$pubroot/usr/local/share/svxlink/events.d/local/Logic.tcl")" = "$courtesy_before" ]
+fi
 grep -q '^LIVE-GPIO$' "$gpio_canary"
 [ -L "$pubroot/etc/svxlink/gpio.conf" ]
 [ "$(readlink -f "$pubroot/etc/svxlink/gpio.conf")" = "$(readlink -f "$gpio_canary")" ]
-[ "$(find "$pubroot/var/backups/orp-ui" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | LC_ALL=C sort)" = "$backup_before" ]
+backup_after=$(find "$pubroot/var/backups/orp-ui" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | grep -E 'Z-[0-9]+$' | LC_ALL=C sort || true)
+if [ "$backup_after" != "$backup_before" ]; then
+	echo "FAIL: unarmed symlink refusal wrote a backup directory" >&2
+	printf 'before:\n%s\nafter:\n%s\n' "$backup_before" "$backup_after" >&2
+	exit 1
+fi
+echo "ok: an unarmed symlink is refused before any publish write"
 sudo -n rm -f "$pubroot/etc/svxlink/gpio.conf"
 printf 'GPIOCONF\n' > "$pubroot/etc/svxlink/gpio.conf"
 disarm_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
@@ -567,6 +587,9 @@ fi
 exec /bin/cp "\$@"
 EOF
 chmod 755 "$failcp/cp"
+conf_before=$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")
+courtesy_path="$pubroot/usr/local/share/svxlink/events.d/local/Logic.tcl"
+cp -p "$courtesy_path" "$tmp/courtesy-before.tcl"
 set +e
 bad_cp=$(sudo -n env PATH="$failcp:/usr/bin:/bin" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
 	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
@@ -577,10 +600,15 @@ bad_cp_rc=$?
 set -e
 [ "$bad_cp_rc" -ne 0 ]
 printf '%s\n' "$bad_cp" | grep -q 'Backup remains at '
-kept_backup=$(printf '%s\n' "$bad_cp" | sed -n 's/.*Backup remains at //p' | head -n 1)
-[ -d "$kept_backup" ]
+kept_backup=$(printf '%s\n' "$bad_cp" | sed -n 's/.*Backup remains at \(.*\) companion .*/\1/p' | head -n 1)
+kept_companion=$(printf '%s\n' "$bad_cp" | sed -n 's/.* companion //p' | head -n 1)
+[ -n "$kept_backup" ] && [ -d "$kept_backup" ]
+[ -n "$kept_companion" ] && [ -d "$kept_companion" ]
 grep -q '^STALE$' "$kept_backup/ORP_RepeaterLogic_Port9.tcl"
+[ "$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")" = "$conf_before" ]
+cmp -s "$tmp/courtesy-before.tcl" "$courtesy_path"
 echo "ok: a failed restore keeps the functional-test backup"
+echo "ok: a failed companion rollback restores the conf and courtesy and prints both kept paths"
 ptt_sample="$tmp/ptt-sample"
 for sample in ' PTT_TYPE=GPIO' 'PTT_TYPE = GPIO' 'PTT_TYPE="GPIO"'; do
 	printf '%s\n' "$sample" > "$ptt_sample"

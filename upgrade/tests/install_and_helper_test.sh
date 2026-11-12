@@ -1477,7 +1477,8 @@ if [ ! -e "$legacy/usr/share/svxlink/events.d/ModuleFoo.tcl" ] \
 	&& [ "$(cat "$legacy/usr/share/svxlink/events.d/Logic.tcl")" = "stock" ] \
 	&& [ "$(cat "$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl")" = "tcl" ] \
 	&& grep -q 'removed legacy module symlink' "$tmp/legacy.log" \
-	&& grep -q 'bench_remove_legacy_module_symlinks' "$INSTALL"
+	&& grep -q 'bench_classify_legacy_module_symlinks' "$INSTALL" \
+	&& grep -q 'bench_apply_legacy_module_symlinks' "$INSTALL"
 then
 	ok "legacy module symlinks into the web tree are removed"
 else
@@ -1573,6 +1574,8 @@ ln -s /var/www/openrepeater/modules/gone/Missing.tcl \
 	"$dangling/usr/share/svxlink/events.d/Missing.tcl"
 ln -s /etc/svxlink/missing.conf \
 	"$dangling/usr/local/share/svxlink/events.d/other.tcl"
+ln -s /var/www/openrepeater/modules2/Foo.tcl \
+	"$dangling/usr/share/svxlink/events.d/Sibling.tcl"
 (
 	export ROOT="$dangling"
 	export ORP_BENCH_TEST_HARNESS=1
@@ -1582,9 +1585,11 @@ ln -s /etc/svxlink/missing.conf \
 )
 if [ ! -e "$dangling/usr/share/svxlink/events.d/Missing.tcl" ] \
 	&& [ ! -L "$dangling/usr/share/svxlink/events.d/Missing.tcl" ] \
-	&& [ -L "$dangling/usr/local/share/svxlink/events.d/other.tcl" ]
+	&& [ -L "$dangling/usr/local/share/svxlink/events.d/other.tcl" ] \
+	&& [ -L "$dangling/usr/share/svxlink/events.d/Sibling.tcl" ]
 then
 	ok "a dangling module symlink is removed and another dangling link is kept"
+	ok "a modules2 sibling symlink is kept"
 else
 	bad "dangling legacy symlinks were not classified"
 fi
@@ -1613,6 +1618,43 @@ then
 else
 	bad "the installer started without python3 rc=$py_rc"
 	printf '%s\n' "$py_out" >&2
+fi
+scan_root="$tmp/scan-refuse"
+seed_identity "$scan_root"
+orp_mkdir "$scan_root/usr/share/svxlink/events.d"
+ln -s kept "$scan_root/usr/share/svxlink/events.d/empty.tcl"
+printf 'SITE\n' > "$scan_root/etc/nginx/sites-enabled/openrepeater"
+scan_ctl="$tmp/scan-systemctl"
+make_systemctl "$scan_ctl"
+: > "$tmp/scan-systemctl.log"
+scan_readlink="$tmp/scan-readlink"
+mkdir -p "$scan_readlink"
+cat > "$scan_readlink/readlink" <<EOF
+#!/bin/bash
+if [ "\$#" -eq 1 ] && [ "\$1" = "$scan_root/usr/share/svxlink/events.d/empty.tcl" ]; then
+	exit 0
+fi
+exec /usr/bin/readlink "\$@"
+EOF
+chmod 755 "$scan_readlink/readlink"
+set +e
+scan_out=$(PATH="$scan_readlink:$PATH" ORP_BENCH_TEST_HARNESS=1 ORP_INSTALL_OFFLINE=1 \
+	ORP_ROOT="$scan_root" ORP_SYSTEMCTL="$scan_ctl" ORP_SYSTEMCTL_LOG="$tmp/scan-systemctl.log" \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" 2>&1)
+scan_rc=$?
+set -e
+if [ "$scan_rc" -ne 0 ] \
+	&& printf '%s\n' "$scan_out" | grep -q 'empty target' \
+	&& ! grep -q 'stop nginx' "$tmp/scan-systemctl.log" \
+	&& ! grep -q 'disable nginx' "$tmp/scan-systemctl.log" \
+	&& [ "$(cat "$scan_root/etc/nginx/sites-enabled/openrepeater")" = "SITE" ] \
+	&& [ -L "$scan_root/usr/share/svxlink/events.d/empty.tcl" ]
+then
+	ok "a legacy symlink scan refusal leaves nginx and the site untouched"
+else
+	bad "a legacy symlink scan refusal touched nginx rc=$scan_rc"
+	printf '%s\n' "$scan_out" >&2
+	cat "$tmp/scan-systemctl.log" >&2 || true
 fi
 
 if [ "$fail" -ne 0 ]; then

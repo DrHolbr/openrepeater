@@ -123,11 +123,15 @@ fail_closed() {
 	bench_assert_masks >/dev/null 2>&1
 	exit "$rc"
 }
+# Classification is read-only. A refusal exits before the nginx trap is armed.
+if ! bench_classify_legacy_module_symlinks; then
+	exit 1
+fi
+
 trap fail_closed EXIT
 
-# Refuse an empty legacy symlink before any install write. A dangling link
-# is removed or kept here, and does not abort after the web tree exists.
-bench_remove_legacy_module_symlinks
+# Removal happens only after a clean scan.
+bench_apply_legacy_module_symlinks
 
 # Stop web writers before repairing paths. Stopping them is not the
 # boundary; a planted symlink is still refused below.
