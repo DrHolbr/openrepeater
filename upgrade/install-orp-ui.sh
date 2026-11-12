@@ -31,6 +31,9 @@ if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] && [ "$(id -u)" -ne 0 ]; then
 	exit 1
 fi
 
+# Before any file is written. config publish and module activate use the same interpreter.
+command -v python3 >/dev/null && python3 -c 'import os,stat,pwd,grp' || { echo "refused: python3 is required (installer and orp_helper)"; exit 1; }
+
 bench_assert_identity
 bench_assert_bootstrap_idle
 bench_assert_masks

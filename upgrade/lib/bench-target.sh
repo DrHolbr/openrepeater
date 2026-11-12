@@ -1122,7 +1122,7 @@ bench_unmask_radio_units() {
 }
 
 bench_remove_legacy_module_symlinks() {
-	local modules share
+	local modules share path target joined resolved modules_real
 	modules=$(p /var/www/openrepeater/modules)
 	modules=${modules%/}
 	for share in "$(p /usr/share/svxlink)" "$(p /usr/local/share/svxlink)"; do
@@ -1134,21 +1134,41 @@ bench_remove_legacy_module_symlinks() {
 			echo "refused: ${share} is not a directory" >&2
 			return 1
 		}
-		find -P "$share" -xdev -type l -exec sh -c '
-			path=$1
-			modules=$2
-			target=$(readlink "$path") || exit 1
+		modules_real=$(readlink -f "$modules") || {
+			echo "refused: ${modules} was not resolved" >&2
+			return 1
+		}
+		if [ -z "$modules_real" ]; then
+			echo "refused: ${modules} was not resolved" >&2
+			return 1
+		fi
+		while IFS= read -r -d '' path; do
+			target=$(readlink "$path") || {
+				echo "refused: ${path} target was not read" >&2
+				return 1
+			}
 			case "$target" in
-				/*) logical=$target ;;
-				*) logical=$(python3 -c "import os, sys; print(os.path.normpath(os.path.join(sys.argv[1], sys.argv[2])))" "$(dirname "$path")" "$target") ;;
+				"")
+					echo "refused: ${path} has an empty target" >&2
+					return 1
+					;;
+				/*) joined=$target ;;
+				*) joined="$(dirname "$path")/$target" ;;
 			esac
-			case "$logical" in
-				"$modules"|"$modules"/*)
-					printf "removed legacy module symlink %s -> %s\n" "$path" "$target"
-					exit 0
+			resolved=$(readlink -f "$joined") || {
+				echo "refused: ${path} target was not resolved" >&2
+				return 1
+			}
+			if [ -z "$resolved" ]; then
+				echo "refused: ${path} target was not resolved" >&2
+				return 1
+			fi
+			case "$resolved" in
+				"$modules_real"|"$modules_real"/*)
+					rm -f -- "$path"
+					printf 'removed legacy module symlink %s -> %s\n' "$path" "$target"
 					;;
 			esac
-			exit 1
-		' sh {} "$modules" \; -delete
+		done < <(find -P "$share" -xdev -type l -print0)
 	done
 }

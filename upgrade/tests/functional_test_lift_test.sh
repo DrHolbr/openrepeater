@@ -474,6 +474,7 @@ grep -q '^STALE$' "$purge_backup/ORP_RepeaterLogic_Port9.tcl"
 grep -q '^PORT1$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
 sudo -n rm -f "$pubroot/etc/openrepeater/tx-armed"
 pre_disarm=$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")
+backup_before=$(find "$pubroot/var/backups/orp-ui" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | LC_ALL=C sort)
 gpio_canary="$pubroot/gpio-link-target"
 printf 'LIVE-GPIO\n' > "$gpio_canary"
 sudo -n rm -f "$pubroot/etc/svxlink/gpio.conf"
@@ -490,6 +491,10 @@ set -e
 printf '%s\n' "$unarmed_roll" | grep -q 'rolled back'
 [ "$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")" = "$pre_disarm" ]
 grep -q '^PORT1$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
+grep -q '^LIVE-GPIO$' "$gpio_canary"
+[ -L "$pubroot/etc/svxlink/gpio.conf" ]
+[ "$(readlink -f "$pubroot/etc/svxlink/gpio.conf")" = "$(readlink -f "$gpio_canary")" ]
+[ "$(find "$pubroot/var/backups/orp-ui" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | LC_ALL=C sort)" = "$backup_before" ]
 sudo -n rm -f "$pubroot/etc/svxlink/gpio.conf"
 printf 'GPIOCONF\n' > "$pubroot/etc/svxlink/gpio.conf"
 disarm_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
@@ -606,6 +611,11 @@ if PATH="$nopy" command -v python3 >/dev/null 2>&1; then
 	echo "FAIL: python3 was still on PATH" >&2
 	exit 1
 fi
+py_pub=$(PATH="$nopy" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	"$HELPER" config publish 2>&1 || true)
+printf '%s\n' "$py_pub" | grep -q 'refused: python3 is required (installer and orp_helper)'
 joined=$(PATH="$nopy" ORP_HELPER_SOURCE_ONLY=1 bash -c '. "$1"; resolve_cfg_dir remotetrx.d "$2"' _ "$HELPER" "$cfg_root/etc/svxlink/remotetrx.conf")
 [ "$joined" = "$cfg_root/etc/svxlink/remotetrx.d" ]
 set +e

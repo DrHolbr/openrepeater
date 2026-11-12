@@ -1507,6 +1507,90 @@ else
 	bad "a symlinked share parent was not refused"
 	cat "$tmp/swapped.err" >&2 || true
 fi
+empty_link=$(orp_mktemp_dir)
+orp_mkdir "$empty_link/usr/share/svxlink/events.d" "$empty_link/var/www/openrepeater/modules"
+ln -s kept "$empty_link/usr/share/svxlink/events.d/empty.tcl"
+empty_bin="$tmp/empty-readlink"
+mkdir -p "$empty_bin"
+cat > "$empty_bin/readlink" <<EOF
+#!/bin/bash
+if [ "\$1" != "-f" ] && [ "\$1" = "$empty_link/usr/share/svxlink/events.d/empty.tcl" ]; then
+	exit 0
+fi
+exec /usr/bin/readlink "\$@"
+EOF
+chmod 755 "$empty_bin/readlink"
+set +e
+(
+	export ROOT="$empty_link"
+	export PATH="$empty_bin:$PATH"
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_remove_legacy_module_symlinks
+) >"$tmp/empty-link.out" 2>"$tmp/empty-link.err"
+empty_rc=$?
+set -e
+if [ "$empty_rc" -ne 0 ] \
+	&& grep -q 'empty target' "$tmp/empty-link.err" \
+	&& [ -L "$empty_link/usr/share/svxlink/events.d/empty.tcl" ]
+then
+	ok "an empty legacy symlink target fails the install"
+else
+	bad "an empty legacy symlink target was kept"
+	cat "$tmp/empty-link.err" >&2 || true
+fi
+rel_nopy="$tmp/rel-nopy"
+mkdir -p "$rel_nopy"
+IFS=':' read -ra rel_dirs <<< "$PATH:/usr/bin:/bin"
+for rel_dir in "${rel_dirs[@]}"; do
+	[ -d "$rel_dir" ] || continue
+	for rel_bin in "$rel_dir"/*; do
+		[ -e "$rel_bin" ] || continue
+		rel_base=$(basename "$rel_bin")
+		case "$rel_base" in python|python3|python3.*) continue ;; esac
+		[ -e "$rel_nopy/$rel_base" ] || ln -s "$rel_bin" "$rel_nopy/$rel_base"
+	done
+done
+(
+	export ROOT="$legacy"
+	export PATH="$rel_nopy"
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	ln -s ../../../../../var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl \
+		"$legacy/usr/local/share/svxlink/events.d/ModuleFoo-again.tcl"
+	bench_remove_legacy_module_symlinks
+)
+if [ -L "$legacy/usr/local/share/svxlink/events.d/ModuleFoo-again.tcl" ]; then
+	bad "a relative module symlink was kept when python3 was absent"
+else
+	ok "a relative module symlink is removed without python3"
+fi
+pyhide="$tmp/no-python3"
+mkdir -p "$pyhide"
+IFS=':' read -ra py_dirs <<< "$PATH:/usr/bin:/bin"
+for py_dir in "${py_dirs[@]}"; do
+	[ -d "$py_dir" ] || continue
+	for py_bin in "$py_dir"/*; do
+		[ -e "$py_bin" ] || continue
+		py_base=$(basename "$py_bin")
+		case "$py_base" in python|python3|python3.*) continue ;; esac
+		[ -e "$pyhide/$py_base" ] || ln -s "$py_bin" "$pyhide/$py_base"
+	done
+done
+mkdir -p "$tmp/py-missing"
+set +e
+py_out=$(PATH="$pyhide" ORP_BENCH_TEST_HARNESS=1 ORP_INSTALL_OFFLINE=1 ORP_ROOT="$tmp/py-missing" "$INSTALL" 2>&1)
+py_rc=$?
+set -e
+if [ "$py_rc" -eq 1 ] \
+	&& printf '%s\n' "$py_out" | grep -q 'refused: python3 is required (installer and orp_helper)' \
+	&& [ ! -e "$tmp/py-missing/etc/openrepeater/bench-mode" ]
+then
+	ok "the installer refuses to start without python3"
+else
+	bad "the installer started without python3 rc=$py_rc"
+	printf '%s\n' "$py_out" >&2
+fi
 
 if [ "$fail" -ne 0 ]; then
 	echo "shell checks failed" >&2

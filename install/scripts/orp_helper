@@ -1685,10 +1685,12 @@ function ensure_functional_backup() {
 	fi
 	parent=$(native_path /var/backups/orp-ui)
 	if [ -L "$parent" ] || [ ! -d "$parent" ]; then
+		echo "refused: /var/backups/orp-ui is missing"
 		return 1
 	fi
 	backup="${parent}/functional-test-$(date -u +%Y%m%dT%H%M%S%NZ)-$$"
 	if ! mkdir "$backup"; then
+		echo "refused: backup directory was not created"
 		return 1
 	fi
 	FUNCTIONAL_BACKUP=$backup
@@ -1697,7 +1699,6 @@ function ensure_functional_backup() {
 function backup_removed_file() {
 	local path=$1
 	if ! ensure_functional_backup; then
-		echo "refused: backup directory was not created"
 		return 1
 	fi
 	if ! cp -p "$path" "$FUNCTIONAL_BACKUP/$(basename "$path")"; then
@@ -1762,10 +1763,20 @@ function config_matches_snapshot() {
 	return "$rc"
 }
 
+function require_python3() {
+	command -v python3 >/dev/null && python3 -c 'import os,stat,pwd,grp' || {
+		echo "refused: python3 is required (installer and orp_helper)"
+		return 1
+	}
+}
+
 function config_publish {
 	local dest parent snapshot backup sum_before sum_after
 	if ! functional_test_on; then
 		echo "refused: config publish requires functional-test"
+		return 1
+	fi
+	if ! require_python3; then
 		return 1
 	fi
 	# Without tx-armed, the preview file is ignored. With the flag, www-data
@@ -1918,6 +1929,10 @@ function config_publish {
 			fi
 			rm -f "$courtesy_backup"
 			rm -rf "${COMPANION_DIR:-}"
+			if [ -n "${FUNCTIONAL_BACKUP:-}" ]; then
+				rm -rf "$FUNCTIONAL_BACKUP"
+				FUNCTIONAL_BACKUP=""
+			fi
 			echo "refused: armed wiring was not removed. The published set was rolled back."
 			return 1
 		fi
@@ -2253,6 +2268,7 @@ function module_prepare_dir() {
 
 function module_activate() {
 	local name=$1 base share manifest
+	require_python3 || return 1
 	module_name_ok "$name" || {
 		echo "refused: module name is not a single token" >&2
 		return 1
@@ -2457,6 +2473,7 @@ function module_deactivate() {
 		echo "refused: module manifest is not a regular file" >&2
 		return 1
 	fi
+	require_python3 || return 1
 	python3 - "$share" "$manifest" "$name" <<'PY'
 import os, stat, sys
 share, manifest, name = sys.argv[1:4]
