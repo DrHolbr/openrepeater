@@ -216,10 +216,75 @@ function radio_unit_ctl {
 	systemctl "$action" "${unit}.service"
 }
 
+# A PTT_TYPE line may have leading or trailing space, spaces around =,
+# and one pair of single or double quotes. Anything else is not a PTT line.
+function ptt_value_from_line() {
+	local line=$1 value
+	line=${line%$'\r'}
+	line="${line#"${line%%[![:space:]]*}"}"
+	line="${line%"${line##*[![:space:]]}"}"
+	case "$line" in
+		PTT_TYPE*) ;;
+		*) return 1 ;;
+	esac
+	value=${line#PTT_TYPE}
+	value="${value#"${value%%[![:space:]]*}"}"
+	case "$value" in
+		=*) value=${value#=} ;;
+		*) return 1 ;;
+	esac
+	value="${value#"${value%%[![:space:]]*}"}"
+	value="${value%"${value##*[![:space:]]}"}"
+	case "$value" in
+		\"*\") value=${value#\"}; value=${value%\"} ;;
+		\'*\') value=${value#\'}; value=${value%\'} ;;
+	esac
+	printf '%s' "$value"
+}
+
+function cfg_dir_from_file() {
+	local file=$1 line value
+	[ -f "$file" ] && [ ! -L "$file" ] || return 0
+	while IFS= read -r line || [ -n "$line" ]; do
+		line=${line%$'\r'}
+		line="${line#"${line%%[![:space:]]*}"}"
+		line="${line%"${line##*[![:space:]]}"}"
+		case "$line" in
+			CFG_DIR*) ;;
+			*) continue ;;
+		esac
+		value=${line#CFG_DIR}
+		value="${value#"${value%%[![:space:]]*}"}"
+		case "$value" in
+			=*) value=${value#=} ;;
+			*) continue ;;
+		esac
+		value="${value#"${value%%[![:space:]]*}"}"
+		value="${value%"${value##*[![:space:]]}"}"
+		case "$value" in
+			\"*\") value=${value#\"}; value=${value%\"} ;;
+			\'*\') value=${value#\'}; value=${value%\'} ;;
+		esac
+		printf '%s' "$value"
+		return 0
+	done < "$file"
+}
+
 # A missing file has no PTT_TYPE lines and is treated as disconnected.
-# A symlink is refused. allowed_re matches the whole PTT_TYPE line.
+# A symlink is refused. allowed is a | separated list of exact values.
+function ptt_value_allowed() {
+	local value=$1 allowed=$2 item
+	IFS='|' read -r -a _ptt_items <<< "$allowed"
+	for item in "${_ptt_items[@]}"; do
+		if [ "$value" = "$item" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
 function ptt_lines_are() {
-	local file=$1 allowed_re=$2
+	local file=$1 allowed=$2 line value
 	if [ ! -e "$file" ]; then
 		return 0
 	fi
@@ -227,10 +292,23 @@ function ptt_lines_are() {
 		echo "refused: ${file} is not a regular file. Start was not called."
 		return 1
 	fi
-	if grep -E '^PTT_TYPE=' "$file" | grep -E -qv "$allowed_re"; then
-		return 1
-	fi
+	while IFS= read -r line || [ -n "$line" ]; do
+		value=$(ptt_value_from_line "$line") || continue
+		if ! ptt_value_allowed "$value" "$allowed"; then
+			return 1
+		fi
+	done < "$file"
 	return 0
+}
+
+# Resolve a CFG_DIR value onto the fixture when the harness is on.
+function resolve_cfg_dir() {
+	local value=$1
+	case "$value" in
+		""|.) return 0 ;;
+		/*) native_path "$value" ;;
+		*) printf '%s' "$value" ;;
+	esac
 }
 
 # Unarmed svxlink start/restart requires a disconnected snapshot.
@@ -243,8 +321,15 @@ function tx_transmit_allowed() {
 	case "$unit" in
 		svxlink)
 			dest=$(config_dest)
-			if ! ptt_lines_are "$dest" '^PTT_TYPE=NONE$'; then
+			if ! ptt_lines_are "$dest" 'NONE'; then
 				echo "refused: svxlink.conf has a PTT_TYPE other than NONE. Start was not called."
+				return 1
+			fi
+			if ! cfg_dir_is_empty "$(cfg_dir_from_file "$dest")"; then
+				return 1
+			fi
+			if armed_wiring_installed; then
+				echo "refused: armed wiring is still installed. Start was not called."
 				return 1
 			fi
 			if ! config_matches_snapshot; then
@@ -254,8 +339,11 @@ function tx_transmit_allowed() {
 			;;
 		remotetrx)
 			dest=$(native_path /etc/svxlink/remotetrx.conf)
-			if ! ptt_lines_are "$dest" '^PTT_TYPE=(NONE|Dummy)$'; then
+			if ! ptt_lines_are "$dest" 'NONE|Dummy'; then
 				echo "refused: remotetrx.conf has a PTT_TYPE other than NONE or Dummy. Start was not called."
+				return 1
+			fi
+			if ! remotetrx_cfg_dir_safe "$dest"; then
 				return 1
 			fi
 			;;
@@ -417,19 +505,56 @@ function svxlink_status {
 	systemctl is-active svxlink
 }
 
+# The binary is executed, not sourced. It must be a root-owned executable
+# and not a symlink. Do not install a gpio script that sources the
+# www-data-authored gpio.conf while it is still root.
+function gpio_bin_allowed() {
+	local bin=$1 owner
+	if [ -L "$bin" ] || [ ! -f "$bin" ] || [ ! -x "$bin" ]; then
+		echo "refused: ${bin} is not an executable file"
+		return 1
+	fi
+	owner=$(stat -c %u "$bin")
+	if [ "$owner" != "0" ]; then
+		echo "refused: ${bin} is not owned by root"
+		return 1
+	fi
+	return 0
+}
+
 function svxlink_gpio_up {
+	local bin rc
 	if drive_refuses "svxlink gpio_up"; then
 		return 1
 	fi
-	"${SVXLINK_GPIO_UP_BIN:-/usr/sbin/svxlink_gpio_up}"
+	bin=${SVXLINK_GPIO_UP_BIN:-/usr/sbin/svxlink_gpio_up}
+	if ! gpio_bin_allowed "$bin"; then
+		return 1
+	fi
+	"$bin"
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		echo "refused: gpio_up exited ${rc}"
+		return "$rc"
+	fi
 	echo up
 }
 
 function svxlink_gpio_down {
+	local bin rc
 	if drive_refuses "svxlink gpio_down"; then
 		return 1
 	fi
-	"${SVXLINK_GPIO_DOWN_BIN:-/usr/sbin/svxlink_gpio_down}"
+	bin=${SVXLINK_GPIO_DOWN_BIN:-/usr/sbin/svxlink_gpio_down}
+	if ! gpio_bin_allowed "$bin"; then
+		return 1
+	fi
+	"$bin"
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		echo "refused: gpio_down exited ${rc}"
+		return "$rc"
+	fi
 	echo down
 }
 
@@ -763,12 +888,17 @@ function tx_armed() {
 			return 1
 		fi
 	fi
-	# The file body is exactly "armed", with an optional trailing newline.
-	local body
-	body=$(tr -d '\r' < "$file")
-	case "$body" in
-		armed|armed$'\n') return 0 ;;
-	esac
+	# Exact bytes: armed, or armed plus one newline. Nothing else.
+	local exact nl
+	exact=$(mktemp)
+	nl=$(mktemp)
+	printf 'armed' > "$exact"
+	printf 'armed\n' > "$nl"
+	if cmp -s "$file" "$exact" || cmp -s "$file" "$nl"; then
+		rm -f "$exact" "$nl"
+		return 0
+	fi
+	rm -f "$exact" "$nl"
 	return 1
 }
 
@@ -786,6 +916,8 @@ function native_functional_token() {
 	[ $((8#$perm & 022)) -eq 0 ] || return 1
 	owner=$(stat -c %u "$file")
 	[ "$owner" = "0" ] || return 1
+	# getfacl absent, or getfacl with no stdout, is not an extended ACL.
+	# Refuse only when its stdout shows user:<name>:, group:<name>:, or mask:.
 	if command -v getfacl >/dev/null 2>&1; then
 		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
 			return 1
@@ -1295,10 +1427,100 @@ function wwwdata_read_capped() {
 	fi
 }
 
-# Companion files are read before anything is installed. COMPANION_DIR holds
-# the temps and a manifest of "temp dest had_backup".
+function port_logic_name_ok() {
+	[[ "$1" =~ ^ORP_(Repeater|Simplex)Logic_Port[0-9]+\.tcl$ ]]
+}
+
+function logics_include() {
+	local file=$1 name=$2 line item
+	line=$(sed -n 's/^[[:space:]]*LOGICS[[:space:]]*=[[:space:]]*//p' "$file" | head -n 1)
+	line=${line%\"}
+	line=${line#\"}
+	line=${line%\'}
+	line=${line#\'}
+	name=${name%.tcl}
+	IFS=',' read -r -a items <<< "$line"
+	for item in "${items[@]}"; do
+		item="${item#"${item%%[![:space:]]*}"}"
+		item="${item%"${item##*[![:space:]]}"}"
+		if [ "$item" = "$name" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+function cfg_dir_is_empty() {
+	local value dir
+	value=$1
+	[ -n "$value" ] || return 0
+	dir=$(resolve_cfg_dir "$value")
+	if [ ! -e "$dir" ]; then
+		return 0
+	fi
+	if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+		echo "refused: CFG_DIR is not a directory. Start was not called."
+		return 1
+	fi
+	if find -P "$dir" -mindepth 1 -print | grep -q .; then
+		echo "refused: CFG_DIR is not empty. Start was not called."
+		return 1
+	fi
+	return 0
+}
+
+function remotetrx_cfg_dir_safe() {
+	local conf=$1 value dir entry base
+	value=$(cfg_dir_from_file "$conf")
+	[ -n "$value" ] || return 0
+	dir=$(resolve_cfg_dir "$value")
+	if [ ! -e "$dir" ]; then
+		return 0
+	fi
+	if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+		echo "refused: remotetrx CFG_DIR is not a directory. Start was not called."
+		return 1
+	fi
+	if ! find -P "$dir" -mindepth 1 -print | grep -q .; then
+		return 0
+	fi
+	while IFS= read -r entry; do
+		[ -n "$entry" ] || continue
+		base=$(basename "$entry")
+		if [ -L "$entry" ] || [ ! -f "$entry" ] || [[ "$base" != *.conf ]]; then
+			echo "refused: remotetrx CFG_DIR is not a set of regular conf files. Start was not called."
+			return 1
+		fi
+		if ! ptt_lines_are "$entry" 'NONE|Dummy'; then
+			echo "refused: remotetrx CFG_DIR has a PTT_TYPE other than NONE or Dummy. Start was not called."
+			return 1
+		fi
+	done < <(find -P "$dir" -mindepth 1 -print)
+	return 0
+}
+
+function armed_wiring_installed() {
+	local events gpio name
+	gpio=$(native_path /etc/svxlink/gpio.conf)
+	if [ -e "$gpio" ] || [ -L "$gpio" ]; then
+		return 0
+	fi
+	events=$(native_path /usr/local/share/svxlink/events.d)
+	[ -d "$events" ] && [ ! -L "$events" ] || return 1
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		if port_logic_name_ok "$(basename "$name")"; then
+			return 0
+		fi
+	done < <(find -P "$events" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' -print)
+	return 1
+}
+
+# Companion bodies are validated before install. The final rename uses a
+# temporary file in the destination directory, so that rename is atomic
+# on that filesystem.
 function prepare_armed_companions() {
-	local stage name src dest tmp
+	local stage name src dest
 	stage=$(module_root_path /var/lib/openrepeater/bench-preview)
 	COMPANION_DIR=$(mktemp -d "${TMPDIR:-/tmp}/orp-companions.XXXXXX")
 	: > "$COMPANION_DIR/manifest"
@@ -1320,15 +1542,13 @@ function prepare_armed_companions() {
 		while IFS= read -r src; do
 			[ -n "$src" ] || continue
 			name=$(basename "$src")
-			case "$name" in
-				ORP_RepeaterLogic_Port[0-9].tcl|ORP_RepeaterLogic_Port[0-9][0-9].tcl|ORP_SimplexLogic_Port[0-9].tcl|ORP_SimplexLogic_Port[0-9][0-9].tcl)
-					queue_companion "$src" "$(native_path "/usr/local/share/svxlink/events.d/${name}")" || return 1
-					;;
-				*)
-					echo "refused: staged ${name} is not a PortN logic file" >&2
-					return 1
-					;;
-			esac
+			if ! port_logic_name_ok "$name"; then
+				echo "refused: staged ${name} is not a PortN logic file" >&2
+				return 1
+			fi
+			if logics_include "$snapshot_for_logics" "$name"; then
+				queue_companion "$src" "$(native_path "/usr/local/share/svxlink/events.d/${name}")" || return 1
+			fi
 		done < <(find -P "$stage" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' | sort)
 	fi
 }
@@ -1342,13 +1562,46 @@ function rollback_published_conf() {
 	fi
 }
 
+function record_existing_for_rollback() {
+	local dest=$1 backup_name
+	backup_name=$(printf '%s' "$dest" | sha256sum | awk '{print $1}')
+	if [ -e "$dest" ] || [ -L "$dest" ]; then
+		if [ -L "$dest" ]; then
+			echo "refused: ${dest} is a symbolic link" >&2
+			return 1
+		fi
+		cp -p "$dest" "$COMPANION_DIR/$backup_name"
+		printf 'restore %s %s\n' "$dest" "$COMPANION_DIR/$backup_name" >> "$COMPANION_DIR/installed"
+	else
+		printf 'remove %s\n' "$dest" >> "$COMPANION_DIR/installed"
+	fi
+}
+
+function rename_into_dest() {
+	local tmp=$1 dest=$2 parent local_tmp
+	parent=$(dirname "$dest")
+	if [ ! -d "$parent" ] || [ -L "$parent" ]; then
+		echo "refused: ${parent} is not a directory" >&2
+		return 1
+	fi
+	# Same directory as the destination, so the final rename does not cross
+	# filesystems.
+	local_tmp=$(mktemp "$parent/.orp-companion.XXXXXX")
+	cp -p "$tmp" "$local_tmp"
+	if ! mv -f "$local_tmp" "$dest"; then
+		rm -f "$local_tmp"
+		echo "refused: ${dest} was not installed" >&2
+		return 1
+	fi
+	chmod 644 "$dest"
+}
+
 function commit_armed_companions() {
-	local tmp dest parent backup_name
+	local tmp dest parent events name keep
 	[ -n "${COMPANION_DIR:-}" ] && [ -f "$COMPANION_DIR/manifest" ] || return 0
 	: > "$COMPANION_DIR/installed"
 	while read -r tmp dest; do
 		[ -n "$tmp" ] || continue
-		parent=$(dirname "$dest")
 		if [ -L "$dest" ]; then
 			echo "refused: ${dest} is a symbolic link" >&2
 			return 1
@@ -1357,23 +1610,51 @@ function commit_armed_companions() {
 			echo "refused: ${dest} is a directory" >&2
 			return 1
 		fi
-		if [ ! -d "$parent" ] || [ -L "$parent" ]; then
-			echo "refused: ${parent} is not a directory" >&2
-			return 1
-		fi
-		backup_name=$(printf '%s' "$dest" | sha256sum | awk '{print $1}')
-		if [ -e "$dest" ]; then
-			cp -p "$dest" "$COMPANION_DIR/$backup_name"
-			printf 'restore %s %s\n' "$dest" "$COMPANION_DIR/$backup_name" >> "$COMPANION_DIR/installed"
-		else
-			printf 'remove %s\n' "$dest" >> "$COMPANION_DIR/installed"
-		fi
-		if ! mv -f "$tmp" "$dest"; then
-			echo "refused: ${dest} was not installed" >&2
-			return 1
-		fi
-		chmod 644 "$dest"
+		record_existing_for_rollback "$dest" || return 1
+		rename_into_dest "$tmp" "$dest" || return 1
 	done < "$COMPANION_DIR/manifest"
+	events=$(native_path /usr/local/share/svxlink/events.d)
+	[ -d "$events" ] && [ ! -L "$events" ] || return 0
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		if ! port_logic_name_ok "$(basename "$name")"; then
+			continue
+		fi
+		keep=0
+		while read -r tmp dest; do
+			if [ "$dest" = "$name" ]; then
+				keep=1
+			fi
+		done < "$COMPANION_DIR/manifest"
+		if [ "$keep" = 0 ]; then
+			record_existing_for_rollback "$name" || return 1
+			rm -f -- "$name"
+		fi
+	done < <(find -P "$events" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' -print)
+}
+
+# Unarmed publish drops the armed PortN files and gpio.conf. Each removed
+# file is copied first so a later failure can put it back. The glob is the
+# strict PortN name, not every ORP_ file.
+function disarm_installed_wiring() {
+	local events gpio name backup_name
+	COMPANION_DIR=$(mktemp -d "${TMPDIR:-/tmp}/orp-disarm.XXXXXX")
+	: > "$COMPANION_DIR/installed"
+	gpio=$(native_path /etc/svxlink/gpio.conf)
+	if [ -e "$gpio" ] || [ -L "$gpio" ]; then
+		record_existing_for_rollback "$gpio" || return 1
+		rm -f -- "$gpio"
+	fi
+	events=$(native_path /usr/local/share/svxlink/events.d)
+	[ -d "$events" ] && [ ! -L "$events" ] || return 0
+	while IFS= read -r name; do
+		[ -n "$name" ] || continue
+		if ! port_logic_name_ok "$(basename "$name")"; then
+			continue
+		fi
+		record_existing_for_rollback "$name" || return 1
+		rm -f -- "$name"
+	done < <(find -P "$events" -maxdepth 1 -type f -name 'ORP_*Logic_Port*.tcl' -print)
 }
 
 function rollback_armed_companions() {
@@ -1462,6 +1743,7 @@ function config_publish {
 			echo "refused: tx-armed publish needs a regular staged svxlink.conf"
 			return 1
 		fi
+		snapshot_for_logics=$snapshot
 		if ! prepare_armed_companions; then
 			rm -rf "$COMPANION_DIR"
 			rm -f "$snapshot"
@@ -1518,26 +1800,53 @@ function config_publish {
 		return 1
 	fi
 	chmod 644 "$dest"
-	if ! commit_armed_companions; then
-		rollback_armed_companions
+	sum_after=$(sha256sum "$dest" | awk '{print $1}')
+	if [ "$sum_before" != "$sum_after" ]; then
 		rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"
-		rm -rf "${COMPANION_DIR:-}"
 		if [ "$courtesy_had" = 1 ]; then
 			cp -p "$courtesy_backup" "$courtesy_dest"
+		else
+			rm -f "$courtesy_dest"
 		fi
 		rm -f "$courtesy_backup"
-		echo "refused: staged companion was not installed. The published set was rolled back."
-		return 1
-	fi
-	rm -rf "${COMPANION_DIR:-}"
-	sum_after=$(sha256sum "$dest" | awk '{print $1}')
-	rm -f "$courtesy_backup"
-	if [ "$sum_before" != "$sum_after" ]; then
+		rm -rf "${COMPANION_DIR:-}"
 		echo "refused: published bytes did not match the rendered snapshot"
 		return 1
 	fi
+	if native_functional_token && tx_armed; then
+		if ! commit_armed_companions; then
+			rollback_armed_companions
+			rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"
+			if [ "$courtesy_had" = 1 ]; then
+				cp -p "$courtesy_backup" "$courtesy_dest"
+			else
+				rm -f "$courtesy_dest"
+			fi
+			rm -f "$courtesy_backup"
+			rm -rf "${COMPANION_DIR:-}"
+			echo "refused: staged companion was not installed. The published set was rolled back."
+			return 1
+		fi
+	else
+		if ! disarm_installed_wiring; then
+			rollback_armed_companions
+			rollback_published_conf "$dest" "${backup:-}/svxlink.conf" "$conf_existed"
+			if [ "$courtesy_had" = 1 ]; then
+				cp -p "$courtesy_backup" "$courtesy_dest"
+			else
+				rm -f "$courtesy_dest"
+			fi
+			rm -f "$courtesy_backup"
+			rm -rf "${COMPANION_DIR:-}"
+			echo "refused: armed wiring was not removed. The published set was rolled back."
+			return 1
+		fi
+	fi
+	rm -f "$courtesy_backup"
+	rm -rf "${COMPANION_DIR:-}"
 	echo "published ${dest}"
 	echo "snapshot=${sum_after}"
+	# tx-section= lines name every Tx section. The runtime= line is the summary.
 	ptt_type=$(sed -n 's/^PTT_TYPE=//p' "$dest" | head -n 1)
 	ptt_pin=$(sed -n 's/^PTT_PIN=//p' "$dest" | head -n 1)
 	awk '

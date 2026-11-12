@@ -688,32 +688,84 @@ if [ -n "$file" ]; then
 fi
 exit 0
 EOF
-chmod 755 "$rec/alsactl"
-printf 'regular\n' > "$state"
-ORP_ALSA_SWAP_TARGET="$state" ORP_ALSA_CANARY="$canary" HELPER_LOG="$hlog" "$rec/alsactl" --file "$state" store
-sudo -n chown www-data:www-data "$state"
-if [ "$(stat -c %u "$canary")" != "0" ] || [ "$(stat -c %a "$canary")" != "644" ] || ! cmp -s <(printf 'CANARY\n') "$canary"; then
-	ok "3d0b6d9 alsactl --file plus chown changes the root canary"
+cat > "$rec/chown" <<'EOF'
+#!/bin/bash
+echo "chown $*" >> "${HELPER_LOG:?}"
+/usr/bin/chown "$@"
+EOF
+chmod 755 "$rec/alsactl" "$rec/chown"
+legacy="$tmp/legacy-helper"
+cp "$HELPER" "$legacy"
+chmod u+w "$legacy"
+python3 - "$legacy" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+start = text.find("function alsamixer_backup {")
+end = text.find("function alsamixer_restore {")
+if start < 0 or end < 0:
+    raise SystemExit("alsamixer_backup was not found")
+body = """function alsamixer_backup {
+	if bench_refuses "alsa backup"; then
+		return 1
+	fi
+	if ! alsa_state_allowed "$1"; then
+		return 1
+	fi
+	if ! alsactl --file "$1" store; then
+		echo "refused: alsactl store failed"
+		return 1
+	fi
+	if ! alsa_state_allowed "$1"; then
+		return 1
+	fi
+	chown www-data:www-data "$1"
+}
+
+"""
+path.write_text(text[:start] + body + text[end:])
+PY
+reset_canary() {
+	printf 'CANARY\n' | sudo -n tee "$canary" >/dev/null
+	sudo -n chown 0:0 "$canary"
+	sudo -n chmod 644 "$canary"
+	rm -f "$state"
+	printf 'regular\n' > "$state"
+}
+reset_canary
+: > "$hlog"
+set +e
+sudo -n env PATH="$rec:$PATH" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$helper_root" \
+	ORP_BENCH_MARKER=/no/such/bench-mode HELPER_LOG="$hlog" \
+	ORP_ALSA_SWAP_TARGET="$state" ORP_ALSA_CANARY="$canary" \
+	"$legacy" alsa backup "$state" >/dev/null 2>&1
+set -e
+if grep -q "alsactl --file $state" "$hlog" \
+	&& ! cmp -s <(printf 'CANARY\n') "$canary"
+then
+	ok "the 3d0b6d9 helper body changes the root canary"
 else
-	bad "3d0b6d9 alsactl --file plus chown left the canary unchanged"
+	bad "the 3d0b6d9 helper body left the canary unchanged"
+	cat "$hlog" >&2 || true
 fi
-printf 'CANARY\n' | sudo -n tee "$canary" >/dev/null
-sudo -n chown 0:0 "$canary"
-sudo -n chmod 644 "$canary"
-rm -f "$state"
-printf 'regular\n' > "$state"
+reset_canary
 canary_sha=$(sha256sum "$canary")
 : > "$hlog"
-result=$(ORP_ALSA_SWAP_TARGET="$state" ORP_ALSA_CANARY="$canary" run_helper /no/such/bench-mode alsa backup "$state")
+set +e
+sudo -n env PATH="$rec:$PATH" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$helper_root" \
+	ORP_BENCH_MARKER=/no/such/bench-mode HELPER_LOG="$hlog" \
+	ORP_ALSA_SWAP_TARGET="$state" ORP_ALSA_CANARY="$canary" \
+	"$HELPER" alsa backup "$state" >/dev/null 2>&1
+set -e
 if [ "$(stat -c %u "$canary")" = "0" ] \
-	&& [ "$(stat -c %a "$canary")" = "644" ] \
 	&& [ "$(sha256sum "$canary")" = "$canary_sha" ] \
-	&& printf '%s\n' "$result" | grep -q 'symlink'
+	&& ! grep -q "alsactl --file $state" "$hlog" \
+	&& ! grep -q '^chown ' "$hlog"
 then
 	ok "an alsa store that swaps in a symlink leaves the root canary unchanged"
 else
 	bad "alsa symlink canary owner=$(stat -c '%u %a' "$canary") sha=$(sha256sum "$canary")"
-	printf '%s\n' "$result" >&2
+	cat "$hlog" >&2 || true
 fi
 
 : > "$hlog"
@@ -1228,6 +1280,53 @@ expect_token "contents bench" "$wrong_text" refuse
 expect_token "missing file" "$missing_token" refuse
 expect_token "wrong hostname" "$wrong_host" refuse
 expect_token "symlink token" "$link_token" refuse
+expect_token "getfacl present with no extended ACL" "$good_token" accept
+ok "getfacl present with no extended ACL agrees"
+nogetfacl=$(orp_mktemp_dir)
+for bin in /usr/bin/* /bin/*; do
+	base=$(basename "$bin")
+	if [ "$base" = "getfacl" ]; then
+		continue
+	fi
+	ln -s "$bin" "$nogetfacl/$base" 2>/dev/null || true
+done
+absent_root=$(new_token_root functional-test 644 root)
+saved_path=$PATH
+export PATH="$nogetfacl"
+expect_token "getfacl absent" "$absent_root" accept
+export PATH="$saved_path"
+ok "getfacl absent agrees across installer, helper, and PHP"
+tx_verdict() {
+	local root=$1 helper php
+	if ORP_HELPER_SOURCE_ONLY=1 ORP_ROOT="$root" ORP_BENCH_TEST_HARNESS=1 \
+		bash -c '. "$1"; tx_armed' _ "$HELPER" >/dev/null 2>&1
+	then
+		helper=accept
+	else
+		helper=refuse
+	fi
+	php=$(php -r '
+		putenv("ORP_BENCH_TEST_HARNESS=1");
+		putenv("ORP_ROOT=" . $argv[1]);
+		require $argv[2] . "/includes/classes/BenchGuard.php";
+		echo BenchGuard::detect()->txArmed() ? "accept" : "refuse";
+	' "$root" "$ROOT_DIR")
+	if [ "$helper" != "$php" ] || [ "$helper" != "$2" ]; then
+		bad "tx-armed drift ${3}: helper=${helper} php=${php} expected=$2"
+	else
+		ok "tx-armed ${3} agrees"
+	fi
+}
+tx_root=$(new_token_root functional-test 644 root)
+tx_verdict "$tx_root" refuse "missing flag"
+printf 'armed\n' > "$tx_root/etc/openrepeater/tx-armed"
+chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+sudo chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" accept "exact armed"
+printf 'armed \n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" refuse "padded armed"
 if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; then
 	acl_token=$(new_token_root functional-test 644 root)
 	sudo setfacl -m u:nobody:r "$acl_token/etc/openrepeater/operating-mode"

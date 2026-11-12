@@ -50,18 +50,111 @@ export ORP_BENCH_TEST_HARNESS=1
 export PYTHONDONTWRITEBYTECODE=1
 export ORP_LIVE_ETC_LOG="$(orp_fixture_root)/orp-live-etc-reads.log"
 : > "$ORP_LIVE_ETC_LOG"
+# sudo -n is required so the guard can read root-owned trees. A find failure
+# is reported here. It is not left for pipefail to abort the suite silently.
+host_tree_paths=(
+	/var/www/openrepeater
+	/etc/openrepeater
+	/etc/svxlink
+	/etc/sudoers.d
+	/etc/systemd/system
+	/var/lib/openrepeater
+	/usr/local/share/svxlink
+	/usr/sbin/orp_helper
+)
 host_tree_listing() {
-	local path
-	for path in /var/www/openrepeater /etc/openrepeater /etc/svxlink /etc/sudoers.d; do
-		if [ -e "$path" ] || [ -L "$path" ]; then
-			find -P "$path" -printf '%p %u %g %m\n'
-		else
-			printf 'absent %s\n' "$path"
+	local dest=$1 path raw rc=0 kind file sha line
+	: > "$dest"
+	raw=$(mktemp)
+	for path in "${host_tree_paths[@]}"; do
+		if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+			printf 'absent %s\n' "$path" >> "$dest"
+			continue
 		fi
-	done | sort
+		set +e
+		sudo -n find -P "$path" -xdev -printf '%p %y %u %g %m %s %T@\n' > "$raw" 2>"$raw.err"
+		rc=$?
+		set -e
+		if [ "$rc" -ne 0 ]; then
+			echo "FAIL: live-tree guard could not list ${path} (sudo find exit ${rc}). Unreadable directories are read with sudo -n, not as the invoking user. This is not a pipefail abort." >&2
+			cat "$raw.err" >&2 || true
+			rm -f "$raw" "$raw.err"
+			return 1
+		fi
+		rm -f "$raw.err"
+		hashes=$(mktemp)
+		files=$(mktemp)
+		set +e
+		sudo -n find -P "$path" -xdev -type f -print0 > "$files"
+		find_rc=$?
+		hash_rc=0
+		if [ "$find_rc" -eq 0 ] && [ -s "$files" ]; then
+			sudo -n xargs -0 sha256sum < "$files" > "$hashes"
+			hash_rc=$?
+		fi
+		set -e
+		if [ "$find_rc" -ne 0 ] || [ "$hash_rc" -ne 0 ]; then
+			echo "FAIL: live-tree guard could not hash regular files under ${path} (find exit ${find_rc}, sha256sum exit ${hash_rc}). sudo -n is required to read root-owned files. This is not a pipefail abort." >&2
+			rm -f "$raw" "$hashes" "$files"
+			return 1
+		fi
+		rm -f "$files"
+		while IFS= read -r line || [ -n "$line" ]; do
+			[ -n "$line" ] || continue
+			kind=$(printf '%s\n' "$line" | awk '{print $(NF-5)}')
+			if [ "$kind" = "f" ]; then
+				file=$(printf '%s\n' "$line" | awk '{
+					n = NF
+					for (i = 1; i <= n - 6; i++) printf "%s%s", $i, (i < n - 6 ? " " : "")
+				}')
+				sha=$(awk -v p="$file" '$2 == p { print $1; exit }' "$hashes")
+				if [ -z "$sha" ]; then
+					echo "FAIL: live-tree guard hashed no bytes for ${file}" >&2
+					rm -f "$raw" "$hashes"
+					return 1
+				fi
+				printf '%s %s\n' "$line" "$sha" >> "$dest"
+			else
+				printf '%s\n' "$line" >> "$dest"
+			fi
+		done < "$raw"
+		rm -f "$hashes"
+	done
+	rm -f "$raw"
+	sort -o "$dest" "$dest"
 }
 host_tree_before=$(mktemp)
-host_tree_listing > "$host_tree_before"
+if ! host_tree_listing "$host_tree_before"; then
+	echo "FAIL: live-tree guard could not take the before listing" >&2
+	exit 1
+fi
+host_tree_check() {
+	local after
+	after=$(mktemp)
+	if ! host_tree_listing "$after"; then
+		rm -f "$after"
+		echo "FAIL: live-tree guard could not take the after listing" >&2
+		return 1
+	fi
+	if ! cmp -s "$host_tree_before" "$after"; then
+		echo "FAIL: a test changed a live host tree" >&2
+		diff -u "$host_tree_before" "$after" >&2 || true
+		rm -f "$after"
+		return 1
+	fi
+	rm -f "$after"
+	echo "ok: live host trees were not changed"
+	return 0
+}
+host_tree_on_exit() {
+	local status=$?
+	trap - EXIT
+	if ! host_tree_check; then
+		status=1
+	fi
+	exit "$status"
+}
+trap host_tree_on_exit EXIT
 
 if ! command -v php >/dev/null 2>&1; then
 	echo "php is required" >&2
@@ -117,13 +210,4 @@ if [ -s "$ORP_LIVE_ETC_LOG" ]; then
 	exit 1
 fi
 echo "ok: no test read live /etc/openrepeater or /etc/hostname"
-host_tree_after=$(mktemp)
-host_tree_listing > "$host_tree_after"
-if ! cmp -s "$host_tree_before" "$host_tree_after"; then
-	echo "FAIL: a test changed /var/www/openrepeater, /etc/openrepeater, /etc/svxlink, or /etc/sudoers.d" >&2
-	diff -u "$host_tree_before" "$host_tree_after" >&2 || true
-	exit 1
-fi
-rm -f "$host_tree_before" "$host_tree_after"
-echo "ok: live host trees were not changed"
 echo "harness passed"

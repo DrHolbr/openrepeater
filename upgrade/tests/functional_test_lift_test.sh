@@ -177,6 +177,7 @@ gpio_down="$tmp/gpio-down"
 printf '#!/bin/bash\necho gpio-up\n' > "$gpio_up"
 printf '#!/bin/bash\necho gpio-down\n' > "$gpio_down"
 chmod 755 "$gpio_up" "$gpio_down"
+sudo -n chown 0:0 "$gpio_up" "$gpio_down"
 run_helper() {
 	ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$layout" ORP_SYSTEMCTL="$ctl" ORP_SYSTEMCTL_LOG="$log" \
 		ORP_BENCH_HOSTNAME_FILE="$host" ORP_BENCH_MARKER="$marker" \
@@ -219,6 +220,19 @@ printf '%s\n' "$rtx_enable" | grep -q 'enable stays blocked'
 printf '%s\n' "$ref_enable" | grep -q 'enable stays blocked'
 out=$(ORP_TX_ARMED_FILE="$tmp/tx-armed" run_helper svxlink gpio_up)
 printf '%s\n' "$out" | grep -q 'gpio-up'
+user_gpio="$tmp/gpio-user"
+cp "$gpio_up" "$user_gpio"
+sudo -n chown "$(id -u):$(id -g)" "$user_gpio"
+chmod 755 "$user_gpio"
+set +e
+user_out=$(ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$layout" ORP_TX_ARMED_FILE="$tmp/tx-armed" \
+	ORP_BENCH_HOSTNAME_FILE="$host" ORP_BENCH_MARKER="$marker" \
+	SVXLINK_GPIO_UP_BIN="$user_gpio" SVXLINK_GPIO_DOWN_BIN="$gpio_down" \
+	"$HELPER" svxlink gpio_up)
+user_rc=$?
+set -e
+[ "$user_rc" -ne 0 ]
+printf '%s\n' "$user_out" | grep -q 'not owned by root'
 out=$(ORP_TX_ARMED_FILE="$tmp/tx-armed" run_helper svxlink gpio_down)
 printf '%s\n' "$out" | grep -q 'gpio-down'
 mkdir -p "$layout/etc/systemd/system/multi-user.target.wants" \
@@ -319,17 +333,17 @@ ln -sfn /dev/null "$unmask_root/etc/systemd/system/svxlink.service"
 [ -L "$unmask_root/etc/systemd/system/svxlink.service" ]
 echo "ok: a trusted token unmasks, disables, and clears wants, requires, and upholds links"
 
-php -d disable_functions=shell_exec -r '
+php -d disable_functions=shell_exec,exec,proc_open,popen -r '
 require $argv[1] . "/includes/classes/BenchGuard.php";
 putenv("ORP_BENCH_TEST_HARNESS=1");
 putenv("ORP_BENCH_HOSTNAME_FILE=" . $argv[2]);
 putenv("ORP_OPERATING_MODE_FILE=" . $argv[3]);
 $guard = BenchGuard::detect();
-if ($guard->trustedFunctionalTest()) {
-	fwrite(STDERR, "FAIL: shell_exec disabled still trusted the token\n");
+if (!$guard->trustedFunctionalTest()) {
+	fwrite(STDERR, "FAIL: a token with no ACL was refused because PHP could not spawn getfacl\n");
 	exit(1);
 }
-echo "ok: extended ACL check fails closed when shell_exec is disabled\n";
+echo "ok: getfacl that cannot be spawned is not an extended ACL\n";
 ' "$ROOT_DIR" "$host" "$mode"
 
 # shellcheck source=lib/native_layout.sh
@@ -346,15 +360,18 @@ printf 'orp-test\n' > "$pubroot/etc/hostname"
 printf 'functional-test\n' > "$pubroot/etc/openrepeater/operating-mode"
 chmod 644 "$pubroot/etc/openrepeater/operating-mode"
 sudo chown 0:0 "$pubroot/etc/openrepeater/operating-mode"
-printf '%s\n' '[Tx1]' 'PTT_TYPE=GPIO' 'PTT_PIN=gpio26' '[Tx2]' 'PTT_TYPE=NONE' \
+printf '%s\n' 'LOGICS=ORP_RepeaterLogic_Port1' '[Tx1]' 'PTT_TYPE=GPIO' 'PTT_PIN=gpio26' '[Tx2]' 'PTT_TYPE=NONE' \
 	> "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
 printf 'GPIOCONF\n' > "$pubroot/var/lib/openrepeater/bench-preview/gpio.conf"
 printf 'LOGICTCL\n' > "$pubroot/var/lib/openrepeater/bench-preview/Logic.tcl"
 printf 'PORT1\n' > "$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port1.tcl"
+printf 'PORT2\n' > "$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port2.tcl"
 chmod 644 "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf" \
 	"$pubroot/var/lib/openrepeater/bench-preview/gpio.conf" \
 	"$pubroot/var/lib/openrepeater/bench-preview/Logic.tcl" \
-	"$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port1.tcl"
+	"$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port1.tcl" \
+	"$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port2.tcl"
+printf 'STALE\n' > "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl"
 dir="$tmp"
 while [ -n "$dir" ] && [ "$dir" != "/" ]; do
 	chmod a+x "$dir"
@@ -445,6 +462,34 @@ grep -q '^PTT_PIN=gpio26$' "$pubroot/etc/svxlink/svxlink.conf"
 grep -q '^GPIOCONF$' "$pubroot/etc/svxlink/gpio.conf"
 grep -q '^LOGICTCL$' "$pubroot/usr/local/share/svxlink/events.d/local/Logic.tcl"
 grep -q '^PORT1$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
+[ ! -e "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port2.tcl" ]
+[ ! -e "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl" ]
+sudo -n rm -f "$pubroot/etc/openrepeater/tx-armed"
+disarm_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish)
+printf '%s\n' "$disarm_pub" | grep -q 'PTT_TYPE=NONE'
+[ ! -e "$pubroot/etc/svxlink/gpio.conf" ]
+[ ! -e "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl" ]
+printf 'GPIO\n' > "$pubroot/etc/svxlink/gpio.conf"
+: > "$start_log"
+set +e
+wired_start=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_SYSTEMCTL="$ctl" ORP_SYSTEMCTL_LOG="$start_log" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" svxlink start)
+wired_rc=$?
+set -e
+[ "$wired_rc" -ne 0 ]
+printf '%s\n' "$wired_start" | grep -q 'armed wiring'
+rm -f "$pubroot/etc/svxlink/gpio.conf"
+printf 'armed\n' > "$pubroot/etc/openrepeater/tx-armed"
+chmod 644 "$pubroot/etc/openrepeater/tx-armed"
+sudo chown 0:0 "$pubroot/etc/openrepeater/tx-armed"
 armed_sum=$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")
 canary="$pubroot/gpio-canary"
 printf 'CANARY\n' > "$canary"
@@ -470,4 +515,35 @@ if grep -q 'gpio23' "$pubroot/etc/svxlink/svxlink.conf"; then
 	exit 1
 fi
 echo "ok: tx-armed publish installs the staged set and rolls it back"
+ptt_sample="$tmp/ptt-sample"
+for sample in ' PTT_TYPE=GPIO' 'PTT_TYPE = GPIO' 'PTT_TYPE="GPIO"'; do
+	printf '%s\n' "$sample" > "$ptt_sample"
+	if ORP_HELPER_SOURCE_ONLY=1 bash -c '. "$1"; ptt_lines_are "$2" NONE' _ "$HELPER" "$ptt_sample"; then
+		echo "FAIL: shell treated [$sample] as disconnected" >&2
+		exit 1
+	fi
+done
+ptt_root="$tmp/ptt-root"
+mkdir -p "$ptt_root/etc/svxlink/rtx.d"
+printf '%s\n' ' PTT_TYPE=GPIO' > "$ptt_root/etc/svxlink/remotetrx.conf"
+php -r '
+require $argv[1] . "/includes/classes/BenchGuard.php";
+putenv("ORP_BENCH_TEST_HARNESS=1");
+putenv("ORP_ROOT=" . $argv[2]);
+if (BenchGuard::harnessPathAllowed("//etc/hostname")) {
+	fwrite(STDERR, "FAIL: harness path allowed //etc\n");
+	exit(1);
+}
+if (BenchGuard::detect()->remotetrxPttDisconnected()) {
+	fwrite(STDERR, "FAIL: PHP treated a spaced PTT_TYPE as disconnected\n");
+	exit(1);
+}
+file_put_contents($argv[2] . "/etc/svxlink/remotetrx.conf", "PTT_TYPE = \"GPIO\"\nCFG_DIR=/etc/svxlink/rtx.d\n");
+file_put_contents($argv[2] . "/etc/svxlink/rtx.d/extra.conf", "PTT_TYPE=\"GPIO\"\n");
+if (BenchGuard::detect()->remotetrxPttDisconnected()) {
+	fwrite(STDERR, "FAIL: PHP ignored a quoted PTT_TYPE under CFG_DIR\n");
+	exit(1);
+}
+echo "ok: PTT_TYPE whitespace and quotes are real wiring\n";
+' "$ROOT_DIR" "$ptt_root"
 echo "functional-test lift checks passed"

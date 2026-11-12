@@ -33,9 +33,13 @@ class BenchGuard {
 		if (!is_string($path) || $path === '' || $path[0] !== '/' || strpos($path, "\0") !== false || strpos($path, '..') !== false) {
 			return false;
 		}
+		$collapsed = preg_replace('#/{2,}#', '/', $path);
+		if (!is_string($collapsed) || $collapsed === '') {
+			return false;
+		}
 		$blocked = array('/etc/', '/usr/', '/var/www/', '/var/lib/openrepeater/');
 		foreach ($blocked as $prefix) {
-			if (strpos($path, $prefix) === 0 || $path === rtrim($prefix, '/')) {
+			if (strpos($collapsed, $prefix) === 0 || $collapsed === rtrim($prefix, '/')) {
 				return false;
 			}
 		}
@@ -199,15 +203,91 @@ class BenchGuard {
 		if (!is_string($raw)) {
 			return false;
 		}
-		if (preg_match_all('/^PTT_TYPE=(.*)$/m', $raw, $matches) < 1) {
+		if (!$this->pttValuesAllowed($raw, array('NONE', 'Dummy'))) {
+			return false;
+		}
+		$cfg = $this->cfgDirValue($raw);
+		if ($cfg === null || $cfg === '') {
 			return true;
 		}
-		foreach ($matches[1] as $value) {
-			if ($value !== 'NONE' && $value !== 'Dummy') {
+		if ($cfg[0] === '/') {
+			if (self::testHarnessActive()) {
+				$root = getenv('ORP_ROOT');
+				if (!is_string($root) || rtrim($root, '/') === '' || rtrim($root, '/') === '/') {
+					return false;
+				}
+				$cfg = rtrim($root, '/') . $cfg;
+				if (!self::harnessPathAllowed($cfg)) {
+					return false;
+				}
+			}
+		}
+		if (is_link($cfg) || (file_exists($cfg) && !is_dir($cfg))) {
+			return false;
+		}
+		if (!is_dir($cfg)) {
+			return true;
+		}
+		$entries = scandir($cfg);
+		if ($entries === false) {
+			return false;
+		}
+		foreach ($entries as $entry) {
+			if ($entry === '.' || $entry === '..') {
+				continue;
+			}
+			$full = $cfg . '/' . $entry;
+			if (is_link($full) || !is_file($full) || substr($entry, -5) !== '.conf') {
+				return false;
+			}
+			$child = file_get_contents($full);
+			if (!is_string($child) || !$this->pttValuesAllowed($child, array('NONE', 'Dummy'))) {
 				return false;
 			}
 		}
 		return true;
+	}
+
+	private function pttValuesAllowed($raw, array $allowed) {
+		$saw = false;
+		foreach (preg_split('/\r\n|\n|\r/', (string) $raw) as $line) {
+			$line = trim($line);
+			if (!preg_match('/^PTT_TYPE\s*=\s*(.*)$/', $line, $match)) {
+				continue;
+			}
+			$value = trim($match[1]);
+			$len = strlen($value);
+			if ($len >= 2) {
+				$quote = $value[0];
+				if (($quote === '"' || $quote === "'") && $value[$len - 1] === $quote) {
+					$value = substr($value, 1, -1);
+				}
+			}
+			$saw = true;
+			if (!in_array($value, $allowed, true)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private function cfgDirValue($raw) {
+		foreach (preg_split('/\r\n|\n|\r/', (string) $raw) as $line) {
+			$line = trim($line);
+			if (!preg_match('/^CFG_DIR\s*=\s*(.*)$/', $line, $match)) {
+				continue;
+			}
+			$value = trim($match[1]);
+			$len = strlen($value);
+			if ($len >= 2) {
+				$quote = $value[0];
+				if (($quote === '"' || $quote === "'") && $value[$len - 1] === $quote) {
+					$value = substr($value, 1, -1);
+				}
+			}
+			return $value;
+		}
+		return null;
 	}
 
 	private function remotetrxConf() {
@@ -247,34 +327,74 @@ class BenchGuard {
 		return '/etc/openrepeater/tx-armed';
 	}
 
-	// Fail closed when shell_exec cannot run. A missing getfacl binary is
-	// not an ACL. A disabled shell_exec is treated as an ACL so the token
-	// is not trusted.
+	// An extended ACL is a reason to refuse only when getfacl runs and its
+	// stdout contains user:<name>:, group:<name>:, or mask:. getfacl is the
+	// Debian acl package. It is not part of php8.4-cli, and Raspberry Pi OS
+	// Trixie does not disable shell_exec in the default CLI php.ini. If
+	// getfacl is absent, or this process cannot spawn it, or it prints
+	// nothing, that is not an extended ACL. The installer and the helper
+	// use the same rule.
 	private function extendedAcl($path) {
-		if (!function_exists('shell_exec')) {
-			return true;
-		}
-		$disabled = (string) ini_get('disable_functions');
-		if ($disabled !== '') {
-			foreach (array_map('trim', explode(',', $disabled)) as $name) {
-				if (strcasecmp($name, 'shell_exec') === 0) {
-					return true;
-				}
-			}
-		}
-		$getfacl = shell_exec('command -v getfacl 2>/dev/null');
-		if (!is_string($getfacl)) {
-			return true;
-		}
-		$getfacl = trim($getfacl);
+		$getfacl = trim($this->commandOutput('command -v getfacl 2>/dev/null'));
 		if ($getfacl === '') {
 			return false;
 		}
-		$out = shell_exec($getfacl . ' -p -- ' . escapeshellarg($path) . ' 2>/dev/null');
-		if (!is_string($out) || $out === '') {
-			return true;
+		$out = $this->commandOutput($getfacl . ' -p -- ' . escapeshellarg($path) . ' 2>/dev/null');
+		if ($out === '') {
+			return false;
 		}
 		return preg_match('/^(user|group):[^:]+:|^mask:/m', $out) === 1;
+	}
+
+	private function commandOutput($command) {
+		$runners = array('shell_exec', 'exec', 'proc_open', 'popen');
+		foreach ($runners as $name) {
+			if (!function_exists($name) || $this->functionDisabled($name)) {
+				continue;
+			}
+			if ($name === 'shell_exec') {
+				$out = shell_exec($command);
+				return is_string($out) ? $out : '';
+			}
+			if ($name === 'exec') {
+				$lines = array();
+				$code = 0;
+				exec($command, $lines, $code);
+				return implode("\n", $lines);
+			}
+			if ($name === 'proc_open') {
+				$proc = proc_open($command, array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+				if (!is_resource($proc)) {
+					continue;
+				}
+				$out = stream_get_contents($pipes[1]);
+				fclose($pipes[1]);
+				fclose($pipes[2]);
+				proc_close($proc);
+				return is_string($out) ? $out : '';
+			}
+			$handle = popen($command, 'r');
+			if (!is_resource($handle)) {
+				continue;
+			}
+			$out = stream_get_contents($handle);
+			pclose($handle);
+			return is_string($out) ? $out : '';
+		}
+		return '';
+	}
+
+	private function functionDisabled($name) {
+		$disabled = (string) ini_get('disable_functions');
+		if ($disabled === '') {
+			return false;
+		}
+		foreach (array_map('trim', explode(',', $disabled)) as $item) {
+			if (strcasecmp($item, $name) === 0) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	public function hostname() {

@@ -185,6 +185,8 @@ bench_mode_is_functional_test() {
 	if [ "$owner" != "0" ]; then
 		return 1
 	fi
+	# Same rule as orp_helper and BenchGuard. getfacl absent, or getfacl
+	# with no stdout, is not an extended ACL.
 	if command -v getfacl >/dev/null 2>&1; then
 		if getfacl -p -- "$file" 2>/dev/null | grep -Eq '^(user|group):[^:]+:|^mask:'; then
 			return 1
