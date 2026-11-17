@@ -58,9 +58,13 @@ $(function() {
     // ─── TTS "Test Voice" preview ────────────────────────────────────────
     // Posts the CURRENT (unsaved) form values to tts_preview.php, which
     // returns audio/wav, and plays it in the hidden <audio> element.
-    // jQuery 1.7 cannot carry responseType=blob: its transport reads
-    // responseXML, Chrome throws, and the exception is reported as HTTP 0
-    // after the server has already returned 200. Use XMLHttpRequest directly.
+    // The page loads jQuery 1.7.2 (includes/js/jquery-1.7.2.min.js).
+    // Setting responseType to blob makes the transport, on readyState 4,
+    // read xhr.responseXML outside its try and xhr.responseText inside it.
+    // Both throw InvalidStateError for a blob. The uncaught responseXML
+    // read is completed as status -1, and ajax rewrites a negative status
+    // to 0, so the error handler reports HTTP 0 after a 200. Do not upgrade
+    // jQuery for this one call.
     $('#ttsTestBtn').on('click', function(event) {
         event.preventDefault();
         var $btn = $(this), $status = $('#ttsTestStatus'), $audio = $('#ttsTestAudio');

@@ -251,6 +251,65 @@ grep -q '47 CFR 97.119(b)(1)' "$tmp/identification.html"
 grep -q 'identification_problems' "$tmp/identification.html"
 echo "ok: identification.php finishes with the long ID control when the audio directory is absent"
 
+# The Morse form still names call, morseCallsign, and output for the local
+# player. Those are not settings. Posting them with the real Morse keys is
+# the identification.php 400: the whitelist refuses the batch and writes
+# nothing. The body is "refused\n" (8 bytes). CSRF failure is 403
+# "forbidden". "method not allowed" is 18 bytes and is HTTP 405.
+grep -q 'name="call"' "$tmp/identification.html"
+grep -q 'name="morseCallsign"' "$tmp/identification.html"
+grep -q 'name="output"' "$tmp/identification.html"
+grep -q 'morseIdSettingsData' "$ROOT_DIR/includes/js/page-identification.js"
+id_token=$(http_token "$(cat "$tmp/identification.html")")
+[ -n "$id_token" ]
+wpm_before=$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_WPM';")
+pitch_before=$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_Pitch';")
+suffix_before=$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_Suffix';")
+code=$(curl -s -o "$tmp/morse-mixed.body" -w '%{http_code}' -b "$jar" \
+	-H "X-CSRF-Token: ${id_token}" \
+	--data-urlencode 'ID_Morse_WPM=15' \
+	--data-urlencode 'ID_Morse_Pitch=800' \
+	--data-urlencode 'ID_Morse_Suffix=/R' \
+	--data-urlencode 'call=FIXTURE' \
+	--data-urlencode 'morseCallsign=FIXTURE/R' \
+	--data-urlencode 'output=' \
+	--data-urlencode "csrf_token=${id_token}" \
+	"http://127.0.0.1:${port}/functions/ajax_db_update.php")
+[ "$code" = "400" ]
+[ "$(wc -c < "$tmp/morse-mixed.body" | tr -d ' ')" = "8" ]
+printf 'refused\n' | cmp -s - "$tmp/morse-mixed.body"
+[ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_WPM';")" = "$wpm_before" ]
+[ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_Pitch';")" = "$pitch_before" ]
+[ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_Suffix';")" = "$suffix_before" ]
+[ "$(sqlite3 "$db" "SELECT COUNT(*) FROM settings WHERE keyID IN ('call','morseCallsign','output');")" = "0" ]
+echo "ok: a Morse save that includes the preview fields is refused and writes nothing"
+
+code=$(curl -s -o "$tmp/morse-settings.body" -w '%{http_code}' -b "$jar" \
+	-H "X-CSRF-Token: ${id_token}" \
+	--data-urlencode 'ID_Morse_WPM=15' \
+	--data-urlencode 'ID_Morse_Pitch=800' \
+	--data-urlencode 'ID_Morse_Suffix=/R' \
+	--data-urlencode "csrf_token=${id_token}" \
+	"http://127.0.0.1:${port}/functions/ajax_db_update.php")
+[ "$code" = "200" ]
+grep -q '^updated$' "$tmp/morse-settings.body"
+[ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_WPM';")" = "15" ]
+[ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_Pitch';")" = "800" ]
+[ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_Suffix';")" = "/R" ]
+echo "ok: Morse WPM, pitch, and suffix save when the preview fields are omitted"
+
+code=$(curl -s -o "$tmp/morse-unknown.body" -w '%{http_code}' -b "$jar" \
+	-H "X-CSRF-Token: ${id_token}" \
+	--data-urlencode 'ID_Morse_WPM=10' \
+	--data-urlencode 'not_a_setting=x' \
+	--data-urlencode "csrf_token=${id_token}" \
+	"http://127.0.0.1:${port}/functions/ajax_db_update.php")
+[ "$code" = "400" ]
+printf 'refused\n' | cmp -s - "$tmp/morse-unknown.body"
+[ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Morse_WPM';")" = "15" ]
+[ "$(sqlite3 "$db" "SELECT COUNT(*) FROM settings WHERE keyID='not_a_setting';")" = "0" ]
+echo "ok: an unknown key still refuses the Morse batch and leaves the saved speed"
+
 curl -s -b "$jar" -o "$tmp/courtesy.html" "http://127.0.0.1:${port}/courtesy_tone.php"
 assert_complete courtesy "$tmp/courtesy.html" 'courtesyMode'
 grep -q 'No Audio Files to Display' "$tmp/courtesy.html"
