@@ -485,10 +485,23 @@ snap_publish() {
 	fi
 }
 expect_no_publish_write() {
-	local before=$1 after=$2
-	cmp -s "$tmp/snap-${before}-orp" "$tmp/snap-${after}-orp"
-	cmp -s "$tmp/snap-${before}-svx" "$tmp/snap-${after}-svx"
-	cmp -s "$tmp/snap-${before}-courtesy" "$tmp/snap-${after}-courtesy"
+	local before=$1 after=$2 label failed=0
+	for label in orp svx courtesy; do
+		if ! cmp -s "$tmp/snap-${before}-${label}" "$tmp/snap-${after}-${label}"; then
+			echo "FAIL: publish changed ${label} between ${before} and ${after}" >&2
+			diff -u "$tmp/snap-${before}-${label}" "$tmp/snap-${after}-${label}" >&2 || true
+			failed=1
+		fi
+	done
+	[ "$failed" -eq 0 ]
+}
+require_match() {
+	local text=$1 pattern=$2
+	if ! printf '%s\n' "$text" | grep -q "$pattern"; then
+		echo "FAIL: helper output did not match ${pattern}" >&2
+		printf '%s\n' "$text" >&2
+		exit 1
+	fi
 }
 pre_disarm=$(sha256sum "$pubroot/etc/svxlink/svxlink.conf")
 gpio_canary="$pubroot/gpio-link-target"
@@ -504,8 +517,12 @@ unarmed_roll=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_P
 	"$HELPER" config publish 2>&1)
 unarmed_roll_rc=$?
 set -e
-[ "$unarmed_roll_rc" -ne 0 ]
-printf '%s\n' "$unarmed_roll" | grep -q 'is a symbolic link'
+if [ "$unarmed_roll_rc" -eq 0 ]; then
+	echo "FAIL: unarmed symlink publish returned 0" >&2
+	printf '%s\n' "$unarmed_roll" >&2
+	exit 1
+fi
+require_match "$unarmed_roll" 'is a symbolic link'
 if printf '%s\n' "$unarmed_roll" | grep -q 'rolled back'; then
 	echo "FAIL: unarmed symlink refusal wrote and then rolled back" >&2
 	printf '%s\n' "$unarmed_roll" >&2
@@ -710,6 +727,192 @@ grep -q '^STALE$' "$kept_backup/ORP_RepeaterLogic_Port9.tcl"
 cmp -s "$tmp/courtesy-before.tcl" "$courtesy_path"
 echo "ok: a failed restore keeps the functional-test backup"
 echo "ok: a failed companion rollback restores the conf and courtesy and prints both kept paths"
+preview="$pubroot/var/lib/openrepeater/bench-preview"
+port1_dest="$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
+logic_dest="$pubroot/usr/local/share/svxlink/events.d/local/Logic.tcl"
+gpio_dest="$pubroot/etc/svxlink/gpio.conf"
+conf_dest="$pubroot/etc/svxlink/svxlink.conf"
+printf 'LIVE-GPIO\n' | sudo tee "$gpio_dest" >/dev/null
+printf 'LIVE-LOGIC\n' | sudo tee "$logic_dest" >/dev/null
+printf 'LIVE-PORT1\n' | sudo tee "$port1_dest" >/dev/null
+printf '%s\n' 'LOGICS=ORP_RepeaterLogic_Port1' '[Tx1]' 'PTT_TYPE=GPIO' 'PTT_PIN=gpio99' > "$preview/svxlink.conf"
+printf 'NEW-GPIO\n' > "$preview/gpio.conf"
+printf 'NEW-LOGIC\n' > "$preview/Logic.tcl"
+printf 'NEW-PORT1\n' > "$preview/ORP_RepeaterLogic_Port1.tcl"
+chmod 644 "$preview/svxlink.conf" "$preview/gpio.conf" "$preview/Logic.tcl" "$preview/ORP_RepeaterLogic_Port1.tcl"
+sha256sum "$gpio_dest" "$logic_dest" "$port1_dest" "$conf_dest" > "$tmp/four-before"
+find "$pubroot/usr/local/share/svxlink/events.d" -printf '%P\n' | LC_ALL=C sort > "$tmp/names-before-events"
+find "$pubroot/etc/svxlink" -printf '%P\n' | LC_ALL=C sort > "$tmp/names-before-svx"
+failport="$tmp/fail-port-mv"
+mkdir -p "$failport"
+cat > "$failport/mv" <<EOF
+#!/bin/bash
+dest="\${@: -1}"
+if [ "\$dest" = "$port1_dest" ]; then
+	echo "refused: port rename failed" >&2
+	exit 1
+fi
+exec /bin/mv "\$@"
+EOF
+chmod 755 "$failport/mv"
+set +e
+port_roll=$(sudo -n env PATH="$failport:/usr/bin:/bin" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish 2>&1)
+port_rc=$?
+set -e
+if [ "$port_rc" -eq 0 ]; then
+	echo "FAIL: PortN rename publish returned 0" >&2
+	printf '%s\n' "$port_roll" >&2
+	exit 1
+fi
+require_match "$port_roll" 'rolled back'
+sha256sum "$gpio_dest" "$logic_dest" "$port1_dest" "$conf_dest" > "$tmp/four-after"
+if ! cmp -s "$tmp/four-before" "$tmp/four-after"; then
+	echo "FAIL: PortN rename rollback changed a live file" >&2
+	diff -u "$tmp/four-before" "$tmp/four-after" >&2 || true
+	printf '%s\n' "$port_roll" >&2
+	exit 1
+fi
+find "$pubroot/usr/local/share/svxlink/events.d" -printf '%P\n' | LC_ALL=C sort > "$tmp/names-after-events"
+find "$pubroot/etc/svxlink" -printf '%P\n' | LC_ALL=C sort > "$tmp/names-after-svx"
+if ! cmp -s "$tmp/names-before-events" "$tmp/names-after-events" || ! cmp -s "$tmp/names-before-svx" "$tmp/names-after-svx"; then
+	echo "FAIL: PortN rename rollback left a new file" >&2
+	diff -u "$tmp/names-before-events" "$tmp/names-after-events" >&2 || true
+	diff -u "$tmp/names-before-svx" "$tmp/names-after-svx" >&2 || true
+	printf '%s\n' "$port_roll" >&2
+	exit 1
+fi
+echo "ok: a mid-commit PortN rename rolls back gpio, Logic, Port1, and the conf"
+saved_conf="$tmp/staged-svxlink-saved.conf"
+cp -p "$preview/svxlink.conf" "$saved_conf"
+rm -f "$preview/svxlink.conf"
+mkfifo "$preview/svxlink.conf"
+chmod 644 "$preview/svxlink.conf"
+printf 'STAGED-PORT\n' > "$preview/ORP_RepeaterLogic_Port1.tcl"
+set +e
+timeout 10 sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish >"$tmp/fifo.out" 2>&1
+fifo_rc=$?
+set -e
+if [ "$fifo_rc" -eq 124 ] || [ "$fifo_rc" -eq 0 ]; then
+	echo "FAIL: staged FIFO publish rc=$fifo_rc" >&2
+	cat "$tmp/fifo.out" >&2 || true
+	exit 1
+fi
+echo "ok: a staged svxlink.conf FIFO does not hang an armed publish"
+sudo rm -f "$preview/svxlink.conf"
+secret_a="$tmp/secret-a"
+secret_b="$tmp/secret-b"
+printf 'SECRET-CANARY-ONE\nLOGICS=ORP_RepeaterLogic_Port1\n' > "$secret_a"
+printf 'SECRET-CANARY-TWO\n' > "$secret_b"
+sudo chown 0:0 "$secret_a" "$secret_b"
+sudo chmod 600 "$secret_a" "$secret_b"
+printf 'LIVE-PORT1\n' | sudo tee "$port1_dest" >/dev/null
+sudo ln -s "$secret_a" "$preview/svxlink.conf"
+set +e
+link_a=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish 2>&1)
+link_a_rc=$?
+set -e
+sudo ln -sfn "$secret_b" "$preview/svxlink.conf"
+set +e
+link_b=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish 2>&1)
+link_b_rc=$?
+set -e
+if [ "$link_a_rc" -eq 0 ] || [ "$link_b_rc" -eq 0 ]; then
+	echo "FAIL: staged conf symlink publish returned 0" >&2
+	printf '%s\n' "$link_a" "$link_b" >&2
+	exit 1
+fi
+require_match "$link_a" 'regular staged svxlink.conf'
+require_match "$link_b" 'regular staged svxlink.conf'
+refused_a=$(printf '%s\n' "$link_a" | grep 'refused:' | LC_ALL=C sort)
+refused_b=$(printf '%s\n' "$link_b" | grep 'refused:' | LC_ALL=C sort)
+if [ "$refused_a" != "$refused_b" ] || printf '%s\n' "$link_a" "$link_b" | grep -q 'SECRET-CANARY'; then
+	echo "FAIL: armed symlink refusal depended on the staged conf contents" >&2
+	printf '%s\n' "$link_a" "$link_b" >&2
+	exit 1
+fi
+echo "ok: an armed symlink refusal does not read the staged conf"
+sudo rm -f "$preview/svxlink.conf"
+cp -p "$saved_conf" "$preview/svxlink.conf"
+sudo -n rm -f "$pubroot/etc/openrepeater/tx-armed"
+sudo rm -f "$gpio_dest"
+sudo find "$pubroot/usr/local/share/svxlink/events.d" -maxdepth 1 -name 'ORP_*Logic_Port*.tcl' -delete
+conf_keep=$(sha256sum "$conf_dest" | awk '{print $1}')
+fakedate="$tmp/fakedate"
+cat > "$fakedate" <<'EOF'
+#!/bin/bash
+if [ "$1" = "-u" ] && [ "$2" = "+%Y%m%dT%H%M%S%NZ" ]; then
+	printf '%s\n' '20000101T000000000000000Z'
+	exit 0
+fi
+exec /bin/date "$@"
+EOF
+chmod 755 "$fakedate"
+conf_dirs() {
+	find "$pubroot/var/backups/orp-ui" -mindepth 2 -maxdepth 2 -type f -name svxlink.conf -printf '%h\n' | LC_ALL=C sort
+}
+conf_dirs > "$tmp/conf-dirs-before"
+set +e
+same_a=$(sudo -n env PATH="$fakedate:/usr/bin:/bin" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish 2>&1)
+same_a_rc=$?
+set -e
+if [ "$same_a_rc" -ne 0 ]; then
+	echo "FAIL: first same-timestamp publish returned $same_a_rc" >&2
+	printf '%s\n' "$same_a" >&2
+	exit 1
+fi
+conf_dirs > "$tmp/conf-dirs-mid"
+set +e
+same_b=$(sudo -n env PATH="$fakedate:/usr/bin:/bin" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish 2>&1)
+same_b_rc=$?
+set -e
+if [ "$same_b_rc" -ne 0 ]; then
+	echo "FAIL: second same-timestamp publish returned $same_b_rc" >&2
+	printf '%s\n' "$same_b" >&2
+	exit 1
+fi
+conf_dirs > "$tmp/conf-dirs-after"
+first_dir=$(comm -13 "$tmp/conf-dirs-before" "$tmp/conf-dirs-mid")
+second_dir=$(comm -13 "$tmp/conf-dirs-mid" "$tmp/conf-dirs-after")
+first_count=$(printf '%s\n' "$first_dir" | grep -c . || true)
+second_count=$(printf '%s\n' "$second_dir" | grep -c . || true)
+if [ "$first_count" -ne 1 ] || [ "$second_count" -ne 1 ] || [ "$first_dir" = "$second_dir" ]; then
+	echo "FAIL: same-timestamp publishes did not create two conf backups" >&2
+	printf 'first:\n%s\nsecond:\n%s\n' "$first_dir" "$second_dir" >&2
+	printf '%s\n' "$same_a" "$same_b" >&2
+	exit 1
+fi
+first_hash=$(sha256sum "$first_dir/svxlink.conf" | awk '{print $1}')
+if [ "$first_hash" != "$conf_keep" ]; then
+	echo "FAIL: the first conf backup was overwritten" >&2
+	echo "kept=$conf_keep first=$first_hash" >&2
+	printf '%s\n' "$same_a" "$same_b" >&2
+	exit 1
+fi
+echo "ok: two publishes keep distinct conf backups"
 ptt_sample="$tmp/ptt-sample"
 for sample in ' PTT_TYPE=GPIO' 'PTT_TYPE = GPIO' 'PTT_TYPE="GPIO"'; do
 	printf '%s\n' "$sample" > "$ptt_sample"

@@ -1569,7 +1569,10 @@ function prepare_armed_companions() {
 		fi
 		printf '%s %s\n' "$tmp" "$dest" >> "$COMPANION_DIR/manifest"
 	}
-	refuse_armed_dest_symlinks "$snapshot_for_logics" || return 1
+	# Names only. The LOGICS filter below reads the root snapshot, not the
+	# www-data staged conf.
+	refuse_armed_dest_symlinks || return 1
+	refuse_armed_logics_dest_symlinks "$snapshot_for_logics" || return 1
 	if [ -e "$stage/gpio.conf" ] || [ -L "$stage/gpio.conf" ]; then
 		dest=$(native_path /etc/svxlink/gpio.conf)
 		queue_companion "$stage/gpio.conf" "$dest" || return 1
@@ -1593,10 +1596,11 @@ function prepare_armed_companions() {
 	fi
 }
 
-# Destinations the armed publish would replace. Called before the conf
-# snapshot is created, and again from prepare_armed_companions.
+# Names only. This does not open staged file contents. Any staged PortN
+# name is checked, with no LOGICS filter, because reading the conf here
+# would be a root read of a www-data path.
 function refuse_armed_dest_symlinks() {
-	local conf=$1 stage dest name src
+	local stage dest name src
 	stage=$(module_root_path /var/lib/openrepeater/bench-preview)
 	if [ -e "$stage/gpio.conf" ] || [ -L "$stage/gpio.conf" ]; then
 		dest=$(native_path /etc/svxlink/gpio.conf)
@@ -1610,7 +1614,26 @@ function refuse_armed_dest_symlinks() {
 			[ -n "$src" ] || continue
 			name=$(basename "$src")
 			port_logic_name_ok "$name" || continue
-			if [ -n "$conf" ] && logics_include "$conf" "$name"; then
+			dest=$(native_path "/usr/local/share/svxlink/events.d/${name}")
+			if [ -L "$dest" ]; then
+				echo "refused: ${dest} is a symbolic link"
+				return 1
+			fi
+		done < <(find -P "$stage" -maxdepth 1 \( -type f -o -type l \) -name 'ORP_*Logic_Port*.tcl' | sort)
+	fi
+}
+
+# LOGICS filter for the install set. conf is the root snapshot produced by
+# wwwdata_read_capped, never the www-data staged path.
+function refuse_armed_logics_dest_symlinks() {
+	local conf=$1 stage dest name src
+	stage=$(module_root_path /var/lib/openrepeater/bench-preview)
+	if [ -d "$stage" ] && [ ! -L "$stage" ]; then
+		while IFS= read -r src; do
+			[ -n "$src" ] || continue
+			name=$(basename "$src")
+			port_logic_name_ok "$name" || continue
+			if logics_include "$conf" "$name"; then
 				dest=$(native_path "/usr/local/share/svxlink/events.d/${name}")
 				if [ -L "$dest" ]; then
 					echo "refused: ${dest} is a symbolic link"
@@ -1839,7 +1862,7 @@ function require_python3() {
 }
 
 function config_publish {
-	local dest parent snapshot backup sum_before sum_after rb_failed backup_parent
+	local dest parent snapshot backup sum_before sum_after rb_failed backup_parent staged
 	if ! functional_test_on; then
 		echo "refused: config publish requires functional-test"
 		return 1
@@ -1883,8 +1906,7 @@ function config_publish {
 		refuse_unarmed_symlink_wiring || return 1
 	fi
 	if native_functional_token && tx_armed; then
-		staged=$(module_root_path /var/lib/openrepeater/bench-preview/svxlink.conf)
-		refuse_armed_dest_symlinks "$staged" || return 1
+		refuse_armed_dest_symlinks || return 1
 	fi
 	if [ -e "${parent}/functional-test.d" ] && [ ! -d "${parent}/functional-test.d" ]; then
 		echo "refused: functional-test.d is not a directory"
@@ -1953,9 +1975,46 @@ function config_publish {
 		return 1
 	fi
 	if [ -f "$dest" ]; then
-		backup=$(native_path "/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%SZ)")
-		mkdir -p "$backup"
-		cp -p "$dest" "$backup/svxlink.conf"
+		# Nanoseconds and pid, same as ensure_functional_backup. Plain mkdir
+		# so a second publish in the same second cannot reuse or overwrite it.
+		backup=$(native_path "/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%S%NZ)-$$")
+		if [ -e "$backup" ] || [ -L "$backup" ]; then
+			echo "refused: backup directory already exists"
+			rm -f "$snapshot"
+			rm -rf "${COMPANION_DIR:-}"
+			if [ "$courtesy_had" = 1 ]; then
+				cp -p "$courtesy_backup" "$courtesy_dest"
+			else
+				rm -f "$courtesy_dest"
+			fi
+			rm -f "$courtesy_backup"
+			return 1
+		fi
+		if ! mkdir "$backup"; then
+			echo "refused: backup directory was not created"
+			rm -f "$snapshot"
+			rm -rf "${COMPANION_DIR:-}"
+			if [ "$courtesy_had" = 1 ]; then
+				cp -p "$courtesy_backup" "$courtesy_dest"
+			else
+				rm -f "$courtesy_dest"
+			fi
+			rm -f "$courtesy_backup"
+			return 1
+		fi
+		if ! cp -p "$dest" "$backup/svxlink.conf"; then
+			echo "refused: svxlink.conf was not backed up"
+			rmdir "$backup" 2>/dev/null || true
+			rm -f "$snapshot"
+			rm -rf "${COMPANION_DIR:-}"
+			if [ "$courtesy_had" = 1 ]; then
+				cp -p "$courtesy_backup" "$courtesy_dest"
+			else
+				rm -f "$courtesy_dest"
+			fi
+			rm -f "$courtesy_backup"
+			return 1
+		fi
 		conf_existed=1
 	fi
 	if ! mv -f "$snapshot" "$dest"; then
