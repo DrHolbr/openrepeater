@@ -1043,11 +1043,27 @@ function config_logic_select() {
 	return 0
 }
 
+# The station DB directory is group-writable by www-data, so its -journal,
+# -wal and -shm sidecars are www-data paths. immutable=1 opens only the
+# root-owned database file: no locks, no journal or WAL lookup, no sidecar
+# open or chown. The web app commits in rollback-journal mode, so committed
+# rows are in the main file.
+function station_db_query() {
+	case "$1" in
+		/*) ;;
+		*) return 1 ;;
+	esac
+	case "$1" in
+		*[?#%]*) return 1 ;;
+	esac
+	timeout 5 sqlite3 -batch -readonly "file:$1?mode=ro&immutable=1" "$2"
+}
+
 function config_callsign() {
 	local db value
 	db="${ORP_DB_PATH:-${ORP_ROOT:-}/var/lib/openrepeater/db/openrepeater.db}"
 	config_real_file "$db" || return 1
-	value=$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='callSign';") || return 1
+	value=$(station_db_query "$db" "SELECT value FROM settings WHERE keyID='callSign';") || return 1
 	case "$value" in
 		*[!A-Z0-9]*|"") return 1 ;;
 	esac
@@ -1098,7 +1114,7 @@ function config_db_value() {
 	local key=$1 db value
 	db="${ORP_DB_PATH:-${ORP_ROOT:-}/var/lib/openrepeater/db/openrepeater.db}"
 	config_real_file "$db" || return 1
-	value=$(sqlite3 "$db" "SELECT ifnull(value,'') FROM settings WHERE keyID='${key}';") || return 1
+	value=$(station_db_query "$db" "SELECT ifnull(value,'') FROM settings WHERE keyID='${key}';") || return 1
 	case "$value" in
 		*$'\n'*|*$'\r'*) return 1 ;;
 	esac
@@ -1861,6 +1877,23 @@ function require_python3() {
 	}
 }
 
+# A refusal after the courtesy install and before the conf rename. Uses
+# config_publish's locals. A failed courtesy restore is reported and its
+# backup is kept.
+function abort_before_conf_rename() {
+	rm -f "$snapshot"
+	rm -rf "${COMPANION_DIR:-}"
+	if [ "$courtesy_had" = 1 ]; then
+		if ! cp -p "$courtesy_backup" "$courtesy_dest"; then
+			echo "refused: courtesy file was not restored. Its backup is ${courtesy_backup}"
+			return 1
+		fi
+	elif ! rm -f "$courtesy_dest"; then
+		echo "refused: courtesy file was not removed"
+	fi
+	rm -f "$courtesy_backup"
+}
+
 function config_publish {
 	local dest parent snapshot backup sum_before sum_after rb_failed backup_parent staged
 	if ! functional_test_on; then
@@ -1980,39 +2013,18 @@ function config_publish {
 		backup=$(native_path "/var/backups/orp-ui/functional-test-$(date -u +%Y%m%dT%H%M%S%NZ)-$$")
 		if [ -e "$backup" ] || [ -L "$backup" ]; then
 			echo "refused: backup directory already exists"
-			rm -f "$snapshot"
-			rm -rf "${COMPANION_DIR:-}"
-			if [ "$courtesy_had" = 1 ]; then
-				cp -p "$courtesy_backup" "$courtesy_dest"
-			else
-				rm -f "$courtesy_dest"
-			fi
-			rm -f "$courtesy_backup"
+			abort_before_conf_rename
 			return 1
 		fi
 		if ! mkdir "$backup"; then
 			echo "refused: backup directory was not created"
-			rm -f "$snapshot"
-			rm -rf "${COMPANION_DIR:-}"
-			if [ "$courtesy_had" = 1 ]; then
-				cp -p "$courtesy_backup" "$courtesy_dest"
-			else
-				rm -f "$courtesy_dest"
-			fi
-			rm -f "$courtesy_backup"
+			abort_before_conf_rename
 			return 1
 		fi
 		if ! cp -p "$dest" "$backup/svxlink.conf"; then
 			echo "refused: svxlink.conf was not backed up"
 			rmdir "$backup" 2>/dev/null || true
-			rm -f "$snapshot"
-			rm -rf "${COMPANION_DIR:-}"
-			if [ "$courtesy_had" = 1 ]; then
-				cp -p "$courtesy_backup" "$courtesy_dest"
-			else
-				rm -f "$courtesy_dest"
-			fi
-			rm -f "$courtesy_backup"
+			abort_before_conf_rename
 			return 1
 		fi
 		conf_existed=1
@@ -2443,8 +2455,24 @@ function module_activate() {
 		module_deactivate "$name" || return 1
 	fi
 	python3 - "$base/$name/svxlink" "$share" "$manifest" "$name" <<'PY'
-import os, stat, sys, time
+import os, stat, subprocess, sys, time
 source, share, manifest, name = sys.argv[1:5]
+READER = r"""
+import os, stat, sys
+cap = int(sys.argv[2])
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+info = os.fstat(fd)
+if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > cap:
+    sys.exit(3)
+os.set_blocking(fd, True)
+left = cap + 1
+while left > 0:
+    chunk = os.read(fd, min(65536, left))
+    if not chunk:
+        break
+    left -= len(chunk)
+    sys.stdout.buffer.write(chunk)
+"""
 MAX_FILES = 200
 MAX_BYTES = 8388608
 created = []
@@ -2583,23 +2611,21 @@ try:
         out = os.open(dest, flags, 0o644)
         created.append(dest)
         try:
-            src_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
-            inn = os.open(src, src_flags)
-            try:
-                info = os.fstat(inn)
-                if (not stat.S_ISREG(info.st_mode)) or info.st_nlink != 1 or info.st_size > MAX_BYTES:
-                    fail("refused: module file is not a private regular file")
-                remaining = MAX_BYTES
-                while True:
-                    chunk = os.read(inn, min(65536, remaining))
-                    if chunk == b"":
-                        break
-                    remaining -= len(chunk)
-                    if remaining < 0:
-                        fail("refused: module file is too large")
-                    os.write(out, chunk)
-            finally:
-                os.close(inn)
+            # Read as www-data. O_NOFOLLOW covers only the last component,
+            # and www-data owns every directory above it.
+            reader = subprocess.run(
+                ["timeout", "5", "setpriv", "--reuid=www-data", "--regid=www-data", "--init-groups", "--",
+                 "python3", "-I", "-c", READER, src, str(MAX_BYTES)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if reader.returncode == 3:
+                fail("refused: module file is not a private regular file")
+            if reader.returncode != 0:
+                fail("refused: module file was not read as www-data")
+            if len(reader.stdout) > MAX_BYTES:
+                fail("refused: module file is too large")
+            view = memoryview(reader.stdout)
+            while view:
+                view = view[os.write(out, view):]
             os.fchown(out, 0, 0)
             os.fchmod(out, 0o644)
         finally:

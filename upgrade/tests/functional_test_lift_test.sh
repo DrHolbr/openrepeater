@@ -785,7 +785,7 @@ if ! cmp -s "$tmp/names-before-events" "$tmp/names-after-events" || ! cmp -s "$t
 	printf '%s\n' "$port_roll" >&2
 	exit 1
 fi
-echo "ok: a mid-commit PortN rename rolls back gpio, Logic, Port1, and the conf"
+echo "ok: a mid-commit PortN rename rolls back gpio, Port1, and the conf"
 saved_conf="$tmp/staged-svxlink-saved.conf"
 cp -p "$preview/svxlink.conf" "$saved_conf"
 rm -f "$preview/svxlink.conf"
@@ -813,6 +813,8 @@ printf 'SECRET-CANARY-ONE\nLOGICS=ORP_RepeaterLogic_Port1\n' > "$secret_a"
 printf 'SECRET-CANARY-TWO\n' > "$secret_b"
 sudo chown 0:0 "$secret_a" "$secret_b"
 sudo chmod 600 "$secret_a" "$secret_b"
+sudo touch -a -d '2000-01-01 00:00:00 UTC' "$secret_a" "$secret_b"
+atime_before=$(sudo stat -c '%X' "$secret_a" "$secret_b" | tr '\n' ' ')
 printf 'LIVE-PORT1\n' | sudo tee "$port1_dest" >/dev/null
 sudo ln -s "$secret_a" "$preview/svxlink.conf"
 set +e
@@ -846,6 +848,11 @@ if [ "$refused_a" != "$refused_b" ] || printf '%s\n' "$link_a" "$link_b" | grep 
 	printf '%s\n' "$link_a" "$link_b" >&2
 	exit 1
 fi
+atime_after=$(sudo stat -c '%X' "$secret_a" "$secret_b" | tr '\n' ' ')
+if [ "$atime_before" != "$atime_after" ]; then
+	echo "FAIL: the helper opened the staged conf symlink target as root" >&2
+	exit 1
+fi
 echo "ok: an armed symlink refusal does not read the staged conf"
 sudo rm -f "$preview/svxlink.conf"
 cp -p "$saved_conf" "$preview/svxlink.conf"
@@ -853,16 +860,18 @@ sudo -n rm -f "$pubroot/etc/openrepeater/tx-armed"
 sudo rm -f "$gpio_dest"
 sudo find "$pubroot/usr/local/share/svxlink/events.d" -maxdepth 1 -name 'ORP_*Logic_Port*.tcl' -delete
 conf_keep=$(sha256sum "$conf_dest" | awk '{print $1}')
-fakedate="$tmp/fakedate"
-cat > "$fakedate" <<'EOF'
+fakedate="$tmp/fakedate-bin"
+mkdir -p "$fakedate"
+cat > "$fakedate/date" <<'EOF'
 #!/bin/bash
-if [ "$1" = "-u" ] && [ "$2" = "+%Y%m%dT%H%M%S%NZ" ]; then
+if [ "$1" = "-u" ] && [ "${2#+}" != "$2" ]; then
 	printf '%s\n' '20000101T000000000000000Z'
 	exit 0
 fi
 exec /bin/date "$@"
 EOF
-chmod 755 "$fakedate"
+chmod 755 "$fakedate/date"
+[ "$(PATH="$fakedate:/usr/bin:/bin" date -u +%Y%m%dT%H%M%S%NZ)" = 20000101T000000000000000Z ]
 conf_dirs() {
 	find "$pubroot/var/backups/orp-ui" -mindepth 2 -maxdepth 2 -type f -name svxlink.conf -printf '%h\n' | LC_ALL=C sort
 }
@@ -913,6 +922,97 @@ if [ "$first_hash" != "$conf_keep" ]; then
 	exit 1
 fi
 echo "ok: two publishes keep distinct conf backups"
+printf 'SENTINEL-COURTESY\n' | sudo tee "$logic_dest" >/dev/null
+conf_before_abort=$(sha256sum "$conf_dest")
+failbak="$tmp/fail-backup-cp"
+mkdir -p "$failbak"
+cat > "$failbak/cp" <<'EOF'
+#!/bin/bash
+dest="${@: -1}"
+case "$dest" in
+	*/var/backups/orp-ui/*/svxlink.conf)
+		echo "refused: backup copy failed" >&2
+		exit 1
+		;;
+esac
+exec /bin/cp "$@"
+EOF
+chmod 755 "$failbak/cp"
+set +e
+abort_pub=$(sudo -n env PATH="$failbak:/usr/bin:/bin" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish 2>&1)
+abort_rc=$?
+set -e
+if [ "$abort_rc" -eq 0 ]; then
+	echo "FAIL: conf backup failure returned 0" >&2
+	printf '%s\n' "$abort_pub" >&2
+	exit 1
+fi
+require_match "$abort_pub" 'svxlink.conf was not backed up'
+if ! grep -q '^SENTINEL-COURTESY$' "$logic_dest"; then
+	echo "FAIL: courtesy file was not restored after the conf backup failed" >&2
+	printf '%s\n' "$abort_pub" >&2
+	exit 1
+fi
+if [ "$(sha256sum "$conf_dest")" != "$conf_before_abort" ]; then
+	echo "FAIL: conf backup failure replaced svxlink.conf" >&2
+	printf '%s\n' "$abort_pub" >&2
+	exit 1
+fi
+echo "ok: a failed conf backup restores the courtesy file"
+journal="$db-journal"
+rm -f "$journal"
+mkfifo "$journal"
+sudo chown www-data:www-data "$journal"
+journal_owner=$(stat -c '%u:%g' "$journal")
+set +e
+timeout 10 sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish >"$tmp/journal.out" 2>&1
+journal_rc=$?
+set -e
+if [ "$journal_rc" -eq 124 ] || [ "$journal_rc" -ne 0 ]; then
+	echo "FAIL: database journal fifo publish rc=$journal_rc" >&2
+	cat "$tmp/journal.out" >&2 || true
+	exit 1
+fi
+if [ "$(stat -c '%u:%g' "$journal")" != "$journal_owner" ]; then
+	echo "FAIL: database journal fifo was re-owned" >&2
+	exit 1
+fi
+rm -f "$journal"
+echo "ok: a database journal fifo does not hang publish or become root-owned"
+sqlite3 "$db" "PRAGMA journal_mode=WAL;" >/dev/null
+rm -f "$db-wal" "$db-shm"
+mkfifo "$db-wal" "$db-shm"
+sudo chown www-data:www-data "$db-wal" "$db-shm"
+wal_owner=$(stat -c '%u:%g' "$db-wal")
+shm_owner=$(stat -c '%u:%g' "$db-shm")
+set +e
+timeout 10 sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
+	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
+	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
+	ORP_TEST_TMPDIR="${ORP_TEST_TMPDIR:-}" TMPDIR="${TMPDIR:-}" \
+	"$HELPER" config publish >"$tmp/wal.out" 2>&1
+wal_rc=$?
+set -e
+if [ "$wal_rc" -eq 124 ] || [ "$wal_rc" -ne 0 ]; then
+	echo "FAIL: planted wal and shm publish rc=$wal_rc" >&2
+	cat "$tmp/wal.out" >&2 || true
+	exit 1
+fi
+if [ "$(stat -c '%u:%g' "$db-wal")" != "$wal_owner" ] || [ "$(stat -c '%u:%g' "$db-shm")" != "$shm_owner" ]; then
+	echo "FAIL: planted wal or shm fifo was re-owned" >&2
+	exit 1
+fi
+rm -f "$db-wal" "$db-shm"
+sqlite3 "$db" "PRAGMA journal_mode=DELETE;" >/dev/null
+echo "ok: planted database wal and shm fifos stay www-data-owned"
 ptt_sample="$tmp/ptt-sample"
 for sample in ' PTT_TYPE=GPIO' 'PTT_TYPE = GPIO' 'PTT_TYPE="GPIO"'; do
 	printf '%s\n' "$sample" > "$ptt_sample"

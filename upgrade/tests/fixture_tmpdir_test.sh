@@ -114,4 +114,18 @@ grep -q 'outside the fixture' /tmp/orp-traverse-outside.txt
 rm -f /tmp/orp-traverse-outside.txt
 rm -rf "$walk_parent"
 echo "ok: fixture traverse does not chmod the temp parent"
+set +e
+unset_out=$(env -u ORP_TEST_TMPDIR bash "$ROOT_DIR/upgrade/tests/run.sh" 2>&1)
+unset_rc=$?
+shared_out=$(ORP_TEST_TMPDIR=/tmp bash "$ROOT_DIR/upgrade/tests/run.sh" 2>&1)
+shared_rc=$?
+set -e
+if [ "$unset_rc" -eq 0 ] || [ "$shared_rc" -eq 0 ]; then
+	echo "FAIL: run.sh started without a dedicated ORP_TEST_TMPDIR" >&2
+	printf '%s\n' "$unset_out" "$shared_out" >&2
+	exit 1
+fi
+printf '%s\n' "$unset_out" | grep -q 'dedicated directory'
+printf '%s\n' "$shared_out" | grep -q 'dedicated directory'
+echo "ok: run.sh refuses an unset or shared ORP_TEST_TMPDIR"
 echo "fixture tmpdir checks passed"

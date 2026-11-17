@@ -60,6 +60,8 @@ printf 'functional-test\n' > "$funct"
 orp_private "$marker" "$mode" "$funct"
 plant_native_layout "$live"
 orp_mkdir "$preview" "$modules" "$audio/identification" "$audio/courtesy_tones" "$backup" "$sounds" "$live" "$live/var/backups/orp-ui"
+# The helper reads module files as www-data.
+orp_fixture_traverse "$modules"
 chmod 755 "$live" "$live/etc" "$live/etc/svxlink" "$live/var" "$live/var/backups" "$live/var/backups/orp-ui"
 export ORP_DB_PATH="$db"
 export ORP_BENCH_TEST_HARNESS=1

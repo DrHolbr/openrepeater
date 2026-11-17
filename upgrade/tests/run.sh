@@ -4,6 +4,16 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$ROOT_DIR"
+case "${ORP_TEST_TMPDIR:-}" in
+	"")
+		echo "refused: ORP_TEST_TMPDIR must be set to a dedicated directory" >&2
+		exit 1
+		;;
+	/tmp|/tmp/|/var/tmp|/var/tmp/)
+		echo "refused: ORP_TEST_TMPDIR must be a dedicated directory, not a shared temp root" >&2
+		exit 1
+		;;
+esac
 if [ "${ORP_UMASK_MATRIX:-0}" != 1 ]; then
 	export ORP_UMASK_MATRIX=1
 	# shellcheck source=upgrade/tests/lib/fixture_tmpdir.sh

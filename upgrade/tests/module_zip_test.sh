@@ -8,11 +8,14 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 orp_use_fixture_tmpdir
 
 php -n "$ROOT_DIR/upgrade/tests/module_zip_test.php" missing
+# chown only this test's own directories, never the shared fixture root.
+zipfix=$(orp_mktemp_dir)
+orp_fixture_traverse "$zipfix"
 set +e
-php "$ROOT_DIR/upgrade/tests/module_zip_test.php" hostile
+ORP_TEST_TMPDIR="$zipfix" TMPDIR="$zipfix" php "$ROOT_DIR/upgrade/tests/module_zip_test.php" hostile
 rc=$?
 set -e
-sudo -n chown -R "$(id -u):$(id -g)" "$(orp_fixture_root)" || true
+sudo -n chown -R "$(id -u):$(id -g)" "$zipfix" || true
 if [ "$rc" -ne 0 ]; then
 	exit "$rc"
 fi
@@ -23,6 +26,8 @@ share="$fix/usr/local/share/svxlink"
 mkdir -p "$share/events.d" "$fix/modules/HardMod/svxlink/events.d" \
 	"$fix/modules/FifoMod/svxlink/events.d" "$fix/modules/SwapMod/svxlink/events.d" \
 	"$fix/var/lib/openrepeater/module-install"
+# The helper reads module files as www-data, so www-data has to traverse the fixture.
+orp_fixture_traverse "$fix"
 printf 'events\n' > "$share/events.tcl"
 printf 'orphan\n' > "$share/events.d/ModuleOrphan.tcl"
 printf 'keep\n' > "$share/events.d/Keep.tcl"
@@ -79,6 +84,37 @@ grep -q 'private regular file' "$fix/swap.err"
 [ ! -e "$share/events.d/ModuleSwap.tcl" ]
 echo "ok: a fifo swapped in after the name check is refused"
 
+mkdir -p "$fix/modules/DirSwapMod/svxlink/events.d" "$fix/root-only"
+printf 'decoy\n' > "$fix/modules/DirSwapMod/svxlink/events.d/ModuleDirSwap.tcl"
+printf 'root-only-secret\n' > "$fix/root-only/ModuleDirSwap.tcl"
+sudo chown -R root:root "$fix/root-only"
+sudo chmod 700 "$fix/root-only"
+sudo chmod 600 "$fix/root-only/ModuleDirSwap.tcl"
+set +e
+sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_MODULE_SWAP_WAIT=1 ORP_ROOT="$fix" ORP_MODULES_PATH="$fix/modules" \
+	"$HELPER" module activate DirSwapMod >"$fix/dirswap.out" 2>"$fix/dirswap.err" &
+dirswap_pid=$!
+dirswapped=0
+for _ in $(seq 1 20); do
+	if [ -f "$fix/var/lib/openrepeater/module-install/DirSwapMod.list" ]; then
+		mv "$fix/modules/DirSwapMod/svxlink/events.d" "$fix/modules/DirSwapMod/svxlink/events.old"
+		ln -s "$fix/root-only" "$fix/modules/DirSwapMod/svxlink/events.d"
+		dirswapped=1
+		break
+	fi
+	sleep 0.1
+done
+wait "$dirswap_pid"
+dirswap_rc=$?
+set -e
+[ "$dirswapped" = "1" ]
+if [ "$dirswap_rc" -eq 0 ] || [ -e "$share/events.d/ModuleDirSwap.tcl" ]; then
+	echo "FAIL: a module directory swapped for a symlink was read as root" >&2
+	cat "$fix/dirswap.err" >&2 || true
+	exit 1
+fi
+echo "ok: a module directory swapped for a symlink after the scan is not read as root"
+
 sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$fix" ORP_MODULES_PATH="$fix/modules" \
 	"$HELPER" module deactivate OrphanMod
 [ ! -e "$share/events.d/ModuleOrphan.tcl" ]
@@ -86,5 +122,5 @@ sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$fix" ORP_MODULES_PATH="$fix/modu
 [ "$(cat "$share/events.d/Keep.tcl")" = "keep" ]
 echo "ok: deactivation removes an orphan recorded in the intent journal"
 
-sudo -n chown -R "$(id -u):$(id -g)" "$(orp_fixture_root)" || true
+sudo -n chown -R "$(id -u):$(id -g)" "$fix" || true
 echo "module zip checks passed"
