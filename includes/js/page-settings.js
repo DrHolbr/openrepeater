@@ -58,46 +58,108 @@ $(function() {
     // ─── TTS "Test Voice" preview ────────────────────────────────────────
     // Posts the CURRENT (unsaved) form values to tts_preview.php, which
     // returns audio/wav, and plays it in the hidden <audio> element.
-    $('#ttsTestBtn').on('click', function() {
+    // jQuery 1.7 cannot carry responseType=blob: its transport reads
+    // responseXML, Chrome throws, and the exception is reported as HTTP 0
+    // after the server has already returned 200. Use XMLHttpRequest directly.
+    $('#ttsTestBtn').on('click', function(event) {
+        event.preventDefault();
         var $btn = $(this), $status = $('#ttsTestStatus'), $audio = $('#ttsTestAudio');
+        var previous = $audio.attr('src') || '';
+        if (previous.indexOf('blob:') === 0) {
+            URL.revokeObjectURL(previous);
+        }
         $btn.prop('disabled', true);
         $status.text('Generating sample\u2026');
         $audio.hide().attr('src', '');
 
-        $.ajax({
-            url: 'functions/tts_preview.php',
-            type: 'POST',
-            data: {
-                engine:          $('#tts_engine').val(),
-                flite_voice:     $('#tts_flite_voice').val(),
-                pic02wave_voice: $('#tts_pic02wave_voice').val(),
-                gain_db:         $('#tts_gain_db').val(),
-                espeak_voice:    $('#tts_espeak_voice').val()
-            },
-            xhrFields: { responseType: 'blob' },
-            success: function(blob, status, xhr) {
-                var ct = xhr.getResponseHeader('Content-Type') || '';
-                if (ct.indexOf('audio') !== 0) {
-                    var fr = new FileReader();
-                    fr.onload = function() {
-                        var msg = fr.result;
-                        try { msg = JSON.parse(msg).message || msg; } catch (e) {}
-                        $status.html('<span style="color:#b94a48">' + msg + '</span>');
-                    };
-                    fr.readAsText(blob);
-                    return;
-                }
-                var url = URL.createObjectURL(blob);
-                $audio.attr('src', url).show();
-                var el = $audio[0];
-                if (el && el.play) { el.play().catch(function(){}); }
-                $status.text('');
-            },
-            error: function(xhr) {
-                $status.html('<span style="color:#b94a48">Preview failed (HTTP ' + xhr.status + ').</span>');
-            },
-            complete: function() { $btn.prop('disabled', false); }
-        });
+        function showFailure(text) {
+            var span = document.createElement('span');
+            span.style.color = '#b94a48';
+            span.textContent = text;
+            $status.empty().append(span);
+        }
+        function messageFromBlob(blob, done) {
+            if (!blob) {
+                done('');
+                return;
+            }
+            var reader = new FileReader();
+            reader.onload = function() {
+                var msg = String(reader.result || '');
+                try { msg = JSON.parse(msg).message || msg; } catch (e) {}
+                done(msg);
+            };
+            reader.onerror = function() { done(''); };
+            reader.readAsText(blob);
+        }
+
+        var meta = document.querySelector('meta[name="csrf-token"]');
+        var token = meta ? (meta.getAttribute('content') || '') : '';
+        var body = [
+            'engine=' + encodeURIComponent($('#tts_engine').val() || ''),
+            'flite_voice=' + encodeURIComponent($('#tts_flite_voice').val() || ''),
+            'pic02wave_voice=' + encodeURIComponent($('#tts_pic02wave_voice').val() || ''),
+            'gain_db=' + encodeURIComponent($('#tts_gain_db').val() || ''),
+            'espeak_voice=' + encodeURIComponent($('#tts_espeak_voice').val() || '')
+        ];
+        if (token) {
+            body.push('csrf_token=' + encodeURIComponent(token));
+        }
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', 'functions/tts_preview.php', true);
+        xhr.responseType = 'blob';
+        xhr.timeout = 120000;
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+        if (token) {
+            xhr.setRequestHeader('X-CSRF-Token', token);
+        }
+        xhr.onload = function() {
+            var blob = xhr.response;
+            var ct = (xhr.getResponseHeader('Content-Type') || '').toLowerCase();
+            if (xhr.status !== 200 || ct.indexOf('audio/') !== 0) {
+                messageFromBlob(blob, function(msg) {
+                    var prefix = 'Preview failed (HTTP ' + xhr.status + ')';
+                    showFailure(msg ? prefix + ': ' + msg : prefix + '.');
+                });
+                return;
+            }
+            if (!blob || !blob.size) {
+                showFailure('Preview returned an empty audio file.');
+                return;
+            }
+            var url = URL.createObjectURL(blob);
+            $audio.attr('src', url).show();
+            var el = $audio[0];
+            if (!el || !el.play) {
+                showFailure('This browser cannot play the voice sample.');
+                return;
+            }
+            var played = el.play();
+            if (played && typeof played.then === 'function') {
+                played.then(function() {
+                    $status.text('');
+                }, function(err) {
+                    var reason = err && err.message ? err.message : 'playback was blocked';
+                    showFailure('Preview could not play: ' + reason + '.');
+                });
+                return;
+            }
+            $status.text('');
+        };
+        xhr.onerror = function() {
+            showFailure('Preview failed: the browser could not read the response.');
+        };
+        xhr.ontimeout = function() {
+            showFailure('Preview timed out before the voice sample finished.');
+        };
+        xhr.onabort = function() {
+            showFailure('Preview was cancelled.');
+        };
+        xhr.onloadend = function() {
+            $btn.prop('disabled', false);
+        };
+        xhr.send(body.join('&'));
     });
 
 });
