@@ -9,16 +9,11 @@
 //  On error, returns JSON {status:error, message:…} with an appropriate code.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Capture any PHP notices/warnings so they don't corrupt the HTTP response.
+// Capture any PHP notices/warnings so they don't corrupt the WAV bytes.
+ini_set('zlib.output_compression', '0');
 ob_start();
-session_start();
-if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))) {
-	ob_end_clean();
-	http_response_code(403);
-	header('Content-Type: application/json');
-	echo json_encode(['status' => 'error', 'message' => 'Not authorized.']);
-	exit;
-}
+require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
+RequestGuard::requireMutation();
 
 require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/classes/TTS.php');
 
@@ -63,13 +58,25 @@ if (!$ok || !file_exists($wav) || filesize($wav) <= 0) {
 	// Give a useful diagnostic.
 	tts_preview_fail('Synthesis failed. ' . TTS::status_summary(), 500);
 }
+$riff = file_get_contents($wav, false, null, 0, 12);
+if (!is_string($riff) || substr($riff, 0, 4) !== 'RIFF' || substr($riff, 8, 4) !== 'WAVE') {
+	@unlink($wav);
+	tts_preview_fail('Synthesis did not return a WAV file.', 500);
+}
 
-// Discard any buffered notices/warnings, then stream the WAV.
-ob_end_clean();
+// Discard any buffered notices/warnings, then stream only the WAV bytes.
+while (ob_get_level() > 0) {
+	ob_end_clean();
+}
+$size = filesize($wav);
 header('Content-Type: audio/wav');
-header('Content-Length: ' . filesize($wav));
+header('X-Content-Type-Options: nosniff');
+header('Content-Length: ' . $size);
+header('Content-Encoding: identity');
 header('Cache-Control: no-store');
-readfile($wav);
+$sent = readfile($wav);
 @unlink($wav);
+if ($sent !== $size) {
+	exit(1);
+}
 exit;
-?>

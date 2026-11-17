@@ -5,11 +5,20 @@
 ###########################################################################################
 
 spl_autoload_register(function ($class_name) {
-    $file = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/classes/' . $class_name . '.php';
-
-    if (file_exists($file))
-        require_once($file);
-    else
-        die('File Not Found: ' . $file);
+    // Only OpenRepeater classes live in this directory. Optional PHP
+    // extensions such as Memcached are not files here. Returning leaves
+    // class_exists() false when the extension is absent. Instantiating a
+    // missing OpenRepeater class still raises "Class not found".
+    if (!is_string($class_name) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $class_name)) {
+        return;
+    }
+    $root = isset($_SERVER['DOCUMENT_ROOT']) ? rtrim($_SERVER['DOCUMENT_ROOT'], '/') : '';
+    if ($root === '') {
+        return;
+    }
+    $file = $root . '/includes/classes/' . $class_name . '.php';
+    if (is_file($file)) {
+        require_once $file;
+    }
 });
 ?>

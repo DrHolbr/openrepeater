@@ -132,6 +132,20 @@ function checkMinPort(currentPorts, minPorts) {
 	return true;
 }
 
+$(function () {
+	$('#orp_Mode').on('change', function () {
+		var $form = $('#settingsUpdate');
+		$.ajax({
+			url: $form.attr('action'),
+			type: 'POST',
+			data: $form.serialize(),
+			success: function (data) {
+				$('#logicStatus').text(data);
+			}
+		});
+	});
+});
+
 //Update Database
 function updateDB() {
 	// update DB	

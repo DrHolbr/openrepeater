@@ -49,9 +49,9 @@ $on = BenchGuard::detect();
 check($on->isBench() === true, 'marker file enables bench mode');
 check($on->previewDir() === $preview, 'an allowed test preview is used');
 putenv('ORP_BENCH_PREVIEW=/etc/svxlink');
-check(BenchGuard::detect()->previewDir() === BenchGuard::DEFAULT_PREVIEW, 'preview=/etc/svxlink is rejected');
+check(BenchGuard::detect()->previewDir() === null, 'preview=/etc/svxlink is rejected');
 putenv('ORP_BENCH_PREVIEW=/var/lib/openrepeater/bench-preview/../../etc');
-check(BenchGuard::detect()->previewDir() === BenchGuard::DEFAULT_PREVIEW, 'preview paths with .. are rejected');
+check(BenchGuard::detect()->previewDir() === null, 'preview paths with .. are rejected');
 check(BenchGuard::previewAllowed('/usr/local/share/svxlink') === false, 'bootstrap share tree is not a preview');
 putenv('ORP_BENCH_PREVIEW=' . $preview);
 check($on->commandAllowed('alsa', 'backup') === false, 'bench blocks alsa backup');
@@ -102,8 +102,9 @@ check(is_string($written) && $written !== '', 'bench preview svxlink.conf was wr
 check(strpos($written, "\nPTT_PIN=") === false && strpos($written, "\nPTT_TYPE=") === false, 'bench preview has no active PTT lines');
 check(strpos($written, 'BENCH DISARMED') !== false, 'bench preview marks disarmed transmitter lines');
 check(strpos($written, "\nSQL_DET=GPIO") === false, 'bench preview does not leave SQL_DET=GPIO active');
-check(!file_exists('/etc/svxlink/svxlink.conf'), 'bench write did not create /etc/svxlink/svxlink.conf');
-check(!file_exists('/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl'), 'bench write did not create a bootstrap ORP event file');
+check($svx->configDestination('svxlink.conf') === $preview . '/svxlink.conf', 'bench write target stays the isolated preview');
+check(is_file($preview . '/svxlink.conf') && !is_link($preview . '/svxlink.conf'), 'bench write is a regular file in the isolated preview');
+check(BenchGuard::detect()->modeFilePath() !== BenchGuard::DEFAULT_MODE_FILE, 'the harness does not read the installed operating-mode file');
 
 file_put_contents($preview . '/ORP_keep.tcl', "keep\n");
 $svx->delete_custom_evnets();
@@ -139,7 +140,11 @@ foreach ($rows as $row) {
 		$sawHigh = true;
 		check($row['stored_number'] === '498', '2X 3.1+ TX stored number is 498');
 		check($row['preset_active'] === 'high', '2X 3.1+ TX preset active level is high');
-		check($row['class'] === 'unresolved_sysfs_number', '498 is not a BCM header pin');
+		check($row['class'] === 'conditional_mcp23017_offset', '498 is a conditional expander offset');
+		check($row['bcm'] === null, '498 is not a BCM number');
+		check($row['line_offset_candidate'] === 2 && $row['expander_pin'] === 'GPA2', '498 is GPA2 only if the base is 496');
+		$typed = GpioMap::typedConfigLine($row);
+		check(strpos($typed, 'PTT_PIN') === false && strpos($typed, 'gpio498') === false && strpos($typed, 'not a BCM number') !== false, '498 is not emitted as a sysfs or BCM pin');
 		check($row['physical_pin'] === null && $row['bcm'] === null, '498 has no BCM offset or physical pin');
 	}
 	if ($row['source'] === 'orp_preset' && $row['version'] === '2.1 - PROTOTYPE' && $row['port'] === 1 && $row['logical_name'] === 'txGPIO') {
@@ -172,14 +177,14 @@ foreach ($rows as $row) {
 		$manual506 = $row;
 	}
 }
-check($manual498 && $manual498['stored_number'] === '498' && $manual498['class'] === 'unresolved_sysfs_number', 'ICS baseline lists 498 as GPA2 and unresolved');
+check($manual498 && $manual498['stored_number'] === '498' && $manual498['class'] === 'conditional_mcp23017_offset' && $manual498['expander_pin'] === 'GPA2' && $manual498['bcm'] === null, 'ICS baseline lists 498 as GPA2 and not BCM');
 check($manual506 && $manual506['stored_number'] === '506' && $manual506['physical_pin'] === null, 'ICS baseline lists port 1 PTT as 506, not a header pin');
 
 foreach (array(13 => 33, 24 => 18, 25 => 22, 27 => 13, 12 => 32) as $bcm => $phys) {
 	$class = GpioMap::classifyNumber((string) $bcm);
 	check($class['bcm'] === $bcm && $class['physical_pin'] === $phys, "BCM {$bcm} maps to physical pin {$phys}");
 }
-check(GpioMap::classifyNumber('499')['class'] === 'unresolved_sysfs_number', '499 is an unresolved sysfs number');
+check(GpioMap::classifyNumber('499')['class'] === 'conditional_mcp23017_offset' && GpioMap::classifyNumber('499')['line_offset_candidate'] === 3 && GpioMap::classifyNumber('499')['bcm'] === null, '499 is GPA3 only if the base is 496');
 check(GpioMap::classifyNumber('507')['physical_pin'] === null, '507 is not a physical header pin');
 check(GpioMap::allowsRequestMethod('GET') === true, 'GET diagnostics are allowed');
 check(GpioMap::allowsRequestMethod('POST') === false, 'POST diagnostics are refused');
@@ -198,8 +203,12 @@ $refused = GpioMap::readOnlyChipInfo($set);
 check(strpos($refused, 'refused:') === 0, 'a binary that is not gpioinfo is refused');
 check(!file_exists($stamp), 'the refused binary was not executed');
 
-$dbCopy = sys_get_temp_dir() . '/openrepeater-' . getmypid() . '.db';
-copy($root . '/install/sql/openrepeater.db', $dbCopy);
+$fixture = getenv('ORP_TEST_TMPDIR');
+if (!is_string($fixture) || $fixture === '' || $fixture[0] !== '/') {
+	$fixture = sys_get_temp_dir();
+}
+$dbCopy = rtrim($fixture, '/') . '/orp-safety-' . getmypid() . '.db';
+check(copy($root . '/install/sql/openrepeater.db', $dbCopy) && chmod($dbCopy, 0600), 'the stock database copy is writable');
 putenv('ORP_DB_PATH=' . $dbCopy);
 putenv('ORP_FLAG_STORE=sqlite');
 $db = new Database();
@@ -224,7 +233,7 @@ foreach ($dbPorts as $row) {
 		$sawDbTx = true;
 		check($row['stored_number'] === '506', 'stock database TX number is 506');
 		check($row['preset_active'] === 'high', 'stock database TX active level is high');
-		check($row['class'] === 'unresolved_sysfs_number', 'stock database TX 506 is unresolved');
+		check($row['class'] === 'conditional_mcp23017_offset' && $row['bcm'] === null && $row['expander_pin'] === null && $row['line_offset_candidate'] === 10, 'stock database TX 506 is offset 10 only if the base is 496 and has no named expander pin');
 	}
 	if ($row['logical_name'] === 'rxGPIO') {
 		check($row['stored_number'] === '26' && $row['physical_pin'] === 37, 'stock database RX 26 is physical pin 37');
@@ -282,6 +291,54 @@ $writer = new SVXLink(array(), array(), array());
 $writer->write_config("PTT_PIN=gpio498\n", 'svxlink.conf', 'text');
 check(file_get_contents($secret . '/keep') === 'SECRET', 'ancestor symlink did not receive a preview write');
 check(!file_exists($secret . '/svxlink.conf'), 'ancestor symlink did not gain svxlink.conf');
+$standIn = sys_get_temp_dir() . '/orp-preview-default-' . getmypid();
+mkdir($standIn, 0755);
+file_put_contents($standIn . '/canary', 'KEEP');
+chmod($standIn, 0755);
+putenv('ORP_BENCH_DEFAULT_PREVIEW=' . $standIn);
+putenv('ORP_BENCH_PREVIEW');
+check(BenchGuard::detect()->previewDir() === $standIn, 'an injected default preview is used only when the override is unset');
+putenv('ORP_BENCH_PREVIEW=' . $link);
+check(BenchGuard::detect()->previewDir() === null, 'a symlink does not fall back when the default preview exists');
+$present = new SVXLink(array(), array(), array());
+check($present->configDestination('svxlink.conf') === null, 'config destination is null while the default preview exists');
+$present->write_config("PTT_PIN=gpio498\n", 'svxlink.conf', 'text');
+check(file_get_contents($standIn . '/canary') === 'KEEP', 'invalid preview did not write into the existing default');
+check(!file_exists($standIn . '/svxlink.conf'), 'existing default did not gain svxlink.conf');
+check($present->configDestination('svxlink.conf') !== BenchGuard::DEFAULT_PREVIEW . '/svxlink.conf', 'invalid preview is not the live bench-preview path');
+$wrongMode = sys_get_temp_dir() . '/orp-preview-mode-' . getmypid();
+mkdir($wrongMode, 0755);
+chmod($wrongMode, 0777);
+putenv('ORP_BENCH_PREVIEW=' . $wrongMode);
+check(BenchGuard::detect()->previewDir() === null, 'a world-writable preview is not a publish target');
+check((new SVXLink(array(), array(), array()))->configDestination('svxlink.conf') === null, 'wrong mode does not fall back to the default preview');
+$wrongOwner = sys_get_temp_dir() . '/orp-preview-owner-' . getmypid();
+mkdir($wrongOwner, 0755);
+chmod($wrongOwner, 0755);
+$nobody = function_exists('posix_getpwnam') ? posix_getpwnam('nobody') : false;
+$reowned = false;
+if (is_array($nobody)) {
+	$uid = (int) $nobody['uid'];
+	if (!@chown($wrongOwner, $uid)) {
+		exec('sudo -n chown ' . $uid . ' ' . escapeshellarg($wrongOwner), $chownOut, $chownRc);
+	}
+	clearstatcache(true, $wrongOwner);
+	$ownerNow = fileowner($wrongOwner);
+	$reowned = $ownerNow !== false && $ownerNow !== posix_geteuid() && (int) $ownerNow !== 0;
+}
+check($reowned === true, 'the owner fixture was moved to a different user');
+putenv('ORP_BENCH_PREVIEW=' . $wrongOwner);
+check(BenchGuard::detect()->previewDir() === null, 'a preview owned by another user is not a publish target');
+check((new SVXLink(array(), array(), array()))->configDestination('svxlink.conf') === null, 'wrong owner does not fall back to the default preview');
+unlink($standIn . '/canary');
+rmdir($standIn);
+putenv('ORP_BENCH_DEFAULT_PREVIEW=' . $standIn);
+putenv('ORP_BENCH_PREVIEW=' . $link);
+check(BenchGuard::detect()->previewDir() === null, 'a symlink stays closed when the injected default is absent');
+check((new SVXLink(array(), array(), array()))->configDestination('svxlink.conf') === null, 'config destination stays null when the default preview is absent');
+putenv('ORP_BENCH_DEFAULT_PREVIEW');
+putenv('ORP_BENCH_PREVIEW=' . $wrongMode);
+check(BenchGuard::detect()->previewDir() === null, 'wrong mode stays closed when no default preview is injected');
 putenv('ORP_BENCH_TEST_HARNESS=0');
 putenv('ORP_BENCH_PREVIEW=' . $preview);
 check(BenchGuard::detect()->previewDir() === BenchGuard::DEFAULT_PREVIEW, 'without the test harness the preview override is ignored');

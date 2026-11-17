@@ -7,11 +7,33 @@ This script reads settings from the OpenRepeater database and builds new configu
 files for SVXLink. 
 */
 
+function orp_last_output_line($output) {
+	if (!is_string($output)) {
+		return '';
+	}
+	$text = str_replace("\r\n", "\n", $output);
+	$text = rtrim($text, "\n");
+	if ($text === '') {
+		return '';
+	}
+	$pos = strrpos($text, "\n");
+	if ($pos === false) {
+		return $text;
+	}
+	return substr($text, $pos + 1);
+}
+
+function orp_gpio_output_ok($output) {
+	$last = orp_last_output_line($output);
+	return $last === 'up' || $last === 'down';
+}
+
 /* ---------------------------------------------------------- */
-/* SESSION CHECK TO SEE IF USER IS LOGGED IN. */
-session_start();
+/* SESSION, VERB, AND CSRF BEFORE ANY DATABASE OR HELPER USE */
+require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
+RequestGuard::requireMutation();
 if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
-	header('location: login.php');
+	RequestGuard::deny(401);
 } else { // If they are, show the page.
 /* ---------------------------------------------------------- */
 
@@ -41,17 +63,21 @@ $classSVXLinkGPIO = new SVXLink_GPIO($gpio);
 /* --- BENCH: do not publish configs or restart the radio --- */
 
 $benchGuard = BenchGuard::detect();
-if ($benchGuard->isBench()) {
-	if (isset($_POST["return_url"])) {
-		$url = strtok($_POST["return_url"], '?');
-	} else if (isset($_SESSION["new_repeater_settings"])) {
-		session_destroy();
-		$url = '../login.php';
-	} else {
-		$url = '../dashboard.php';
+
+if ($benchGuard->operatingMode() === 'functional-test' && !$benchGuard->uiBlocksLifted()) {
+	$runtime = $classSVXLink->disconnectedRuntimeConfig();
+	$wrote = $classSVXLink->write_config($runtime, 'svxlink.conf', 'ini');
+	$publish = shell_exec('sudo /usr/sbin/orp_helper config publish 2>&1');
+	$lifecycle = shell_exec('sudo /usr/sbin/orp_helper svxlink restart 2>&1');
+	$notice = 'functional_published=1';
+	if ($wrote !== true || (is_string($publish) && strpos($publish, 'refused:') !== false)) {
+		$notice = 'functional_publish_failed=1';
+	} elseif (is_string($lifecycle) && (strpos($lifecycle, 'masked') !== false || strpos($lifecycle, 'service-disabled') !== false)) {
+		$notice = 'functional_published=1&service_masked=1';
 	}
+	$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
 	$join = (strpos($url, '?') === false) ? '?' : '&';
-	header('Location: '.$url.$join.'bench_blocked=1');
+	header('Location: '.$url.$join.$notice);
 	exit;
 }
 
@@ -184,8 +210,14 @@ switch ($settings['orp_Mode']) {
 	
 		// WRITE CONFIGURATION & TCL FILES
 		$classSVXLink->write_config($advanced['svxlink_config'], 'svxlink.conf', 'text'); // Overridden svxlink.confg
-		unlink('/etc/openrepeater/svxlink/local-events.d/CustomLogic.tcl'); // Delete custom TCL overrides if they exist
+		if (!$benchGuard->isBench()) {
+			$customLogic = '/etc/openrepeater/svxlink/local-events.d/CustomLogic.tcl';
+			if (is_file($customLogic) && !is_link($customLogic)) {
+				unlink($customLogic);
+			}
+		}
 		$classSVXLink->write_config($advanced['gpio_config'], 'gpio.conf', 'text'); // Overridden GPIO config
+		$classSVXLink->write_config($classSVXLinkTCL->logic_override(), 'Logic.tcl', 'text');
         break;
 
 }
@@ -194,29 +226,75 @@ switch ($settings['orp_Mode']) {
 /* ---------------------------------------------------------- */
 /* FINISH UP */
 
-/* CLEAR SETTINGS UPDATE FLAG TO CLEAR BANNER AT TOP OF PAGE */
-$classDB->set_update_flag(false);
+$publishFailed = $classSVXLink->publishFailed();
+$onBench = $benchGuard->isBench();
+
+if (!$publishFailed) {
+	$classDB->set_update_flag(false);
+}
+
+if ($publishFailed || ($onBench && !$benchGuard->uiBlocksLifted()) || ($benchGuard->operatingMode() === 'functional-test' && !$benchGuard->uiBlocksLifted())) {
+	if ($publishFailed) {
+		$notice = 'preview_failed=1';
+	} else {
+		$notice = 'bench_preview_ok=1';
+	}
+	if (isset($_SESSION["new_repeater_settings"])) {
+		session_destroy();
+		$url = '../login.php';
+	} else {
+		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
+	}
+	$join = (strpos($url, '?') === false) ? '?' : '&';
+	header('Location: '.$url.$join.$notice);
+	exit;
+}
+
+if ($benchGuard->uiBlocksLifted()) {
+	$publish = shell_exec('sudo /usr/sbin/orp_helper config publish 2>&1');
+	if (!is_string($publish) || strpos($publish, 'refused:') !== false) {
+		$notice = 'functional_publish_failed=1';
+		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
+		$join = (strpos($url, '?') === false) ? '?' : '&';
+		header('Location: '.$url.$join.$notice);
+		exit;
+	}
+}
 
 ########
-# Redundant GPIO teardown/setup to work around SVXLink issue
-$shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_down');
-$shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up');
+# GPIO setup runs only when root has created the tx-armed flag. Without
+# that flag the published runtime stays disconnected. An armed start skips
+# the snapshot and native-start checks. An unarmed start still refuses a
+# PTT_TYPE other than NONE and a config that does not match the snapshot.
+if ($benchGuard->txArmed()) {
+	$gpioDown = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_down 2>&1');
+	if (!orp_gpio_output_ok($gpioDown)) {
+		$notice = 'gpio_setup_failed=1';
+		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
+		$join = (strpos($url, '?') === false) ? '?' : '&';
+		header('Location: '.$url.$join.$notice);
+		exit;
+	}
+	$gpioUp = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up 2>&1');
+	if (!orp_gpio_output_ok($gpioUp)) {
+		$notice = 'gpio_setup_failed=1';
+		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
+		$join = (strpos($url, '?') === false) ? '?' : '&';
+		header('Location: '.$url.$join.$notice);
+		exit;
+	}
+}
 ########
 
 $shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink restart');
 
 /* WHAT PAGE TO GO BACK TO */
-if (isset($_POST["return_url"])) {
-	// Return to page that sent here
-	$url = strtok($_POST["return_url"], '?'); //Clean parameters from URL
-	header('location: '.$url);	
-} else if (isset($_SESSION["new_repeater_settings"])) {
+if (isset($_SESSION["new_repeater_settings"])) {
 	// Wizard was run. Go ahead and destroy session and logout
 	session_destroy();
-	header('location: ../login.php');		
+	header('location: ../login.php');
 } else {
-	// Otherwise just go to dashboard
-	header('location: ../dashboard.php');	
+	header('Location: ' . RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : ''));
 }	
 ?>
 

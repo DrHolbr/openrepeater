@@ -18,6 +18,29 @@ server {
 		deny all;
 	}
 
+	# Archives here contain backup.sql, including password hashes.
+	# nginx does not serve this tree. The session endpoint streams a file.
+	location ~* ^/backup/ {
+		deny all;
+	}
+
+	location /internal-backup/ {
+		internal;
+		alias /var/www/openrepeater/backup/;
+	}
+
+	# Module uploads and the sounds anchor. Audio under /sounds/ is served.
+	# Dotfiles, databases, and archives are denied here because this regex
+	# is matched before the server-wide dotfile and database locations.
+	location ~* ^/(modules|sounds)/ {
+		location ~ /\. {
+			deny all;
+		}
+		location ~* \.(php|php[0-9]|pht|phtml|phps|phar|inc|cgi|pl|py|rb|sh|db|sqlite|sqlite3|sql|tar|gz|tgz|zip|bak)$ {
+			deny all;
+		}
+	}
+
 	location ~* \.(db|sqlite|sqlite3)$ {
 		deny all;
 	}

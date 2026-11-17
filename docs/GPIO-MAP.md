@@ -10,7 +10,7 @@ This map is a naming table. It is not a wiring diagram for `orp-test`, and it is
 | Stored number | The integer written in that source. It is not automatically a BCM offset, a header pin, or a libgpiod line. |
 | Direction | `in`, `out`, or a non-electrical label such as `manual` or `comment`. |
 | Preset active | The active level stored next to that number (`high` or `low`). Empty when the source does not state one. This is not a measurement of a switch on the bench. |
-| Class | `bcm_header_candidate` only when the stored number is 0–27 and appears on the 40-pin header. `unresolved_sysfs_number` for every other number. |
+| Class | `bcm_header_candidate` when the stored number is 0–27. `conditional_mcp23017_offset` when it is 496–511 and only if the old kernel base was 496. Anything else is `unresolved_evidence_gap`. |
 | BCM | Set only for a header candidate. It is the same integer as the stored number. |
 | Physical pin | The 40-pin header pin for that BCM number. Absent for unresolved numbers. |
 | libgpiod chip / offset | Always empty in this stage. Nothing is passed to SvxLink as `SQL_GPIOD_*` or `PTT_GPIOD_*`. |
@@ -31,9 +31,9 @@ Source: `includes/board_definitions.php`. These are presets a wizard can copy in
 | Logical | Stored | Direction | Preset active | Class | BCM | Physical | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Port 1 `rxGPIO` | 26 | in | low | header candidate | 26 | 37 | COS name in the ICS manual also uses GPIO26 |
-| Port 1 `txGPIO` | 498 | out | high | unresolved | | | Not programmed |
+| Port 1 `txGPIO` | 498 | out | high | conditional offset 2, GPA2 if base 496 | | | Not a BCM number. Chip absent on orp-test. Not programmed |
 | Port 2 `rxGPIO` | 23 | in | low | header candidate | 23 | 16 | COS name in the ICS manual also uses GPIO23 |
-| Port 2 `txGPIO` | 499 | out | high | unresolved | | | Not programmed |
+| Port 2 `txGPIO` | 499 | out | high | conditional offset 3, GPA3 if base 496 | | | Not a BCM number. Chip absent on orp-test. Not programmed |
 
 The same file's comments, marked "Not Yet Supported by ORP", list CTCSS1 24 low, CTCSS2 25 low, CTCSS_ENC1 13 low, and CTCSS2_ENC 27 low. Those are comments, not configured pins. If the numbers were BCM values they would be header pins 18, 22, 33, and 13. The comments do not say a connector on this bench uses them.
 
@@ -43,7 +43,7 @@ Same stored numbers as 3.1+ for the two ports. The prototype stores both TX line
 
 ### ICS Controllers Pi Repeater 1X, version 1.0+
 
-Port 1 only: RX 26 active low (header candidate, BCM 26, physical 37), TX 498 active high (unresolved, not driven).
+Port 1 only: RX 26 active low (header candidate, BCM 26, physical 37), TX 498 active high (conditional MCP23017 offset 2, GPA2 only if the base was 496, not driven).
 
 ### Other presets in the same file
 
@@ -73,7 +73,7 @@ Reading of the assignment table:
 | RX audio | right / left (not a GPIO) | | GPA4 | 500 |
 | | | | GPA5–GPA7 | 501–503 |
 
-506, 507, and 496–503 are unresolved sysfs-era numbers. They are not BCM offsets and not header pins. Under libgpiod an MCP23017 shows up as its own chip, and the line offset would be the pin on that chip, not 498 or 506. This stage does not guess that offset. `gpioinfo` on the finished bench is the check that can name the chip. It has not been run.
+506, 507, and 496–503 are not BCM offsets and not header pins. If the old kernel base was 496, the stored number minus 496 is the MCP23017 line offset. The manual names 496–503 as GPA0–GPA7. It does not name an MCP pin for 506 or 507, so those stay offsets 10 and 11 with no invented GPB name. orp-test has no MCP23017, so the line is absent and activation is not applied. `gpioinfo` has not been captured for this page.
 
 ## Conflict that this stage does not resolve
 
@@ -86,7 +86,7 @@ Three different TX numbers exist in the repository:
 | `install/sql/openrepeater.db` `ports` and `gpio_pins` | 506 | high |
 | ICS manual Pi 3B baseline | 506 | not stated as a software level |
 
-The stock database row is `gpio_num=506`, direction `out`, active `high`, description `PORT 1 TX: Port 1`. Its RX row is 26, direction `in`, active `low`. 506 matches the manual's PTT baseline. 498 matches the manual's GPA2 baseline, not its PTT row. Both numbers are left unresolved. The bench UI does not write either of them into a SvxLink config that the radio will load, and it does not drive either line.
+The stock database row is `gpio_num=506`, direction `out`, active `high`, description `PORT 1 TX: Port 1`. Its RX row is 26, direction `in`, active `low`. 506 matches the manual's PTT baseline and is offset 10 only if the base was 496. 498 matches the manual's GPA2 baseline, not its PTT row. Neither number is written as `PTT_PIN` or `gpio498`. The bench UI does not drive either line.
 
 The database also contains sample module option text. That text is not station credentials for this bench and is not repeated here. Review it on the Pi before any network module is enabled. This install does not enable modules and does not start SvxLink.
 

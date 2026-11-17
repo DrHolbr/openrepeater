@@ -1,59 +1,81 @@
 <?php
-// --------------------------------------------------------
-// SESSION CHECK TO SEE IF USER IS LOGGED IN.
-session_start();
-if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
-	header('location: ../login.php');
-} else { // If they are, show the page.
-// --------------------------------------------------------
+require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
+RequestGuard::requireMutation();
 
-################################################################################
-# AUTOLOAD CLASSES
 require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/autoloadClasses.php');
-################################################################################
-$Database = new Database();
 
-if(isset($_POST)==true && empty($_POST)==false) {
-	// Clear old settings
-	$Database->delete_row('DELETE from PORTS;');
-	$Database->delete_row('DELETE FROM "gpio_pins" WHERE type = "Port";');
+function port_form_fail() {
+	http_response_code(400);
+	header('Content-Type: text/plain; charset=UTF-8');
+	echo "refused\n";
+	exit;
+}
 
-	// Define sub arrays
-	$portNum=$_POST['portNum'];
-	$portLabel=$_POST['portLabel'];			
-	$rxMode=$_POST['rxMode'];
-	$rxGPIO=$_POST['rxGPIO'];					
-	$rxGPIO_active=$_POST['rxGPIO_active'];					
-	$txGPIO=$_POST['txGPIO'];
-	$txGPIO_active=$_POST['txGPIO_active'];					
-	$rxAudioDev=$_POST['rxAudioDev'];					
-	$txAudioDev=$_POST['txAudioDev'];
-
-	foreach($portLabel as $a => $b) {
-		$newPortNum = $a+1;
-		
-		// Write settings into Port DB Table
-		$sql = "INSERT INTO ports (portNum,portLabel,rxMode,rxGPIO,txGPIO,rxAudioDev,txAudioDev,rxGPIO_active,txGPIO_active) VALUES ('$newPortNum','$portLabel[$a]','$rxMode[$a]','$rxGPIO[$a]','$txGPIO[$a]','$rxAudioDev[$a]','$txAudioDev[$a]','$rxGPIO_active[$a]','$txGPIO_active[$a]')";
-		$Database->update($sql);	
-		
-		// Write RX pin to GPIO Pin table in DB
-		$gpio_rx = "INSERT INTO gpio_pins (gpio_num,direction,active,description,type) VALUES ('$rxGPIO[$a]','in','$rxGPIO_active[$a]','PORT $newPortNum RX: $portLabel[$a]','Port');";
-		$Database->update($gpio_rx);	
-		
-		// Write TX pin to GPIO Pin table in DB
-		$gpio_tx = "INSERT INTO gpio_pins (gpio_num,direction,active,description,type) VALUES ('$txGPIO[$a]','out','$txGPIO_active[$a]','PORT $newPortNum TX: $portLabel[$a]','Port');";
-		$Database->update($gpio_tx);	
+$fields = array('portLabel', 'rxMode', 'rxGPIO', 'rxGPIO_active', 'txGPIO', 'txGPIO_active', 'rxAudioDev', 'txAudioDev');
+$columns = array();
+foreach ($fields as $field) {
+	if (!isset($_POST[$field]) || !is_array($_POST[$field])) {
+		port_form_fail();
 	}
-
-	return true;
-	
-} else {
-	return false;
-} 
-
-
-// --------------------------------------------------------
-// SESSION CHECK TO SEE IF USER IS LOGGED IN.
- } // close ELSE to end login check from top of page
-// --------------------------------------------------------
-?>
+	$columns[$field] = array_values($_POST[$field]);
+}
+$count = count($columns['portLabel']);
+if ($count < 1 || $count > 8) {
+	port_form_fail();
+}
+foreach ($fields as $field) {
+	if (count($columns[$field]) !== $count) {
+		port_form_fail();
+	}
+}
+$rows = array();
+$seenGpio = array();
+for ($i = 0; $i < $count; $i++) {
+	$label = $columns['portLabel'][$i];
+	$mode = $columns['rxMode'][$i];
+	$rx = $columns['rxGPIO'][$i];
+	$tx = $columns['txGPIO'][$i];
+	$rxActive = $columns['rxGPIO_active'][$i];
+	$txActive = $columns['txGPIO_active'][$i];
+	$rxAudio = $columns['rxAudioDev'][$i];
+	$txAudio = $columns['txAudioDev'][$i];
+	if (!is_string($label) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,40}$/', $label)) {
+		port_form_fail();
+	}
+	if ($mode !== 'gpio' && $mode !== 'vox') {
+		port_form_fail();
+	}
+	if (!preg_match('/^[0-9]{1,4}$/', $rx) || !preg_match('/^[0-9]{1,4}$/', $tx) || $rx === $tx) {
+		port_form_fail();
+	}
+	if (($rxActive !== 'high' && $rxActive !== 'low') || ($txActive !== 'high' && $txActive !== 'low')) {
+		port_form_fail();
+	}
+	if (!preg_match('/^alsa:plughw:[0-9]+\|[0-9]+$/', $rxAudio) || !preg_match('/^alsa:plughw:[0-9]+\|[0-9]+$/', $txAudio)) {
+		port_form_fail();
+	}
+	if (isset($seenGpio[$rx]) || isset($seenGpio[$tx])) {
+		port_form_fail();
+	}
+	$seenGpio[$rx] = true;
+	$seenGpio[$tx] = true;
+	$rows[] = array(
+		'portLabel' => $label,
+		'rxMode' => $mode,
+		'rxGPIO' => $rx,
+		'rxGPIO_active' => $rxActive,
+		'txGPIO' => $tx,
+		'txGPIO_active' => $txActive,
+		'rxAudioDev' => $rxAudio,
+		'txAudioDev' => $txAudio,
+	);
+}
+$Database = new Database();
+if ($Database->replace_port_form($rows) !== true) {
+	http_response_code(500);
+	header('Content-Type: text/plain; charset=UTF-8');
+	echo "not-written\n";
+	exit;
+}
+header('Content-Type: text/plain; charset=UTF-8');
+echo "updated\n";

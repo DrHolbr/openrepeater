@@ -8,6 +8,10 @@ class Database {
     private $db_loc;
 
 
+	public function databasePath() {
+		return $this->db_loc;
+	}
+
 	public function __construct() {
 		$override = getenv('ORP_DB_PATH');
 		if (is_string($override) && $override !== '') {
@@ -146,6 +150,360 @@ class Database {
 	// ENSURE SETTING EXISTS - Insert a default value only if the key is missing.
 	// Used so settings added in newer ORP versions are seeded into databases
 	// from older installs without overwriting any value the user has set.
+	public function has_setting($key) {
+		if (!is_string($key) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}$/', $key)) {
+			return false;
+		}
+		$db = new SQLite3($this->db_loc);
+		$stmt = $db->prepare('SELECT 1 FROM settings WHERE keyID = :key');
+		$stmt->bindValue(':key', $key, SQLITE3_TEXT);
+		$result = $stmt->execute();
+		$exists = $result !== false && $result->fetchArray() !== false;
+		$db->close();
+		return $exists;
+	}
+
+	public function update_existing_setting($key, $value) {
+		if (!is_string($key)) {
+			return false;
+		}
+		return $this->update_existing_settings(array($key => $value));
+	}
+
+	public function update_existing_settings($pairs) {
+		if (!is_array($pairs)) {
+			return false;
+		}
+		foreach ($pairs as $key => $value) {
+			if (!is_string($key) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}$/', $key)) {
+				return false;
+			}
+			if (!is_string($value) || strlen($value) > 4000 || strpos($value, "\0") !== false) {
+				return false;
+			}
+			if (!$this->has_setting($key)) {
+				return false;
+			}
+		}
+		if ($pairs === array()) {
+			return true;
+		}
+		$db = $this->open_writer();
+		if ($db === null || !$this->exec_ok($db, 'BEGIN IMMEDIATE')) {
+			$this->close_quietly($db);
+			return false;
+		}
+		$stmt = $db->prepare('UPDATE settings SET value = :value WHERE keyID = :key');
+		if ($stmt === false) {
+			return $this->abort_write($db);
+		}
+		foreach ($pairs as $key => $value) {
+			$stmt->bindValue(':value', $value, SQLITE3_TEXT);
+			$stmt->bindValue(':key', $key, SQLITE3_TEXT);
+			if (!$this->ran($db, $stmt->execute())) {
+				return $this->abort_write($db);
+			}
+			$stmt->reset();
+		}
+		if (!$this->write_flag_in_transaction($db, true)) {
+			return $this->abort_write($db);
+		}
+		return $this->finish_write($db);
+	}
+
+	public function replace_port_form($rows) {
+		if (!is_array($rows) || $rows === array()) {
+			return false;
+		}
+		$db = $this->open_writer();
+		if ($db === null || !$this->exec_ok($db, 'BEGIN IMMEDIATE')) {
+			$this->close_quietly($db);
+			return false;
+		}
+		if (!$this->exec_ok($db, 'DELETE FROM ports') || !$this->exec_ok($db, "DELETE FROM gpio_pins WHERE type = 'Port'")) {
+			return $this->abort_write($db);
+		}
+		$portStmt = $db->prepare('INSERT INTO ports (portNum, portLabel, rxMode, rxGPIO, txGPIO, rxAudioDev, txAudioDev, rxGPIO_active, txGPIO_active) VALUES (:portNum, :portLabel, :rxMode, :rxGPIO, :txGPIO, :rxAudioDev, :txAudioDev, :rxGPIO_active, :txGPIO_active)');
+		$gpioStmt = $db->prepare('INSERT INTO gpio_pins (gpio_num, direction, active, description, type) VALUES (:gpio_num, :direction, :active, :description, :type)');
+		if ($portStmt === false || $gpioStmt === false) {
+			return $this->abort_write($db);
+		}
+		$n = 1;
+		foreach ($rows as $row) {
+			$portStmt->bindValue(':portNum', $n, SQLITE3_INTEGER);
+			$portStmt->bindValue(':portLabel', $row['portLabel'], SQLITE3_TEXT);
+			$portStmt->bindValue(':rxMode', $row['rxMode'], SQLITE3_TEXT);
+			$portStmt->bindValue(':rxGPIO', $row['rxGPIO'], SQLITE3_TEXT);
+			$portStmt->bindValue(':txGPIO', $row['txGPIO'], SQLITE3_TEXT);
+			$portStmt->bindValue(':rxAudioDev', $row['rxAudioDev'], SQLITE3_TEXT);
+			$portStmt->bindValue(':txAudioDev', $row['txAudioDev'], SQLITE3_TEXT);
+			$portStmt->bindValue(':rxGPIO_active', $row['rxGPIO_active'], SQLITE3_TEXT);
+			$portStmt->bindValue(':txGPIO_active', $row['txGPIO_active'], SQLITE3_TEXT);
+			if (!$this->ran($db, $portStmt->execute())) {
+				return $this->abort_write($db);
+			}
+			$portStmt->reset();
+			foreach (array(
+				array($row['rxGPIO'], 'in', $row['rxGPIO_active'], 'PORT ' . $n . ' RX: ' . $row['portLabel']),
+				array($row['txGPIO'], 'out', $row['txGPIO_active'], 'PORT ' . $n . ' TX: ' . $row['portLabel']),
+			) as $gpio) {
+				$gpioStmt->bindValue(':gpio_num', $gpio[0], SQLITE3_TEXT);
+				$gpioStmt->bindValue(':direction', $gpio[1], SQLITE3_TEXT);
+				$gpioStmt->bindValue(':active', $gpio[2], SQLITE3_TEXT);
+				$gpioStmt->bindValue(':description', $gpio[3], SQLITE3_TEXT);
+				$gpioStmt->bindValue(':type', 'Port', SQLITE3_TEXT);
+				if (!$this->ran($db, $gpioStmt->execute())) {
+					return $this->abort_write($db);
+				}
+				$gpioStmt->reset();
+			}
+			$n++;
+		}
+		if (!$this->write_flag_in_transaction($db, true)) {
+			return $this->abort_write($db);
+		}
+		return $this->finish_write($db);
+	}
+
+	public function write_advanced_rows($pairs) {
+		if (!is_array($pairs) || $pairs === array()) {
+			return false;
+		}
+		foreach ($pairs as $key => $value) {
+			if (!is_string($key) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,63}$/', $key)) {
+				return false;
+			}
+			if (!is_string($value)) {
+				return false;
+			}
+		}
+		$db = $this->open_writer();
+		if ($db === null || !$this->exec_ok($db, 'BEGIN IMMEDIATE')) {
+			$this->close_quietly($db);
+			return false;
+		}
+		if (!$this->exec_ok($db, 'CREATE TABLE IF NOT EXISTS advanced (keyID TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL)')) {
+			return $this->abort_write($db);
+		}
+		$stmt = $db->prepare('INSERT OR REPLACE INTO advanced (keyID, value) VALUES (:key, :value)');
+		if ($stmt === false) {
+			return $this->abort_write($db);
+		}
+		foreach ($pairs as $key => $value) {
+			$stmt->bindValue(':key', $key, SQLITE3_TEXT);
+			$stmt->bindValue(':value', $value, SQLITE3_TEXT);
+			if (!$this->ran($db, $stmt->execute())) {
+				return $this->abort_write($db);
+			}
+			$stmt->reset();
+		}
+		return $this->finish_write($db);
+	}
+
+	public function ensure_advanced_table() {
+		$db = $this->open_writer();
+		if ($db === null) {
+			return false;
+		}
+		$ok = $this->exec_ok($db, 'CREATE TABLE IF NOT EXISTS advanced (keyID TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL)');
+		$db->close();
+		return $ok;
+	}
+
+	public function set_module_enabled($moduleKey, $enabled) {
+		$moduleKey = $this->module_key($moduleKey);
+		if ($moduleKey === null || ($enabled !== 0 && $enabled !== 1 && $enabled !== '0' && $enabled !== '1' && $enabled !== true && $enabled !== false)) {
+			return false;
+		}
+		$bit = ($enabled === 1 || $enabled === '1' || $enabled === true) ? 1 : 0;
+		$db = $this->open_writer();
+		if ($db === null || !$this->exec_ok($db, 'BEGIN IMMEDIATE')) {
+			$this->close_quietly($db);
+			return false;
+		}
+		if (!$this->module_row_exists($db, $moduleKey)) {
+			return $this->abort_write($db);
+		}
+		$stmt = $db->prepare('UPDATE modules SET moduleEnabled = :enabled WHERE moduleKey = :key');
+		if ($stmt === false) {
+			return $this->abort_write($db);
+		}
+		$stmt->bindValue(':enabled', $bit, SQLITE3_INTEGER);
+		$stmt->bindValue(':key', (int) $moduleKey, SQLITE3_INTEGER);
+		if (!$this->ran($db, $stmt->execute())) {
+			return $this->abort_write($db);
+		}
+		if (!$this->write_flag_in_transaction($db, true)) {
+			return $this->abort_write($db);
+		}
+		return $this->finish_write($db);
+	}
+
+	public function write_module_options($moduleKey, $serialized) {
+		$moduleKey = $this->module_key($moduleKey);
+		if ($moduleKey === null || !is_string($serialized)) {
+			return false;
+		}
+		$db = $this->open_writer();
+		if ($db === null || !$this->exec_ok($db, 'BEGIN IMMEDIATE')) {
+			$this->close_quietly($db);
+			return false;
+		}
+		if (!$this->module_row_exists($db, $moduleKey)) {
+			return $this->abort_write($db);
+		}
+		$stmt = $db->prepare('UPDATE modules SET moduleOptions = :options WHERE moduleKey = :key');
+		if ($stmt === false) {
+			return $this->abort_write($db);
+		}
+		$stmt->bindValue(':options', $serialized, SQLITE3_TEXT);
+		$stmt->bindValue(':key', (int) $moduleKey, SQLITE3_INTEGER);
+		if (!$this->ran($db, $stmt->execute())) {
+			return $this->abort_write($db);
+		}
+		if (!$this->write_flag_in_transaction($db, true)) {
+			return $this->abort_write($db);
+		}
+		return $this->finish_write($db);
+	}
+
+	public function insert_module_row($name, $enabled, $svxlinkId) {
+		if (!is_string($name) || !preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $name)) {
+			return false;
+		}
+		if ($enabled !== 0 && $enabled !== 1 && $enabled !== '0' && $enabled !== '1') {
+			return false;
+		}
+		if (is_int($svxlinkId)) {
+			$svxlinkId = (string) $svxlinkId;
+		}
+		if (!is_string($svxlinkId) || !preg_match('/^[1-9][0-9]{0,8}$/', $svxlinkId)) {
+			return false;
+		}
+		$db = $this->open_writer();
+		if ($db === null || !$this->exec_ok($db, 'BEGIN IMMEDIATE')) {
+			$this->close_quietly($db);
+			return false;
+		}
+		$exists = $db->prepare('SELECT moduleKey FROM modules WHERE svxlinkName = :name');
+		if ($exists === false) {
+			return $this->abort_write($db);
+		}
+		$exists->bindValue(':name', $name, SQLITE3_TEXT);
+		$found = $exists->execute();
+		if (!$this->ran($db, $found)) {
+			return $this->abort_write($db);
+		}
+		if ($found->fetchArray() !== false) {
+			return $this->commit_write($db);
+		}
+		$stmt = $db->prepare('INSERT INTO modules (moduleEnabled, svxlinkName, svxlinkID) VALUES (:enabled, :name, :id)');
+		if ($stmt === false) {
+			return $this->abort_write($db);
+		}
+		$stmt->bindValue(':enabled', (int) $enabled, SQLITE3_INTEGER);
+		$stmt->bindValue(':name', $name, SQLITE3_TEXT);
+		$stmt->bindValue(':id', (int) $svxlinkId, SQLITE3_INTEGER);
+		if (!$this->ran($db, $stmt->execute())) {
+			return $this->abort_write($db);
+		}
+		if (!$this->write_flag_in_transaction($db, true)) {
+			return $this->abort_write($db);
+		}
+		return $this->finish_write($db);
+	}
+
+	private function open_writer() {
+		try {
+			$db = new SQLite3($this->db_loc);
+		} catch (Exception $e) {
+			return null;
+		}
+		$db->busyTimeout(0);
+		return $db;
+	}
+
+	private function exec_ok($db, $sql) {
+		if (!$db instanceof SQLite3) {
+			return false;
+		}
+		return $db->exec($sql) !== false && $db->lastErrorCode() === 0;
+	}
+
+	private function ran($db, $result) {
+		return $result !== false && $db->lastErrorCode() === 0;
+	}
+
+	private function write_flag_in_transaction($db, $flag) {
+		if ($this->useMemcached()) {
+			return true;
+		}
+		$stmt = $db->prepare('INSERT OR REPLACE INTO system_flags (keyID, value) VALUES (:keyID, :value)');
+		if ($stmt === false) {
+			return false;
+		}
+		$stmt->bindValue(':keyID', 'update_settings_flag', SQLITE3_TEXT);
+		$stmt->bindValue(':value', $flag ? '1' : '0', SQLITE3_TEXT);
+		return $this->ran($db, $stmt->execute());
+	}
+
+	private function commit_write($db) {
+		if (!$this->exec_ok($db, 'COMMIT')) {
+			$db->exec('ROLLBACK');
+			$db->close();
+			return false;
+		}
+		$db->close();
+		return true;
+	}
+
+	private function finish_write($db) {
+		if (!$this->commit_write($db)) {
+			return false;
+		}
+		if ($this->useMemcached()) {
+			$this->set_update_flag(true);
+		}
+		return true;
+	}
+
+	private function module_key($moduleKey) {
+		if (is_int($moduleKey)) {
+			$moduleKey = (string) $moduleKey;
+		}
+		if (!is_string($moduleKey) || !preg_match('/^[1-9][0-9]{0,8}$/', $moduleKey)) {
+			return null;
+		}
+		return $moduleKey;
+	}
+
+	private function module_row_exists($db, $moduleKey) {
+		$stmt = $db->prepare('SELECT moduleKey FROM modules WHERE moduleKey = :key');
+		if ($stmt === false) {
+			return false;
+		}
+		$stmt->bindValue(':key', (int) $moduleKey, SQLITE3_INTEGER);
+		$result = $stmt->execute();
+		if (!$this->ran($db, $result)) {
+			return false;
+		}
+		return $result->fetchArray() !== false;
+	}
+
+	private function abort_write($db) {
+		if ($db instanceof SQLite3) {
+			$db->exec('ROLLBACK');
+			$db->close();
+		}
+		return false;
+	}
+
+	private function close_quietly($db) {
+		if ($db instanceof SQLite3) {
+			$db->close();
+		}
+	}
+
 	public function ensure_setting($keyID, $defaultValue) {
 		$db = new SQLite3($this->db_loc) or die('Unable to open database');
 		$stmt = $db->prepare('INSERT OR IGNORE INTO settings (keyID, value) VALUES (:keyID, :value)');
@@ -297,22 +655,30 @@ class Database {
 	###############################################
 
 	public function db_export($db_tables, $sql_file) {
-		$orp_version = $this->get_version();
-
-		// SQL File Header, start file
-		$sql_file_header = str_repeat('-',80) . "\n-- OpenRepeater Backup (ver $orp_version)\n" . str_repeat('-',80);
-		exec('echo "' . $sql_file_header . '"  > ' . $sql_file);
-
-		// Loop through each table
-		foreach ($db_tables as $cur_table) {
-			// Section Header
-			$sql_section_header = "\n\n" . str_repeat('-',80) . "\n-- Table: $cur_table\n" . str_repeat('-',80);
-			exec('echo "' . $sql_section_header . '"  >> ' . $sql_file);
-
-			// Dump current table
-			exec('sqlite3 ' . $this->db_loc . ' ".dump ' . $cur_table . '" >> ' . $sql_file);
+		if (!is_string($sql_file) || $sql_file === '' || !is_array($db_tables) || $db_tables === array()) {
+			return false;
 		}
-
+		$orp_version = $this->get_version();
+		$sql_file_header = str_repeat('-',80) . "\n-- OpenRepeater Backup (ver $orp_version)\n" . str_repeat('-',80) . "\n";
+		exec('printf %s ' . escapeshellarg($sql_file_header) . ' > ' . escapeshellarg($sql_file), $unused, $rc);
+		if ($rc !== 0) {
+			return false;
+		}
+		foreach ($db_tables as $cur_table) {
+			if (!is_string($cur_table) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $cur_table)) {
+				return false;
+			}
+			$sql_section_header = "\n\n" . str_repeat('-',80) . "\n-- Table: $cur_table\n" . str_repeat('-',80) . "\n";
+			exec('printf %s ' . escapeshellarg($sql_section_header) . ' >> ' . escapeshellarg($sql_file), $unused, $rc);
+			if ($rc !== 0) {
+				return false;
+			}
+			exec('sqlite3 ' . escapeshellarg($this->db_loc) . ' ' . escapeshellarg('.dump ' . $cur_table) . ' >> ' . escapeshellarg($sql_file), $unused, $rc);
+			if ($rc !== 0) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 
@@ -322,16 +688,228 @@ class Database {
 	###############################################
 
 	public function db_import($db_tables, $sql_file) {
-		// Empty Afected Tabled
-		$db = new SQLite3($this->db_loc) or die('Unable to open database');
-		// Loop through each table
-		foreach ($db_tables as $cur_table) {
-			$db->query("DELETE FROM $cur_table;") or die('Unable to delete current record.');
+		$rows = $this->load_backup_rows($db_tables, $sql_file);
+		if ($rows === false) {
+			return false;
+		}
+		return $this->replace_backup_tables($db_tables, $rows);
+	}
+
+	public function load_backup_rows($db_tables, $sql_file) {
+		if (!is_string($sql_file) || !is_file($sql_file) || !is_readable($sql_file)) {
+			return false;
+		}
+		$sql = file_get_contents($sql_file);
+		if (!is_string($sql)) {
+			return false;
+		}
+		require_once __DIR__ . '/BackupSql.php';
+		return BackupSql::parse($sql, $db_tables);
+	}
+
+	public function capture_table_rows($db_tables) {
+		if (!$this->backup_tables_ok($db_tables)) {
+			return false;
+		}
+		$db = $this->open_reader();
+		if ($db === null) {
+			return false;
+		}
+		$rows = array();
+		foreach ($db_tables as $table) {
+			$captured = $this->capture_one_table($db, $table);
+			if ($captured === false) {
+				$db->close();
+				return false;
+			}
+			$rows[$table] = $captured;
 		}
 		$db->close();
+		return $rows;
+	}
 
-		// Import SQL file
-		exec('cat ' . $sql_file . ' | sqlite3 ' . $this->db_loc);
+	// The installed database is root-owned inside a sticky directory. The web
+	// user can write that inode and cannot rename another file over it.
+	public function replace_backup_tables($db_tables, $rows) {
+		if (!$this->backup_tables_ok($db_tables) || !is_array($rows)) {
+			return false;
+		}
+		foreach ($db_tables as $table) {
+			if (!isset($rows[$table]) || !is_array($rows[$table])) {
+				return false;
+			}
+		}
+		$db = $this->open_writer();
+		if ($db === null) {
+			return false;
+		}
+		$allowed = array();
+		foreach ($db_tables as $table) {
+			$allowed[$table] = true;
+		}
+		$columns = array();
+		foreach ($db_tables as $table) {
+			$info = $db->query('PRAGMA table_info("' . $table . '")');
+			if ($info === false) {
+				$this->close_quietly($db);
+				return false;
+			}
+			$names = array();
+			while ($col = $info->fetchArray(SQLITE3_ASSOC)) {
+				$names[] = $col['name'];
+			}
+			if ($names === array()) {
+				$this->close_quietly($db);
+				return false;
+			}
+			$columns[$table] = $names;
+		}
+		if (!method_exists($db, 'setAuthorizer')) {
+			$this->close_quietly($db);
+			return false;
+		}
+		$db->setAuthorizer(function ($action, $arg1 = null, $arg2 = null, $arg3 = null, $arg4 = null) use ($allowed) {
+			if ($action === SQLite3::TRANSACTION) {
+				return SQLite3::OK;
+			}
+			$internal = ($arg1 === 'sqlite_sequence' || $arg1 === 'sqlite_master' || $arg1 === 'sqlite_schema' || $arg1 === 'sqlite_temp_master' || $arg1 === 'sqlite_temp_schema');
+			if ($action === SQLite3::READ && ($internal || (is_string($arg1) && isset($allowed[$arg1])))) {
+				return SQLite3::OK;
+			}
+			if (($action === SQLite3::INSERT || $action === SQLite3::DELETE || $action === SQLite3::UPDATE)
+				&& ($arg1 === 'sqlite_sequence' || (is_string($arg1) && isset($allowed[$arg1])))) {
+				return SQLite3::OK;
+			}
+			return SQLite3::DENY;
+		});
+		if (!$this->exec_ok($db, 'BEGIN IMMEDIATE')) {
+			$this->close_quietly($db);
+			return false;
+		}
+		foreach ($db_tables as $table) {
+			if (!$this->exec_ok($db, 'DELETE FROM "' . $table . '"')) {
+				return $this->abort_write($db);
+			}
+			foreach ($rows[$table] as $row) {
+				if (!is_array($row) || !isset($row['values']) || !is_array($row['values'])) {
+					return $this->abort_write($db);
+				}
+				$names = $row['columns'] === null ? $columns[$table] : $row['columns'];
+				if (!is_array($names) || count($names) !== count($row['values'])) {
+					return $this->abort_write($db);
+				}
+				foreach ($names as $name) {
+					if (!is_string($name) || !in_array($name, $columns[$table], true)) {
+						return $this->abort_write($db);
+					}
+				}
+				$holders = array();
+				foreach ($names as $index => $name) {
+					$holders[] = ':' . $index;
+				}
+				$stmt = $db->prepare('INSERT INTO "' . $table . '" ("' . implode('","', $names) . '") VALUES (' . implode(',', $holders) . ')');
+				if ($stmt === false) {
+					return $this->abort_write($db);
+				}
+				foreach ($row['values'] as $index => $value) {
+					if (!$this->bind_backup_value($stmt, ':' . $index, $value)) {
+						return $this->abort_write($db);
+					}
+				}
+				if (!$this->ran($db, $stmt->execute())) {
+					return $this->abort_write($db);
+				}
+			}
+		}
+		return $this->commit_write($db);
+	}
+
+	private function backup_tables_ok($db_tables) {
+		if (!is_array($db_tables) || $db_tables === array()) {
+			return false;
+		}
+		$seen = array();
+		foreach ($db_tables as $table) {
+			if (!is_string($table) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $table) || isset($seen[$table])) {
+				return false;
+			}
+			$seen[$table] = true;
+		}
+		return true;
+	}
+
+	private function open_reader() {
+		try {
+			$db = new SQLite3($this->db_loc, SQLITE3_OPEN_READONLY);
+		} catch (Exception $e) {
+			return null;
+		}
+		$db->busyTimeout(0);
+		return $db;
+	}
+
+	private function capture_one_table($db, $table) {
+		$info = $db->query('PRAGMA table_info("' . $table . '")');
+		if ($info === false) {
+			return false;
+		}
+		$names = array();
+		while ($col = $info->fetchArray(SQLITE3_ASSOC)) {
+			$names[] = $col['name'];
+		}
+		if ($names === array()) {
+			return false;
+		}
+		$result = $db->query('SELECT "' . implode('","', $names) . '" FROM "' . $table . '"');
+		if ($result === false) {
+			return false;
+		}
+		$rows = array();
+		while ($row = $result->fetchArray(SQLITE3_NUM)) {
+			$values = array();
+			foreach ($row as $value) {
+				if ($value === null) {
+					$values[] = array('null', null);
+				} elseif (is_int($value)) {
+					$values[] = array('number', (string) $value);
+				} elseif (is_float($value)) {
+					$values[] = array('number', (string) $value);
+				} elseif (is_string($value) && strpos($value, "\0") !== false) {
+					$values[] = array('blob', $value);
+				} else {
+					$values[] = array('string', (string) $value);
+				}
+			}
+			$rows[] = array('columns' => $names, 'values' => $values);
+		}
+		return $rows;
+	}
+
+	private function bind_backup_value($stmt, $name, $value) {
+		if (!is_array($value) || !isset($value[0])) {
+			return false;
+		}
+		if ($value[0] === 'null') {
+			$stmt->bindValue($name, null, SQLITE3_NULL);
+			return true;
+		}
+		if ($value[0] === 'string') {
+			$stmt->bindValue($name, $value[1], SQLITE3_TEXT);
+			return true;
+		}
+		if ($value[0] === 'blob') {
+			$stmt->bindValue($name, $value[1], SQLITE3_BLOB);
+			return true;
+		}
+		if ($value[0] === 'number' && is_string($value[1]) && preg_match('/^-?[0-9]+$/', $value[1])) {
+			$stmt->bindValue($name, (int) $value[1], SQLITE3_INTEGER);
+			return true;
+		}
+		if ($value[0] === 'number' && is_string($value[1]) && is_numeric($value[1])) {
+			$stmt->bindValue($name, (float) $value[1], SQLITE3_FLOAT);
+			return true;
+		}
+		return false;
 	}
 
 
@@ -345,7 +923,10 @@ class Database {
 		if ($force === 'sqlite') {
 			return false;
 		}
-		return class_exists('Memcached');
+		// extension_loaded does not ask the autoloader to invent
+		// includes/classes/Memcached.php. The class check is also
+		// non-autoloading, so a missing extension uses system_flags.
+		return extension_loaded('memcached') && class_exists('Memcached', false);
 	}
 
 	public function set_update_flag($flag) {

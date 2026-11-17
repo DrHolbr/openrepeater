@@ -53,8 +53,8 @@ $(function() {
 	        url: $form.attr("action"),
 	        data: $form.serialize(),
 	        type: method,
-	        success: function() {
-				$('.server_bar_wrap').show(); 
+	        success: function(data) {
+				$('#courtesyStatus').text(data);
 	        }
 	    });
 

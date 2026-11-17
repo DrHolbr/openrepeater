@@ -7,7 +7,7 @@ var dataelem = "#data";
 var pausetoggle = "#pause";
 var scrollelems = ["html", "body"];
 
-var url = "log";
+var url = "functions/log_stream.php";
 var fix_rn = true;
 var load = 35 * 35; /* 30KB */
 var poll = 1; /* 1ms */
@@ -20,10 +20,21 @@ var log_data = "";
 var log_file_size = 0;
 
 /* :-( https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/parseInt */
+function csrf_token() {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute('content') : '';
+}
+
 function parseInt2(value) {
-    if(!(/^[0-9]+$/.test(value))) throw "Invalid integer " + value;
+    if (value === null || value === undefined || !(/^[0-9]+$/.test(value))) {
+        error("The log stream did not return an integer length.");
+        return 0;
+    }
     var v = Number(value);
-    if (isNaN(v))                 throw "Invalid integer " + value;
+    if (isNaN(v)) {
+        error("The log stream did not return an integer length.");
+        return 0;
+    }
     return v;
 }
 
@@ -54,7 +65,10 @@ function get_log() {
     $.ajax(url, {
         dataType: "text",
         cache: false,
-        headers: {Range: "bytes=" + range},
+        headers: {
+            Range: "bytes=" + range,
+            "X-CSRF-Token": csrf_token()
+        },
         success: function (data, s, xhr) {
             loading = false;
 
@@ -62,23 +76,31 @@ function get_log() {
 
             if (xhr.status === 206) {
                 var c_r = xhr.getResponseHeader("Content-Range");
-                if (!c_r)
-                    throw "Server did not respond with a Content-Range";
+                if (!c_r) {
+                    error("The log stream did not return Content-Range.");
+                    return;
+                }
 
                 log_file_size = parseInt2(c_r.split("/")[1]);
                 content_size = parseInt2(xhr.getResponseHeader("Content-Length"));
             } else if (xhr.status === 200) {
-                if (must_get_206)
-                    throw "Expected 206 Partial Content";
+                if (must_get_206) {
+                    error("The log stream did not return partial content.");
+                    return;
+                }
 
                 content_size = log_file_size =
                         parseInt2(xhr.getResponseHeader("Content-Length"));
             } else {
-                throw "Unexpected status " + xhr.status;
+                error("The log stream returned status " + xhr.status + ".");
+                return;
             }
+            if (kill) return;
 
-            if (first_load && data.length > load)
-                throw "Server's response was too long";
+            if (first_load && data.length > load) {
+                error("The log stream returned more text than requested.");
+                return;
+            }
 
             var added = false;
 
@@ -112,18 +134,21 @@ function get_log() {
         error: function (xhr, s, t) {
             loading = false;
 
-            if (xhr.status === 416 || xhr.status == 404) {
-                /* 416: Requested range not satisfiable: log was truncated. */
-                /* 404: Retry soon, I guess */
-
+            if (xhr.status === 416) {
+                /* The file was truncated or rotated. Read from the start again. */
                 log_file_size = 0;
                 log_data = "";
                 show_log();
-
                 setTimeout(get_log, poll);
-            } else {
-                throw "Unknown AJAX Error (status " + xhr.status + ")";
+                return;
             }
+            var detail = (xhr.responseText || "").replace(/\s+$/, "");
+            if (!detail) {
+                detail = "The log stream failed (status " + xhr.status + ").";
+            }
+            kill = true;
+            $(dataelem).text(detail);
+            scroll(0);
         }
     });
 }

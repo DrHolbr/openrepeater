@@ -4,6 +4,12 @@ set -euo pipefail
 
 export ORP_BENCH_TEST_HARNESS=1
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
+# shellcheck source=lib/native_layout.sh
+. "$ROOT_DIR/upgrade/tests/lib/native_layout.sh"
+orp_use_fixture_tmpdir
+orp_require_fixture_space
 INSTALL="$ROOT_DIR/upgrade/install-orp-ui.sh"
 HELPER="$ROOT_DIR/install/scripts/orp_helper"
 fail=0
@@ -21,6 +27,16 @@ bash -n "$INSTALL"
 bash -n "$ROOT_DIR/upgrade/lib/bench-target.sh"
 bash -n "$HELPER"
 ok "shell syntax checks passed"
+if grep -E -n '^[[:space:]]*(\.|source)[[:space:]]' "$HELPER"; then
+	bad "orp_helper sources a file"
+else
+	ok "orp_helper sources nothing"
+fi
+if grep -n 'bench-target.sh' "$HELPER" || grep -n '/var/www/openrepeater/upgrade' "$HELPER"; then
+	bad "orp_helper names a docroot script"
+else
+	ok "orp_helper does not name a docroot script"
+fi
 
 make_systemctl() {
 	local path=$1
@@ -68,7 +84,7 @@ EOF
 
 seed_identity() {
 	local root=$1
-	mkdir -p "$root/etc" "$root/var/lib/orp-test" "$root/usr/local/bin" "$root/usr/local/share/svxlink" \
+	orp_mkdir "$root" "$root/etc" "$root/var/lib/orp-test" "$root/usr/local/bin" "$root/usr/local/share/svxlink" \
 		"$root/usr/local/sbin" "$root/opt/orp-test" "$root/etc/svxlink" "$root/etc/nginx/sites-enabled"
 	printf 'orp-test\n' > "$root/etc/hostname"
 	printf 'aarch64\n' > "$root/etc/orp-arch"
@@ -80,7 +96,7 @@ EOF
 	printf 'guard\n' > "$root/etc/orp-test-image"
 	printf 'done\n' > "$root/var/lib/orp-test/complete"
 	printf 'sentinel-build\n' > "$root/var/lib/orp-test/build-sentinel"
-	mkdir -p "$root/var/lib/orp-test/build"
+	orp_mkdir "$root/var/lib/orp-test/build"
 	printf 'object\n' > "$root/var/lib/orp-test/build/keep.o"
 	printf 'bin\n' > "$root/usr/local/bin/svxlink"
 	printf 'share\n' > "$root/usr/local/share/svxlink/keep"
@@ -88,14 +104,18 @@ EOF
 	printf 'archive\n' > "$root/opt/orp-test/keep"
 	printf 'stock-svxlink\n' > "$root/etc/svxlink/svxlink.conf"
 	printf 'default-site\n' > "$root/etc/nginx/sites-enabled/default"
+	plant_native_layout "$root"
 }
 
 checksum() { sha256sum "$1" | awk '{print $1}'; }
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+tmp=$(orp_mktemp_dir)
+trap 'orp_cleanup_fixture "$tmp"' EXIT
+helper_root="$tmp/helper-root"
+orp_mkdir "$helper_root/etc"
+printf 'fixture-host\n' > "$helper_root/etc/hostname"
 bin="$tmp/bin"
-mkdir -p "$bin"
+orp_mkdir "$bin"
 log="$tmp/systemctl.log"
 make_systemctl "$bin/systemctl"
 
@@ -190,10 +210,67 @@ else
 	bad "build.swap was created"
 fi
 
+unit="$good/usr/local/lib/systemd/system/svxlink.service"
+if [ -f "$unit" ] && [ ! -L "$unit" ] \
+	&& grep -q '^ExecStart=/usr/local/bin/svxlink --logfile=/var/log/svxlink --config=/etc/svxlink/svxlink.conf$' "$unit" \
+	&& ! grep -E -q 'gpio|EnvironmentFile|ExecStartPre|ExecStopPost|/usr/bin/svxlink' "$unit"
+then
+	ok "vendor unit points at the source-install binary and has no GPIO hook"
+else
+	bad "vendor unit"
+	cat "$unit" >&2 || true
+fi
+for masked in svxlink.service remotetrx.service svxreflector.service; do
+	if [ -L "$good/etc/systemd/system/$masked" ] && [ "$(readlink "$good/etc/systemd/system/$masked")" = "/dev/null" ]; then
+		ok "mask preserved: $masked"
+	else
+		bad "mask changed: $masked"
+	fi
+done
+if grep -q '^daemon-reload$' "$log" && ! grep -E -q 'unmask|start svxlink|enable svxlink' "$log"; then
+	ok "installer reloaded systemd and did not unmask or start svxlink"
+else
+	bad "systemctl log during install"
+	cat "$log" >&2 || true
+fi
+
+# Missing RepeaterLogic.so is the native layout the previous publisher missed.
+# The install stops before the web tree and does not write a unit.
+short="$tmp/short-layout"
+seed_identity "$short"
+rm -f "$short/usr/local/lib/svxlink/RepeaterLogic.so"
+: > "$tmp/short.log"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$short" ORP_SYSTEMCTL="$bin/systemctl" ORP_SYSTEMCTL_LOG="$tmp/short.log" \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/short.out" 2>"$tmp/short.err"
+rc=$?
+set -e
+if [ "$rc" -eq 7 ] && [ ! -d "$short/var/www/openrepeater" ] \
+	&& [ ! -e "$short/usr/local/lib/systemd/system/svxlink.service" ] \
+	&& [ "$(readlink "$short/etc/systemd/system/svxlink.service")" = "/dev/null" ] \
+	&& grep -q 'RepeaterLogic.so' "$tmp/short.out" "$tmp/short.err"
+then
+	ok "missing native plugin aborts before the unit or the web tree"
+else
+	bad "missing plugin rc=$rc"
+	echo '--- stdout ---' >&2
+	cat "$tmp/short.out" >&2 || true
+	echo '--- stderr ---' >&2
+	cat "$tmp/short.err" >&2 || true
+fi
+
 site="$good/etc/nginx/sites-available/openrepeater"
 if grep -q 'unix:/run/php/php8.4-fpm.sock' "$site" \
 	&& ! grep -E -q 'php5-fpm|ssl[[:space:]]+on|listen[[:space:]]+443' "$site" \
-	&& grep -q 'server_name orp-test' "$site"
+	&& grep -q 'server_name orp-test' "$site" \
+	&& grep -F -q 'location ~* ^/(modules|sounds)/' "$site" \
+	&& grep -F -q 'location ~* ^/backup/' "$site" \
+	&& grep -F -q 'location /internal-backup/' "$site" \
+	&& ! grep -F -q 'location ~* ^/backup/[A-Za-z0-9]' "$site" \
+	&& grep -q 'phtml' "$site" \
+	&& grep -q 'phps' "$site" \
+	&& grep -F -q 'zip|bak' "$site" \
+	&& grep -q 'deny all;' "$site"
 then
 	ok "nginx site uses the PHP 8 socket and has no legacy TLS redirect"
 else
@@ -240,11 +317,22 @@ else
 fi
 sudoers="$good/etc/sudoers.d/openrepeater"
 if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoers" \
-	&& ! grep -E -q 'alsa|svxlink start|gpio_up|set_mixer' "$sudoers" \
+	&& ! grep -q 'orp_helper svxlink gpio_up' "$sudoers" \
+	&& ! grep -q 'orp_helper svxlink unmask' "$sudoers" \
+	&& ! grep -q 'orp_helper svxlink enable' "$sudoers" \
+	&& ! grep -q 'orp_helper system restart' "$sudoers" \
+	&& ! grep -q 'orp_helper alsa backup' "$sudoers" \
 	&& grep -q 'orp_helper svxlink status' "$sudoers" \
-	&& grep -q 'orp_helper info os' "$sudoers"
+	&& grep -q 'orp_helper svxlink start' "$sudoers" \
+	&& grep -q 'orp_helper svxlink stop' "$sudoers" \
+	&& grep -q 'orp_helper config publish' "$sudoers" \
+	&& grep -q 'orp_helper info os' "$sudoers" \
+	&& grep -F -q 'orp_helper module activate [A-Za-z]' "$sudoers" \
+	&& grep -F -q 'orp_helper module activate [A-Za-z][A-Za-z0-9_]' "$sudoers" \
+	&& ! grep -F -q 'orp_helper module activate *' "$sudoers" \
+	&& ! grep -F -q 'orp_helper module deactivate *' "$sudoers"
 then
-	ok "sudoers is a closed read-only helper list"
+	ok "sudoers keeps the production command list and omits lifted functional-test lines"
 else
 	bad "sudoers contract"
 	cat "$sudoers" >&2 || true
@@ -262,7 +350,43 @@ if [ -f "$db" ]; then
 else
 	bad "database missing"
 fi
+sqlite3 "$db" "UPDATE ports SET portLabel='USERPRESET' WHERE portNum=1;"
 printf 'preserve\n' >> "$db"
+mode="$good/etc/openrepeater/operating-mode"
+if [ "$(tr -d '[:space:]' < "$mode")" = "bench" ]; then
+	ok "first install writes bench operating mode"
+else
+	bad "first install did not write bench operating mode"
+fi
+printf 'functional-test\n' > "$mode"
+orp_private "$mode"
+for dir in \
+	"$good/var/www/openrepeater/sounds" \
+	"$good/var/www/openrepeater/sounds/courtesy_tones" \
+	"$good/var/www/openrepeater/sounds/identification" \
+	"$good/var/www/openrepeater/backup" \
+	"$good/var/www/openrepeater/backup/restore"
+do
+	if [ -d "$dir" ] && [ ! -L "$dir" ]; then
+		ok "restore anchor exists and is not a symlink: ${dir#"$good"}"
+	else
+		bad "restore anchor missing or is a symlink: $dir"
+	fi
+done
+if grep -q "/var/www/openrepeater/sounds/" "$ROOT_DIR/includes/classes/BackupRestore.php" \
+	&& grep -q "/var/www/openrepeater/backup/" "$ROOT_DIR/includes/classes/BackupRestore.php" \
+	&& grep -q "/var/www/openrepeater/sounds" "$INSTALL" \
+	&& grep -q "/var/www/openrepeater/backup" "$INSTALL"
+then
+	ok "installer anchors match the BackupRestore defaults"
+else
+	bad "installer anchors do not match BackupRestore"
+fi
+printf 'user-clip\n' > "$good/var/www/openrepeater/sounds/courtesy_tones/keep.wav"
+printf 'user-backup\n' > "$good/var/www/openrepeater/backup/user.orp"
+orp_mkdir "$good/usr/local/share/svxlink/sounds/en_US"
+printf 'heather-canary\n' > "$good/usr/local/share/svxlink/sounds/en_US/heather.wav"
+heather_before=$(checksum "$good/usr/local/share/svxlink/sounds/en_US/heather.wav")
 before=$(checksum "$db")
 ORP_INSTALL_OFFLINE=1 ORP_ROOT="$good" ORP_SYSTEMCTL="$bin/systemctl" ORP_SYSTEMCTL_LOG="$log" \
 	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
@@ -273,10 +397,72 @@ if [ "$before" = "$after" ]; then
 else
 	bad "database was replaced on the second install"
 fi
+if [ "$(sqlite3 "$db" "SELECT portLabel FROM ports WHERE portNum=1;")" = "USERPRESET" ]; then
+	ok "second install keeps the stored port label"
+else
+	bad "second install replaced the stored port label"
+fi
+if [ "$(tr -d '[:space:]' < "$mode")" = "functional-test" ]; then
+	ok "second install does not replace functional-test mode"
+else
+	bad "second install replaced the operating mode"
+fi
 if [ -f "$good/etc/openrepeater/bench-mode" ] && [ "$(stat -c %a "$good/etc/openrepeater/bench-mode")" = "644" ]; then
 	ok "second install keeps the bench marker"
 else
 	bad "second install removed the bench marker"
+fi
+if [ "$(cat "$good/var/www/openrepeater/sounds/courtesy_tones/keep.wav")" = "user-clip" ] \
+	&& [ "$(cat "$good/var/www/openrepeater/backup/user.orp")" = "user-backup" ] \
+	&& [ "$(checksum "$good/usr/local/share/svxlink/sounds/en_US/heather.wav")" = "$heather_before" ] \
+	&& [ ! -L "$good/var/www/openrepeater/sounds" ] \
+	&& [ ! -L "$good/var/www/openrepeater/backup" ]
+then
+	ok "second install preserves user audio and backup files and does not touch Heather"
+else
+	bad "second install changed user audio, backups, or Heather"
+fi
+
+linkroot="$tmp/sounds-link"
+seed_identity "$linkroot"
+orp_mkdir "$linkroot/var/www/openrepeater" "$linkroot/outside"
+printf 'secret\n' > "$linkroot/outside/secret"
+ln -s "$linkroot/outside" "$linkroot/var/www/openrepeater/sounds"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$linkroot" ORP_SYSTEMCTL="$bin/systemctl" ORP_SYSTEMCTL_LOG="$log" \
+	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	"$INSTALL" >"$tmp/sounds-link.out" 2>"$tmp/sounds-link.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && [ "$(cat "$linkroot/outside/secret")" = "secret" ] \
+	&& [ ! -e "$linkroot/outside/courtesy_tones" ] \
+	&& [ "$(cat "$linkroot/usr/local/share/svxlink/keep")" = "share" ]
+then
+	ok "a sounds symlink is refused and the outside tree is not used"
+else
+	bad "sounds symlink rc=$rc"
+	cat "$tmp/sounds-link.err" >&2 || true
+fi
+
+ancestor="$tmp/ancestor-link"
+seed_identity "$ancestor"
+orp_mkdir "$ancestor/outside/www"
+rm -rf "$ancestor/var/www"
+ln -s "$ancestor/outside/www" "$ancestor/var/www"
+printf 'secret\n' > "$ancestor/outside/secret"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$ancestor" ORP_SYSTEMCTL="$bin/systemctl" ORP_SYSTEMCTL_LOG="$log" \
+	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	"$INSTALL" >"$tmp/ancestor-link.out" 2>"$tmp/ancestor-link.err"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && [ "$(cat "$ancestor/outside/secret")" = "secret" ] \
+	&& [ ! -d "$ancestor/outside/www/openrepeater/sounds" ]
+then
+	ok "an ancestor symlink on the web path is refused"
+else
+	bad "ancestor symlink rc=$rc"
+	cat "$tmp/ancestor-link.err" >&2 || true
 fi
 
 failroot="$tmp/nginx-fail"
@@ -319,7 +505,7 @@ fi
 
 # Helper behavior.
 rec="$tmp/rec"
-mkdir -p "$rec"
+orp_mkdir "$rec"
 cat > "$rec/systemctl" <<'EOF'
 #!/bin/bash
 echo "systemctl $*" >> "${HELPER_LOG:?}"
@@ -355,6 +541,7 @@ chmod 755 "$rec"/*
 hlog="$tmp/helper.log"
 marker="$tmp/bench-mode"
 printf 'radio=blocked\n' > "$marker"
+orp_private "$marker"
 export PATH="$rec:$PATH"
 export HELPER_LOG="$hlog"
 export SVXLINK_GPIO_UP_BIN="$rec/gpio-up"
@@ -373,7 +560,7 @@ run_helper() {
 	local marker=$1
 	shift
 	set +e
-	out=$(ORP_BENCH_MARKER="$marker" "$HELPER" "$@" 2>&1)
+	out=$(ORP_BENCH_MARKER="$marker" ORP_ROOT="$helper_root" "$HELPER" "$@" 2>&1)
 	rc=$?
 	set -e
 	printf '%s\n' "$rc"
@@ -460,22 +647,129 @@ fi
 printf '%s\n' '#!/bin/bash' 'echo "alsactl $*" >> "${HELPER_LOG:?}"' 'exit 1' > "$rec/alsactl"
 chmod 755 "$rec/alsactl"
 : > "$hlog"
-result=$(run_helper /no/such/bench-mode alsa backup /var/www/openrepeater/backup/build/alsamixer.state)
+result=$(run_helper /no/such/bench-mode alsa backup "$helper_root/var/www/openrepeater/backup/build/alsamixer.state")
 rc=$(printf '%s\n' "$result" | head -n 1)
 out=$(printf '%s\n' "$result" | tail -n +2)
 if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'alsactl store failed' \
-	&& grep -q 'alsactl --file /var/www/openrepeater/backup/build/alsamixer.state store' "$hlog" \
+	&& grep -q 'alsactl --file ' "$hlog" \
+	&& ! grep -q "alsactl --file $helper_root/var/www/openrepeater/backup/build/alsamixer.state" "$hlog" \
 	&& ! grep -q '^chown ' "$hlog"
 then
-	ok "alsactl failure does not chown the state file"
+	ok "alsactl failure does not open or chown the www-data state path"
 else
 	bad "alsactl failure still changed ownership"
 	printf '%s\n' "$out" >&2
 	cat "$hlog" >&2 || true
 fi
 
+canary="$helper_root/alsa-canary"
+state="$helper_root/var/www/openrepeater/backup/build/alsamixer.state"
+orp_mkdir "$helper_root/var/www/openrepeater/backup/build" "$helper_root/var/www/openrepeater/backup/restore"
+printf 'CANARY\n' > "$canary"
+sudo -n chown 0:0 "$canary"
+sudo -n chmod 644 "$canary"
+cat > "$rec/alsactl" <<'EOF'
+#!/bin/bash
+echo "alsactl $*" >> "${HELPER_LOG:?}"
+file=""
+prev=""
+for arg in "$@"; do
+	if [ "$prev" = "--file" ]; then
+		file=$arg
+	fi
+	prev=$arg
+done
+if [ -n "${ORP_ALSA_SWAP_TARGET:-}" ] && [ -n "${ORP_ALSA_CANARY:-}" ]; then
+	rm -f -- "$ORP_ALSA_SWAP_TARGET"
+	ln -s -- "$ORP_ALSA_CANARY" "$ORP_ALSA_SWAP_TARGET"
+fi
+if [ -n "$file" ]; then
+	printf 'stored\n' > "$file"
+fi
+exit 0
+EOF
+cat > "$rec/chown" <<'EOF'
+#!/bin/bash
+echo "chown $*" >> "${HELPER_LOG:?}"
+/usr/bin/chown "$@"
+EOF
+chmod 755 "$rec/alsactl" "$rec/chown"
+legacy="$tmp/legacy-helper"
+cp "$HELPER" "$legacy"
+chmod u+w "$legacy"
+python3 - "$legacy" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+start = text.find("function alsamixer_backup {")
+end = text.find("function alsamixer_restore {")
+if start < 0 or end < 0:
+    raise SystemExit("alsamixer_backup was not found")
+body = """function alsamixer_backup {
+	if bench_refuses "alsa backup"; then
+		return 1
+	fi
+	if ! alsa_state_allowed "$1"; then
+		return 1
+	fi
+	if ! alsactl --file "$1" store; then
+		echo "refused: alsactl store failed"
+		return 1
+	fi
+	if ! alsa_state_allowed "$1"; then
+		return 1
+	fi
+	chown www-data:www-data "$1"
+}
+
+"""
+path.write_text(text[:start] + body + text[end:])
+PY
+reset_canary() {
+	printf 'CANARY\n' | sudo -n tee "$canary" >/dev/null
+	sudo -n chown 0:0 "$canary"
+	sudo -n chmod 644 "$canary"
+	rm -f "$state"
+	printf 'regular\n' > "$state"
+}
+reset_canary
 : > "$hlog"
-result=$(run_helper "$marker" alsa backup /var/www/openrepeater/backup/build/alsamixer.state)
+set +e
+sudo -n env PATH="$rec:$PATH" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$helper_root" \
+	ORP_BENCH_MARKER=/no/such/bench-mode HELPER_LOG="$hlog" \
+	ORP_ALSA_SWAP_TARGET="$state" ORP_ALSA_CANARY="$canary" \
+	"$legacy" alsa backup "$state" >/dev/null 2>&1
+set -e
+if grep -q "alsactl --file $state" "$hlog" \
+	&& ! cmp -s <(printf 'CANARY\n') "$canary"
+then
+	ok "the 3d0b6d9 helper body changes the root canary"
+else
+	bad "the 3d0b6d9 helper body left the canary unchanged"
+	cat "$hlog" >&2 || true
+fi
+reset_canary
+canary_sha=$(sha256sum "$canary")
+: > "$hlog"
+set +e
+sudo -n env PATH="$rec:$PATH" ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$helper_root" \
+	ORP_BENCH_MARKER=/no/such/bench-mode HELPER_LOG="$hlog" \
+	ORP_ALSA_SWAP_TARGET="$state" ORP_ALSA_CANARY="$canary" \
+	"$HELPER" alsa backup "$state" >/dev/null 2>&1
+set -e
+if [ "$(stat -c %u "$canary")" = "0" ] \
+	&& [ "$(sha256sum "$canary")" = "$canary_sha" ] \
+	&& ! grep -q "alsactl --file $state" "$hlog" \
+	&& ! grep -q '^chown ' "$hlog"
+then
+	ok "an alsa store that swaps in a symlink leaves the root canary unchanged"
+else
+	bad "alsa symlink canary owner=$(stat -c '%u %a' "$canary") sha=$(sha256sum "$canary")"
+	cat "$hlog" >&2 || true
+fi
+
+: > "$hlog"
+result=$(run_helper "$marker" alsa backup "$helper_root/var/www/openrepeater/backup/build/alsamixer.state")
 rc=$(printf '%s\n' "$result" | head -n 1)
 out=$(printf '%s\n' "$result" | tail -n +2)
 if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && ! grep -E -q 'alsactl|chown' "$hlog"; then
@@ -514,7 +808,7 @@ assert_canary() {
 # Leaf symlink where the old installer would chmod the canary.
 leaf="$tmp/leaf-link"
 seed_identity "$leaf"
-mkdir -p "$leaf/var/lib/openrepeater/db"
+orp_mkdir "$leaf/var/lib/openrepeater/db"
 leaf_canary="$leaf/protected-canary"
 leaf_before=$(plant_canary "$leaf_canary")
 ln -s "$leaf_canary" "$leaf/var/lib/openrepeater/db/openrepeater.db"
@@ -536,7 +830,7 @@ assert_canary "$leaf_canary" "$leaf_before"
 anc="$tmp/ancestor-link"
 seed_identity "$anc"
 real="$anc/real-tree"
-mkdir -p "$real"
+orp_mkdir "$real"
 anc_canary="$real/keep"
 anc_before=$(plant_canary "$anc_canary")
 ln -s "$real" "$anc/var/lib/openrepeater"
@@ -588,7 +882,7 @@ assert_canary "$re_canary" "$re_before"
 
 preview="$tmp/preview-link"
 seed_identity "$preview"
-mkdir -p "$preview/var/lib/openrepeater"
+orp_mkdir "$preview/var/lib/openrepeater"
 preview_canary="$preview/etc/svxlink/svxlink.conf"
 preview_before=$(canary_record "$preview_canary")
 ln -s "$preview/etc/svxlink" "$preview/var/lib/openrepeater/bench-preview"
@@ -605,6 +899,794 @@ else
 	cat "$tmp/preview.err" >&2 || true
 fi
 assert_canary "$preview_canary" "$preview_before"
+
+# A read-only source tree is a supported install source. tar must not
+# leave the web root mode 0555.
+ro_src="$(orp_mktemp_dir)/src"
+orp_mkdir "$ro_src"
+tar -C "$ROOT_DIR" --exclude=.git --exclude=dev -cf - . | tar -C "$ro_src" -xf -
+chmod -R a-w "$ro_src"
+ro_dest="$tmp/readonly-source"
+seed_identity "$ro_dest"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$ro_dest" ORP_SYSTEMCTL="$bin/systemctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/ro.log" ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	ORP_BOOTSTRAP_ACTIVE=0 "$ro_src/upgrade/install-orp-ui.sh" >"$tmp/ro.out" 2>"$tmp/ro.err"
+rc=$?
+set -e
+ro_web="$ro_dest/var/www/openrepeater"
+if [ "$rc" -eq 0 ] \
+	&& [ "$(stat -c %a "$ro_web")" = "755" ] \
+	&& [ "$(stat -c %a "$ro_web/index.php")" = "644" ] \
+	&& [ "$(stat -c %a "$ro_dest/usr/sbin/orp_helper")" = "755" ] \
+	&& [ ! -e "$ro_web/install" ] \
+	&& [ ! -e "$ro_web/upgrade" ] \
+	&& [ -d "$ro_web/sounds" ] && [ ! -L "$ro_web/sounds" ] \
+	&& [ -d "$ro_web/sounds/courtesy_tones" ] \
+	&& [ -d "$ro_web/backup/restore" ]
+then
+	ok "a read-only source installs with explicit directory and file modes"
+else
+	bad "read-only source rc=$rc web=$(stat -c %a "$ro_web" 2>/dev/null || echo missing)"
+	cat "$tmp/ro.err" >&2 || true
+fi
+
+mask_root=$(orp_mktemp_dir)
+orp_mkdir "$mask_root/etc/openrepeater"
+cat > "$tmp/mask-systemctl" <<'EOF'
+#!/bin/bash
+unit=${2:-}
+case "$1" in
+	is-enabled)
+		printf '%s\n' "${MASK_ENABLED:-masked}"
+		exit 1
+		;;
+	is-active)
+		printf '%s\n' "${MASK_ACTIVE:-inactive}"
+		exit 3
+		;;
+esac
+exit 0
+EOF
+chmod 755 "$tmp/mask-systemctl"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	MASK_ENABLED=masked MASK_ACTIVE=inactive bench_assert_masks
+) || bad "masked units were refused"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	if MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks; then
+		exit 1
+	fi
+) || bad "disabled units were accepted without a functional-test token"
+printf 'orp-test\n' > "$mask_root/etc/hostname"
+printf 'functional-test\n' > "$mask_root/etc/openrepeater/operating-mode"
+chmod 644 "$mask_root/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$mask_root/etc/openrepeater" "$mask_root/etc/openrepeater/operating-mode"
+sudo chmod 755 "$mask_root/etc/openrepeater"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks
+) || bad "inactive disabled functional-test was refused"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	MASK_ENABLED=enabled MASK_ACTIVE=inactive bench_assert_masks
+) || bad "an enabled unit was refused in functional-test"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	MASK_ENABLED=disabled MASK_ACTIVE=active bench_assert_masks
+) || bad "a running unit was refused in functional-test"
+sudo chmod 666 "$mask_root/etc/openrepeater/operating-mode"
+(
+	export ROOT="$mask_root"
+	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	if MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks; then
+		exit 1
+	fi
+) || bad "a group-writable functional-test token was accepted"
+ok "masks stay fail-closed and functional-test may be inactive and disabled"
+if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; then
+	printf 'functional-test\n' | sudo tee "$mask_root/etc/openrepeater/operating-mode" >/dev/null
+	sudo chown 0:0 "$mask_root/etc/openrepeater/operating-mode"
+	sudo chmod 644 "$mask_root/etc/openrepeater/operating-mode"
+	sudo setfacl -m u:nobody:r "$mask_root/etc/openrepeater/operating-mode"
+	(
+		export ROOT="$mask_root"
+		export ORP_SYSTEMCTL="$tmp/mask-systemctl"
+		. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+		MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks
+	) || bad "a read-only named ACL was refused; group-write is the mode check"
+	sudo setfacl -b "$mask_root/etc/openrepeater/operating-mode" || true
+	sudo chmod 644 "$mask_root/etc/openrepeater/operating-mode"
+	ok "a read-only named ACL is not a separate refusal"
+fi
+user_token=$(orp_mktemp_dir)
+orp_mkdir "$user_token/etc/openrepeater"
+printf 'orp-test\n' > "$user_token/etc/hostname"
+printf 'functional-test\n' > "$user_token/etc/openrepeater/operating-mode"
+chmod 644 "$user_token/etc/openrepeater/operating-mode"
+sudo chown 1000:1000 "$user_token/etc/openrepeater/operating-mode"
+(
+	export ROOT="$user_token"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	if bench_mode_is_functional_test; then
+		exit 1
+	fi
+) || bad "the installer accepted a uid-1000 mode 0644 token"
+(
+	export ORP_HELPER_SOURCE_ONLY=1
+	export ORP_ROOT="$user_token"
+	# shellcheck source=../../install/scripts/orp_helper
+	. "$ROOT_DIR/install/scripts/orp_helper"
+	if native_functional_token; then
+		exit 1
+	fi
+) || bad "the helper accepted a uid-1000 mode 0644 token"
+ok "a uid-1000 mode 0644 token is refused by the installer and the helper"
+
+ft_ctl="$tmp/ft-systemctl"
+cat > "$ft_ctl" <<'EOF'
+#!/bin/bash
+echo "$*" >> "${ORP_SYSTEMCTL_LOG:?}"
+case "$1" in
+	is-enabled)
+		echo disabled
+		exit 1
+		;;
+	is-active)
+		echo inactive
+		exit 3
+		;;
+	*)
+		exit 0
+		;;
+esac
+EOF
+chmod 755 "$ft_ctl"
+lib_only=$(orp_mktemp_dir)
+orp_mkdir "$lib_only/etc/openrepeater" "$lib_only/usr/lib/systemd/system"
+printf 'orp-test\n' > "$lib_only/etc/hostname"
+printf 'functional-test\n' > "$lib_only/etc/openrepeater/operating-mode"
+chmod 644 "$lib_only/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$lib_only/etc/openrepeater" "$lib_only/etc/openrepeater/operating-mode"
+sudo chmod 755 "$lib_only/etc/openrepeater"
+for unit in svxlink.service remotetrx.service svxreflector.service; do
+	printf '%s\n' '[Unit]' 'Description=library' > "$lib_only/usr/lib/systemd/system/$unit"
+done
+: > "$tmp/lib-only.log"
+(
+	export ROOT="$lib_only"
+	export ORP_SYSTEMCTL="$ft_ctl"
+	export ORP_SYSTEMCTL_LOG="$tmp/lib-only.log"
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_assert_masks
+) || bad "the installer refused a unit that exists only under /usr/lib"
+(
+	export ORP_HELPER_SOURCE_ONLY=1
+	export ORP_ROOT="$lib_only"
+	export ORP_SYSTEMCTL="$ft_ctl"
+	export ORP_SYSTEMCTL_LOG="$tmp/lib-only.log"
+	. "$ROOT_DIR/install/scripts/orp_helper"
+	native_masks
+) || bad "the helper refused a unit that exists only under /usr/lib"
+ok "a disabled inactive unit that exists only under /usr/lib is accepted"
+unmask_units() {
+	local root=$1 unit
+	for unit in svxlink.service remotetrx.service svxreflector.service; do
+		rm -f "$root/etc/systemd/system/$unit"
+		printf '%s\n' '[Unit]' 'Description=fixture' > "$root/etc/systemd/system/$unit"
+	done
+}
+no_token="$tmp/ft-notoken"
+seed_identity "$no_token"
+unmask_units "$no_token"
+: > "$tmp/ft-notoken.log"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$no_token" ORP_SYSTEMCTL="$ft_ctl" ORP_SYSTEMCTL_LOG="$tmp/ft-notoken.log" \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/ft-notoken.out" 2>"$tmp/ft-notoken.err"
+rc=$?
+set -e
+if [ "$rc" -eq 4 ] && grep -q 'refused:' "$tmp/ft-notoken.err" && [ ! -d "$no_token/var/www/openrepeater" ]; then
+	ok "an unmasked inactive bench without a functional-test token is refused"
+else
+	bad "unmasked install without a token rc=$rc"
+	cat "$tmp/ft-notoken.err" >&2 || true
+fi
+with_token="$tmp/ft-token"
+seed_identity "$with_token"
+unmask_units "$with_token"
+orp_mkdir "$with_token/etc/openrepeater"
+printf 'functional-test\n' > "$with_token/etc/openrepeater/operating-mode"
+chmod 644 "$with_token/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$with_token/etc/openrepeater" "$with_token/etc/openrepeater/operating-mode"
+sudo chmod 755 "$with_token/etc/openrepeater"
+sudo chown -R 0:0 "$with_token"
+: > "$tmp/ft-token.log"
+unit_before=$(sha256sum \
+	"$with_token/etc/systemd/system/svxlink.service" \
+	"$with_token/etc/systemd/system/remotetrx.service" \
+	"$with_token/etc/systemd/system/svxreflector.service")
+set +e
+sudo -n env ORP_INSTALL_OFFLINE=1 ORP_ROOT="$with_token" ORP_SYSTEMCTL="$ft_ctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/ft-token.log" ORP_BOOTSTRAP_ACTIVE=0 \
+	ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock ORP_BENCH_TEST_HARNESS=1 \
+	bash "$INSTALL" >"$tmp/ft-token.out" 2>"$tmp/ft-token.err"
+rc=$?
+set -e
+unit_after=$(sha256sum \
+	"$with_token/etc/systemd/system/svxlink.service" \
+	"$with_token/etc/systemd/system/remotetrx.service" \
+	"$with_token/etc/systemd/system/svxreflector.service")
+if [ "$rc" -eq 0 ] \
+	&& [ "$unit_before" = "$unit_after" ] \
+	&& [ ! -L "$with_token/etc/systemd/system/svxlink.service" ] \
+	&& [ ! -e "$with_token/usr/local/lib/systemd/system/svxlink.service" ] \
+	&& ! grep -E '^(enable|unmask|start) ' "$tmp/ft-token.log" | grep -E -q 'svxlink|remotetrx|svxreflector'
+then
+	ok "a functional-test token install finishes without replacing or enabling units"
+else
+	bad "functional-test unmasked install rc=$rc"
+	cat "$tmp/ft-token.err" >&2 || true
+fi
+sudo chown -R "$(id -u):$(id -g)" "$with_token" || true
+token_sudoers="$with_token/etc/sudoers.d/openrepeater"
+if [ -f "$token_sudoers" ] \
+	&& grep -q 'orp_helper svxlink gpio_up' "$token_sudoers" \
+	&& grep -q 'orp_helper svxlink unmask' "$token_sudoers" \
+	&& grep -q 'orp_helper system restart' "$token_sudoers" \
+	&& grep -q 'orp_helper alsa backup /var/www/openrepeater/backup/build/alsamixer.state' "$token_sudoers" \
+	&& ! grep -q 'orp_helper svxlink enable' "$token_sudoers" \
+	&& ! grep -q 'orp_helper remotetrx enable' "$token_sudoers" \
+	&& ! grep -q 'orp_helper svxreflector enable' "$token_sudoers" \
+	&& ! grep -q 'set_mixer' "$token_sudoers"
+then
+	ok "a trusted token install emits lifted sudoers lines and not enable or mixer"
+else
+	bad "lifted sudoers were not conditional"
+fi
+
+# Same fixtures, both copies. A mismatch is a drift even when both are wrong.
+token_verdict() {
+	local root=$1 which=$2
+	if [ "$which" = installer ]; then
+		if ROOT="$root" bash -c '. "$1"; bench_mode_is_functional_test' _ \
+			"$ROOT_DIR/upgrade/lib/bench-target.sh" >/dev/null 2>&1
+		then
+			printf accept
+		else
+			printf refuse
+		fi
+	else
+		if ORP_HELPER_SOURCE_ONLY=1 ORP_ROOT="$root" ORP_BENCH_TEST_HARNESS=1 \
+			bash -c '. "$1"; native_functional_token' _ "$HELPER" >/dev/null 2>&1
+		then
+			printf accept
+		else
+			printf refuse
+		fi
+	fi
+}
+expect_token() {
+	local label=$1 root=$2 want=$3 inst helper
+	inst=$(token_verdict "$root" installer)
+	helper=$(token_verdict "$root" helper)
+	phpv=$(php -r '
+		putenv("ORP_BENCH_TEST_HARNESS=1");
+		putenv("ORP_OPERATING_MODE_FILE=" . $argv[1] . "/etc/openrepeater/operating-mode");
+		putenv("ORP_BENCH_HOSTNAME_FILE=" . $argv[1] . "/etc/hostname");
+		putenv("ORP_BENCH_MARKER=" . $argv[1] . "/no-such-marker");
+		require $argv[2] . "/includes/classes/BenchGuard.php";
+		echo BenchGuard::detect()->trustedFunctionalTest() ? "accept" : "refuse";
+	' "$root" "$ROOT_DIR")
+	if [ "$inst" != "$helper" ] || [ "$inst" != "$phpv" ] || [ "$inst" != "$want" ]; then
+		bad "token drift ${label}: installer=${inst} helper=${helper} php=${phpv} expected=${want}"
+	fi
+}
+cat > "$tmp/drift-systemctl" <<'EOF'
+#!/bin/bash
+case "$1" in
+	is-enabled)
+		printf '%s\n' "${DRIFT_ENABLED:-disabled}"
+		exit 1
+		;;
+	is-active)
+		printf '%s\n' "${DRIFT_ACTIVE:-inactive}"
+		exit 3
+		;;
+	*)
+		exit 0
+		;;
+esac
+EOF
+chmod 755 "$tmp/drift-systemctl"
+mask_verdict() {
+	local root=$1 which=$2
+	if [ "$which" = installer ]; then
+		if ROOT="$root" ORP_SYSTEMCTL="$tmp/drift-systemctl" \
+			bash -c '. "$1"; bench_assert_masks' _ \
+			"$ROOT_DIR/upgrade/lib/bench-target.sh" >/dev/null 2>&1
+		then
+			printf accept
+		else
+			printf refuse
+		fi
+	else
+		if ORP_HELPER_SOURCE_ONLY=1 ORP_ROOT="$root" ORP_BENCH_TEST_HARNESS=1 \
+			ORP_SYSTEMCTL="$tmp/drift-systemctl" \
+			bash -c '. "$1"; native_masks' _ "$HELPER" >/dev/null 2>&1
+		then
+			printf accept
+		else
+			printf refuse
+		fi
+	fi
+}
+expect_masks() {
+	local label=$1 root=$2 enabled=$3 active=$4 want=$5 inst helper
+	inst=$(DRIFT_ENABLED="$enabled" DRIFT_ACTIVE="$active" mask_verdict "$root" installer)
+	helper=$(DRIFT_ENABLED="$enabled" DRIFT_ACTIVE="$active" mask_verdict "$root" helper)
+	if [ "$inst" != "$helper" ] || [ "$inst" != "$want" ]; then
+		bad "unit drift ${label}: installer=${inst} helper=${helper} expected=${want}"
+	fi
+}
+new_token_root() {
+	local root contents=$1 mode=$2 owner=$3
+	root=$(orp_mktemp_dir)
+	orp_mkdir "$root/etc/openrepeater"
+	printf 'orp-test\n' > "$root/etc/hostname"
+	if [ "$contents" != missing ]; then
+		printf '%s\n' "$contents" > "$root/etc/openrepeater/operating-mode"
+		chmod "$mode" "$root/etc/openrepeater/operating-mode"
+		if [ "$owner" = root ]; then
+			sudo chown 0:0 "$root/etc/openrepeater" "$root/etc/openrepeater/operating-mode"
+			sudo chmod 755 "$root/etc/openrepeater"
+		elif [ "$owner" = user ]; then
+			sudo chown 1000:1000 "$root/etc/openrepeater/operating-mode"
+		fi
+	fi
+	printf '%s' "$root"
+}
+good_token=$(new_token_root functional-test 644 root)
+user_owned=$(new_token_root functional-test 644 user)
+group_write=$(new_token_root functional-test 666 root)
+wrong_text=$(new_token_root bench 644 root)
+missing_token=$(new_token_root missing 644 root)
+wrong_host=$(orp_mktemp_dir)
+orp_mkdir "$wrong_host/etc/openrepeater"
+printf 'not-the-bench\n' > "$wrong_host/etc/hostname"
+printf 'functional-test\n' > "$wrong_host/etc/openrepeater/operating-mode"
+chmod 644 "$wrong_host/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$wrong_host/etc/openrepeater/operating-mode"
+link_token=$(orp_mktemp_dir)
+orp_mkdir "$link_token/etc/openrepeater"
+printf 'orp-test\n' > "$link_token/etc/hostname"
+printf 'functional-test\n' > "$link_token/etc/openrepeater/real-mode"
+chmod 644 "$link_token/etc/openrepeater/real-mode"
+sudo chown 0:0 "$link_token/etc/openrepeater/real-mode"
+ln -s real-mode "$link_token/etc/openrepeater/operating-mode"
+expect_token "root-owned functional-test" "$good_token" accept
+expect_token "uid 1000 mode 0644" "$user_owned" refuse
+expect_token "group-writable" "$group_write" refuse
+expect_token "contents bench" "$wrong_text" refuse
+expect_token "missing file" "$missing_token" refuse
+expect_token "wrong hostname" "$wrong_host" refuse
+expect_token "symlink token" "$link_token" refuse
+dir_root=$(new_token_root functional-test 644 root)
+sudo chown "$(id -u):$(id -g)" "$dir_root/etc/openrepeater"
+expect_token "openrepeater directory not root-owned" "$dir_root" refuse
+sudo chown 0:0 "$dir_root/etc/openrepeater"
+sudo chmod 775 "$dir_root/etc/openrepeater"
+expect_token "openrepeater directory group-writable" "$dir_root" refuse
+sudo chmod 755 "$dir_root/etc/openrepeater"
+expect_token "openrepeater directory root-owned" "$dir_root" accept
+link_dir=$(orp_mktemp_dir)
+mkdir -p "$link_dir/etc/mode-target"
+printf 'orp-test\n' > "$link_dir/etc/hostname"
+printf 'functional-test\n' > "$link_dir/etc/mode-target/operating-mode"
+chmod 644 "$link_dir/etc/mode-target/operating-mode"
+sudo chown 0:0 "$link_dir/etc/mode-target" "$link_dir/etc/mode-target/operating-mode"
+sudo chmod 755 "$link_dir/etc/mode-target"
+ln -s mode-target "$link_dir/etc/openrepeater"
+expect_token "symlinked openrepeater directory" "$link_dir" refuse
+ok "the openrepeater directory anchor agrees"
+tx_verdict() {
+	local root=$1 helper php
+	if ORP_HELPER_SOURCE_ONLY=1 ORP_ROOT="$root" ORP_BENCH_TEST_HARNESS=1 \
+		bash -c '. "$1"; tx_armed' _ "$HELPER" >/dev/null 2>&1
+	then
+		helper=accept
+	else
+		helper=refuse
+	fi
+	php=$(php -r '
+		putenv("ORP_BENCH_TEST_HARNESS=1");
+		putenv("ORP_ROOT=" . $argv[1]);
+		require $argv[2] . "/includes/classes/BenchGuard.php";
+		echo BenchGuard::detect()->txArmed() ? "accept" : "refuse";
+	' "$root" "$ROOT_DIR")
+	if [ "$helper" != "$php" ] || [ "$helper" != "$2" ]; then
+		bad "tx-armed drift ${3}: helper=${helper} php=${php} expected=$2"
+	else
+		ok "tx-armed ${3} agrees"
+	fi
+}
+tx_root=$(new_token_root functional-test 644 root)
+tx_verdict "$tx_root" refuse "missing flag"
+printf 'armed\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" accept "exact armed"
+tx_dir=$(new_token_root functional-test 644 root)
+printf 'armed\n' | sudo -n tee "$tx_dir/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chmod 644 "$tx_dir/etc/openrepeater/tx-armed"
+sudo -n chown 0:0 "$tx_dir/etc/openrepeater/tx-armed"
+sudo chown "$(id -u):$(id -g)" "$tx_dir/etc/openrepeater"
+tx_verdict "$tx_dir" refuse "directory not root-owned"
+sudo chown 0:0 "$tx_dir/etc/openrepeater"
+sudo chmod 775 "$tx_dir/etc/openrepeater"
+tx_verdict "$tx_dir" refuse "directory group-writable"
+sudo chmod 755 "$tx_dir/etc/openrepeater"
+tx_verdict "$tx_dir" accept "directory root-owned"
+tx_link=$(orp_mktemp_dir)
+mkdir -p "$tx_link/etc/real-orp"
+printf 'orp-test\n' > "$tx_link/etc/hostname"
+printf 'functional-test\n' > "$tx_link/etc/real-orp/operating-mode"
+printf 'armed\n' > "$tx_link/etc/real-orp/tx-armed"
+chmod 644 "$tx_link/etc/real-orp/operating-mode" "$tx_link/etc/real-orp/tx-armed"
+sudo chown 0:0 "$tx_link/etc/real-orp" "$tx_link/etc/real-orp/operating-mode" "$tx_link/etc/real-orp/tx-armed"
+sudo chmod 755 "$tx_link/etc/real-orp"
+ln -s real-orp "$tx_link/etc/openrepeater"
+tx_verdict "$tx_link" refuse "symlinked openrepeater directory"
+printf 'armed \n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" refuse "padded armed"
+printf 'armed\r\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" refuse "armed with crlf"
+printf 'armed\n\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" refuse "armed with two newlines"
+: | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" refuse "empty flag"
+printf 'ARMED\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
+sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
+sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
+tx_verdict "$tx_root" refuse "uppercase ARMED"
+if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; then
+	acl_token=$(new_token_root functional-test 644 root)
+	sudo setfacl -m u:nobody:r "$acl_token/etc/openrepeater/operating-mode"
+	expect_token "read-only named ACL" "$acl_token" accept
+	sudo setfacl -m u:nobody:w "$acl_token/etc/openrepeater/operating-mode"
+	expect_token "write named ACL" "$acl_token" refuse
+	sudo setfacl -b "$acl_token/etc/openrepeater/operating-mode" || true
+fi
+expect_masks "disabled inactive with a token" "$good_token" disabled inactive accept
+expect_masks "systemd masked without a token" "$missing_token" masked inactive accept
+expect_masks "enabled with a token" "$good_token" enabled inactive accept
+expect_masks "active with a token" "$good_token" disabled active accept
+expect_masks "disabled without a token" "$missing_token" disabled inactive refuse
+devnull_unit=$(orp_mktemp_dir)
+orp_mkdir "$devnull_unit/etc/systemd/system"
+ln -sfn /dev/null "$devnull_unit/etc/systemd/system/svxlink.service"
+expect_masks "dev-null symlink without a token" "$devnull_unit" disabled inactive refuse
+ok "installer and helper token and unit verdicts match"
+
+attack=$(orp_mktemp_dir)
+plant_native_layout "$attack"
+orp_mkdir "$attack/usr/sbin" "$attack/etc/openrepeater" \
+	"$attack/var/lib/openrepeater/db" \
+	"$attack/var/www/openrepeater/upgrade/lib" "$attack/upgrade/lib"
+cp "$HELPER" "$attack/usr/sbin/orp_helper"
+chmod 755 "$attack/usr/sbin/orp_helper"
+printf 'orp-test\n' > "$attack/etc/hostname"
+printf 'functional-test\n' > "$attack/etc/openrepeater/operating-mode"
+chmod 644 "$attack/etc/openrepeater/operating-mode"
+sudo chown 0:0 "$attack/etc/openrepeater" "$attack/etc/openrepeater/operating-mode"
+sudo chmod 755 "$attack/etc/openrepeater"
+attack_db="$attack/var/lib/openrepeater/db/openrepeater.db"
+cp "$ROOT_DIR/install/sql/openrepeater.db" "$attack_db"
+chmod 600 "$attack_db"
+apply_ident_profile "$attack_db"
+sqlite3 "$attack_db" "UPDATE settings SET value='W1AW' WHERE keyID='callSign'; UPDATE settings SET value='simplex' WHERE keyID='orp_Mode'; UPDATE settings SET value='beep' WHERE keyID='courtesyMode';"
+if ! ORP_HELPER_SOURCE_ONLY=1 ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$attack" ORP_DB_PATH="$attack_db" \
+	bash -c '. "$1"; config_render "$2"' _ "$attack/usr/sbin/orp_helper" \
+	"$attack/etc/svxlink/svxlink.conf"
+then
+	bad "could not render the attack-fixture snapshot"
+fi
+marker="$attack/pwned-marker"
+cat > "$attack/upgrade/lib/bench-target.sh" <<EOF
+printf 'pwned\n' > '$marker'
+EOF
+cp "$attack/upgrade/lib/bench-target.sh" "$attack/var/www/openrepeater/upgrade/lib/bench-target.sh"
+sudo chown -R www-data:www-data "$attack/upgrade" "$attack/var/www/openrepeater"
+if [ "$(stat -c %u "$attack/var/www/openrepeater/upgrade/lib/bench-target.sh")" != "$(id -u www-data)" ]; then
+	bad "the planted bench-target.sh is not owned by www-data"
+fi
+: > "$attack/systemctl.log"
+run_attack() {
+	ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$attack" ORP_DB_PATH="$attack_db" \
+		ORP_OPERATING_MODE_FILE="$attack/etc/openrepeater/operating-mode" \
+		ORP_SYSTEMCTL="$ft_ctl" ORP_SYSTEMCTL_LOG="$attack/systemctl.log" \
+		"$attack/usr/sbin/orp_helper" "$@" >/dev/null 2>&1 || true
+}
+run_attack svxlink start
+run_attack svxlink stop
+run_attack svxlink restart
+run_attack svxlink status
+run_attack config publish
+run_attack audio inputs
+run_attack audio outputs
+run_attack audio version
+run_attack system uptime
+run_attack system user
+run_attack info timezone
+run_attack info cpu_type
+run_attack info cpu_speed
+run_attack info cpu_load
+run_attack info cpu_temp
+run_attack info uptime
+run_attack info memory_usage
+run_attack info disk_usage
+run_attack info os
+if [ -e "$marker" ]; then
+	bad "orp_helper executed a www-data-owned bench-target.sh"
+else
+	ok "orp_helper did not execute a www-data-owned bench-target.sh"
+fi
+
+legacy=$(orp_mktemp_dir)
+orp_mkdir "$legacy/usr/share/svxlink/events.d" "$legacy/usr/local/share/svxlink/events.d" \
+	"$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d"
+printf 'tcl\n' > "$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl"
+printf 'stock\n' > "$legacy/usr/share/svxlink/events.d/Logic.tcl"
+ln -s /var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl \
+	"$legacy/usr/share/svxlink/events.d/ModuleFoo.tcl"
+ln -s ../../../../../var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl \
+	"$legacy/usr/local/share/svxlink/events.d/ModuleFoo.tcl"
+ln -s /etc/hostname "$legacy/usr/share/svxlink/events.d/hostname.tcl"
+(
+	export ROOT="$legacy"
+	export ORP_BENCH_TEST_HARNESS=1
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_remove_legacy_module_symlinks
+) > "$tmp/legacy.log"
+if [ ! -e "$legacy/usr/share/svxlink/events.d/ModuleFoo.tcl" ] \
+	&& [ ! -L "$legacy/usr/share/svxlink/events.d/ModuleFoo.tcl" ] \
+	&& [ ! -e "$legacy/usr/local/share/svxlink/events.d/ModuleFoo.tcl" ] \
+	&& [ ! -L "$legacy/usr/local/share/svxlink/events.d/ModuleFoo.tcl" ] \
+	&& [ -L "$legacy/usr/share/svxlink/events.d/hostname.tcl" ] \
+	&& [ "$(cat "$legacy/usr/share/svxlink/events.d/Logic.tcl")" = "stock" ] \
+	&& [ "$(cat "$legacy/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl")" = "tcl" ] \
+	&& grep -q 'removed legacy module symlink' "$tmp/legacy.log" \
+	&& grep -q 'bench_classify_legacy_module_symlinks' "$INSTALL" \
+	&& grep -q 'bench_apply_legacy_module_symlinks' "$INSTALL"
+then
+	ok "legacy module symlinks into the web tree are removed"
+else
+	bad "legacy module symlinks were not removed"
+	cat "$tmp/legacy.log" >&2 || true
+fi
+swapped=$(orp_mktemp_dir)
+orp_mkdir "$swapped/real/share/svxlink/events.d" "$swapped/var/www/openrepeater/modules/Foo/svxlink/events.d"
+printf 'tcl\n' > "$swapped/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl"
+ln -s "$swapped/var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl" \
+	"$swapped/real/share/svxlink/events.d/ModuleFoo.tcl"
+ln -s "$swapped/real" "$swapped/usr"
+set +e
+(
+	export ROOT="$swapped"
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_remove_legacy_module_symlinks
+) >"$tmp/swapped.out" 2>"$tmp/swapped.err"
+swapped_rc=$?
+set -e
+if [ "$swapped_rc" -ne 0 ] \
+	&& grep -q 'is a symlink' "$tmp/swapped.err" \
+	&& [ -L "$swapped/real/share/svxlink/events.d/ModuleFoo.tcl" ]
+then
+	ok "a symlinked share parent is refused and its links stay"
+else
+	bad "a symlinked share parent was not refused"
+	cat "$tmp/swapped.err" >&2 || true
+fi
+empty_link=$(orp_mktemp_dir)
+orp_mkdir "$empty_link/usr/share/svxlink/events.d" "$empty_link/var/www/openrepeater/modules"
+ln -s kept "$empty_link/usr/share/svxlink/events.d/empty.tcl"
+empty_bin="$tmp/empty-readlink"
+mkdir -p "$empty_bin"
+cat > "$empty_bin/readlink" <<EOF
+#!/bin/bash
+if [ "\$1" != "-f" ] && [ "\$1" = "$empty_link/usr/share/svxlink/events.d/empty.tcl" ]; then
+	exit 0
+fi
+exec /usr/bin/readlink "\$@"
+EOF
+chmod 755 "$empty_bin/readlink"
+set +e
+(
+	export ROOT="$empty_link"
+	export PATH="$empty_bin:$PATH"
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_remove_legacy_module_symlinks
+) >"$tmp/empty-link.out" 2>"$tmp/empty-link.err"
+empty_rc=$?
+set -e
+if [ "$empty_rc" -ne 0 ] \
+	&& grep -q 'empty target' "$tmp/empty-link.err" \
+	&& [ -L "$empty_link/usr/share/svxlink/events.d/empty.tcl" ]
+then
+	ok "an empty legacy symlink target fails the install"
+else
+	bad "an empty legacy symlink target was kept"
+	cat "$tmp/empty-link.err" >&2 || true
+fi
+rel_nopy="$tmp/rel-nopy"
+mkdir -p "$rel_nopy"
+IFS=':' read -ra rel_dirs <<< "$PATH:/usr/bin:/bin"
+for rel_dir in "${rel_dirs[@]}"; do
+	[ -d "$rel_dir" ] || continue
+	for rel_bin in "$rel_dir"/*; do
+		[ -e "$rel_bin" ] || continue
+		rel_base=$(basename "$rel_bin")
+		case "$rel_base" in python|python3|python3.*) continue ;; esac
+		[ -e "$rel_nopy/$rel_base" ] || ln -s "$rel_bin" "$rel_nopy/$rel_base"
+	done
+done
+(
+	export ROOT="$legacy"
+	export PATH="$rel_nopy"
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	ln -s ../../../../../var/www/openrepeater/modules/Foo/svxlink/events.d/ModuleFoo.tcl \
+		"$legacy/usr/local/share/svxlink/events.d/ModuleFoo-again.tcl"
+	bench_remove_legacy_module_symlinks
+)
+if [ -L "$legacy/usr/local/share/svxlink/events.d/ModuleFoo-again.tcl" ]; then
+	bad "a relative module symlink was kept when python3 was absent"
+else
+	ok "a relative module symlink is removed without python3"
+fi
+dangling=$(orp_mktemp_dir)
+orp_mkdir "$dangling/usr/share/svxlink/events.d" "$dangling/usr/local/share/svxlink/events.d" \
+	"$dangling/var/www/openrepeater/modules"
+ln -s /var/www/openrepeater/modules/gone/Missing.tcl \
+	"$dangling/usr/share/svxlink/events.d/Missing.tcl"
+ln -s /etc/svxlink/missing.conf \
+	"$dangling/usr/local/share/svxlink/events.d/other.tcl"
+ln -s /var/www/openrepeater/modules2/Foo.tcl \
+	"$dangling/usr/share/svxlink/events.d/Sibling.tcl"
+(
+	export ROOT="$dangling"
+	export ORP_BENCH_TEST_HARNESS=1
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_remove_legacy_module_symlinks
+)
+if [ ! -e "$dangling/usr/share/svxlink/events.d/Missing.tcl" ] \
+	&& [ ! -L "$dangling/usr/share/svxlink/events.d/Missing.tcl" ] \
+	&& [ -L "$dangling/usr/local/share/svxlink/events.d/other.tcl" ] \
+	&& [ -L "$dangling/usr/share/svxlink/events.d/Sibling.tcl" ]
+then
+	ok "a dangling module symlink is removed and another dangling link is kept"
+	ok "a modules2 sibling symlink is kept"
+else
+	bad "dangling legacy symlinks were not classified"
+fi
+nl_root=$(orp_mktemp_dir)
+orp_mkdir "$nl_root/usr/share/svxlink/events.d" "$nl_root/var/www/openrepeater/modules/Foo"
+printf 'MOD\n' > "$nl_root/var/www/openrepeater/modules/Foo/File.tcl"
+printf 'KEEP\n' > "$nl_root/usr/share/svxlink/events.d/victim"
+printf 'OUTSIDE\n' > "$nl_root/tail"
+python3 -c 'import os,sys; os.symlink(sys.argv[1], sys.argv[2])' \
+	"$nl_root/var/www/openrepeater/modules/Foo/File.tcl" \
+	"$nl_root/usr/share/svxlink/events.d/victim"$'\n'"tail"
+set +e
+(
+	cd "$nl_root"
+	export ROOT="$nl_root"
+	export ORP_BENCH_TEST_HARNESS=1
+	# shellcheck source=../lib/bench-target.sh
+	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
+	bench_remove_legacy_module_symlinks
+) >"$tmp/newline-link.out" 2>"$tmp/newline-link.err"
+nl_rc=$?
+set -e
+if [ "$nl_rc" -ne 0 ] \
+	&& grep -q 'newline or tab' "$tmp/newline-link.err" \
+	&& [ "$(cat "$nl_root/usr/share/svxlink/events.d/victim")" = "KEEP" ] \
+	&& [ "$(cat "$nl_root/tail")" = "OUTSIDE" ] \
+	&& [ "$(cat "$nl_root/var/www/openrepeater/modules/Foo/File.tcl")" = "MOD" ] \
+	&& [ -L "$nl_root/usr/share/svxlink/events.d/victim"$'\n'"tail" ]
+then
+	ok "a newline in a legacy symlink name does not delete the sibling file"
+else
+	bad "a newline legacy symlink name deleted the wrong file rc=$nl_rc"
+	cat "$tmp/newline-link.err" >&2 || true
+fi
+pyhide="$tmp/no-python3"
+mkdir -p "$pyhide"
+IFS=':' read -ra py_dirs <<< "$PATH:/usr/bin:/bin"
+for py_dir in "${py_dirs[@]}"; do
+	[ -d "$py_dir" ] || continue
+	for py_bin in "$py_dir"/*; do
+		[ -e "$py_bin" ] || continue
+		py_base=$(basename "$py_bin")
+		case "$py_base" in python|python3|python3.*) continue ;; esac
+		[ -e "$pyhide/$py_base" ] || ln -s "$py_bin" "$pyhide/$py_base"
+	done
+done
+mkdir -p "$tmp/py-missing"
+set +e
+py_out=$(PATH="$pyhide" ORP_BENCH_TEST_HARNESS=1 ORP_INSTALL_OFFLINE=1 ORP_ROOT="$tmp/py-missing" "$INSTALL" 2>&1)
+py_rc=$?
+set -e
+if [ "$py_rc" -eq 1 ] \
+	&& printf '%s\n' "$py_out" | grep -q 'refused: python3 is required (installer and orp_helper)' \
+	&& [ ! -e "$tmp/py-missing/etc/openrepeater/bench-mode" ]
+then
+	ok "the installer refuses to start without python3"
+else
+	bad "the installer started without python3 rc=$py_rc"
+	printf '%s\n' "$py_out" >&2
+fi
+scan_root="$tmp/scan-refuse"
+seed_identity "$scan_root"
+orp_mkdir "$scan_root/usr/share/svxlink/events.d"
+ln -s kept "$scan_root/usr/share/svxlink/events.d/empty.tcl"
+printf 'SITE\n' > "$scan_root/etc/nginx/sites-enabled/openrepeater"
+scan_ctl="$tmp/scan-systemctl"
+make_systemctl "$scan_ctl"
+: > "$tmp/scan-systemctl.log"
+scan_readlink="$tmp/scan-readlink"
+mkdir -p "$scan_readlink"
+cat > "$scan_readlink/readlink" <<EOF
+#!/bin/bash
+if [ "\$#" -eq 1 ] && [ "\$1" = "$scan_root/usr/share/svxlink/events.d/empty.tcl" ]; then
+	exit 0
+fi
+exec /usr/bin/readlink "\$@"
+EOF
+chmod 755 "$scan_readlink/readlink"
+set +e
+scan_out=$(PATH="$scan_readlink:$PATH" ORP_BENCH_TEST_HARNESS=1 ORP_INSTALL_OFFLINE=1 \
+	ORP_ROOT="$scan_root" ORP_SYSTEMCTL="$scan_ctl" ORP_SYSTEMCTL_LOG="$tmp/scan-systemctl.log" \
+	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" 2>&1)
+scan_rc=$?
+set -e
+if [ "$scan_rc" -ne 0 ] \
+	&& printf '%s\n' "$scan_out" | grep -q 'empty target' \
+	&& ! grep -q 'stop nginx' "$tmp/scan-systemctl.log" \
+	&& ! grep -q 'disable nginx' "$tmp/scan-systemctl.log" \
+	&& [ "$(cat "$scan_root/etc/nginx/sites-enabled/openrepeater")" = "SITE" ] \
+	&& [ -L "$scan_root/usr/share/svxlink/events.d/empty.tcl" ]
+then
+	ok "a legacy symlink scan refusal leaves nginx and the site untouched"
+else
+	bad "a legacy symlink scan refusal touched nginx rc=$scan_rc"
+	printf '%s\n' "$scan_out" >&2
+	cat "$tmp/scan-systemctl.log" >&2 || true
+fi
 
 if [ "$fail" -ne 0 ]; then
 	echo "shell checks failed" >&2

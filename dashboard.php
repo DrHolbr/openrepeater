@@ -2,6 +2,10 @@
 // --------------------------------------------------------
 // SESSION CHECK TO SEE IF USER IS LOGGED IN.
 session_start();
+require_once(__DIR__ . '/includes/classes/RequestGuard.php');
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] !== 'GET' && $_SERVER['REQUEST_METHOD'] !== 'HEAD') {
+	RequestGuard::requireMutation();
+}
 if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
 	header('location: login.php'); // If they aren't logged in, send them to login page.
 } elseif (!isset($_SESSION['callsign'])) {
@@ -83,10 +87,10 @@ $classSystem = new System();
 				      </div>
 				      <div class="modal-footer">
 							<button class="btn btn-default" data-dismiss="modal">Cancel</button>
-							<?php if ($benchGuard->isBench()) { ?>
-							<button class="btn btn-success" disabled="disabled">Restart blocked on bench</button>
+							<?php if (BenchGuard::detect()->uiBlocksLifted()) { ?>
+							<button type="button" class="btn btn-success" onclick="reboot_orp_system();">Restart</button>
 							<?php } else { ?>
-							<button class="btn btn-success" onclick="reboot_orp_system();"><i class="icon-refresh icon-white"></i> Restart</button>
+							<button class="btn btn-success" disabled="disabled">Host restart blocked</button>
 							<?php } ?>
 				      </div>
 				    </div><!-- /.modal-content -->
@@ -104,13 +108,14 @@ $classSystem = new System();
 				      <div class="modal-body">
 						<h4>Are You Sure You Want to Do This?</h4>
 						<p>By shutting down the entire controller system you will not be able to initiate a system restart unless you are physically present at the controller to do so. Proceed with caution.</p>
+						<p>Sending or blocking the shutdown command does not show whether a transmitter has unkeyed.</p>
 				      </div>
 				      <div class="modal-footer">
 							<button class="btn btn-default" data-dismiss="modal">Cancel</button>
-							<?php if ($benchGuard->isBench()) { ?>
-							<button class="btn btn-danger" disabled="disabled">Shutdown blocked on bench</button>
+							<?php if (BenchGuard::detect()->uiBlocksLifted()) { ?>
+							<button type="button" class="btn btn-danger" onclick="shutdown_orp_system();">Shutdown</button>
 							<?php } else { ?>
-							<button class="btn btn-danger" onclick="shutdown_orp_system();"><i class="icon-off icon-white"></i> Shutdown</button>
+							<button class="btn btn-danger" disabled="disabled">Host shutdown blocked</button>
 							<?php } ?>
 				      </div>
 				    </div><!-- /.modal-content -->
