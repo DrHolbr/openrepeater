@@ -8,7 +8,7 @@ There is no bench mode and no functional-test mode. The UI rebuild reads the dat
 2. Receiver squelch and transmitter PTT come from the stored port rows. A COS port writes `SQL_DET=GPIO` and `GPIO_SQL_PIN`. A GPIO transmitter writes `PTT_TYPE=GPIO` and `PTT_PIN`. The rebuild does not replace those with `PTT_TYPE=NONE` or strip the GPIO lists.
 3. Each file keeps its own destination. `svxlink.conf` and `gpio.conf` are separate files under `/etc/svxlink`.
 4. GPIO setup runs `/usr/sbin/svxlink_gpio_down` and then `/usr/sbin/svxlink_gpio_up`. The helper executes those binaries. It does not source them. A missing file, a symlink, a non-executable, or a file not owned by root is refused, and the binary's exit code is returned.
-5. svxlink is then restarted. Enable, start, stop, and restart are accepted. Host reboot and host shutdown are accepted from the dashboard. The session, the POST verb, the Origin check, and the CSRF token are still required.
+5. svxlink is then restarted. Enable, start, stop, and restart are accepted. Host reboot, host shutdown, and host halt are separate helper verbs. The dashboard reboot and shutdown buttons send those verbs only after an authenticated POST whose Origin and CSRF token match. A test harness prints the verdict and does not execute `shutdown` or `halt`.
 
 ## What stays
 
@@ -17,7 +17,7 @@ There is no bench mode and no functional-test mode. The UI rebuild reads the dat
 - `events.d`, `events.d/local`, and `Logic.tcl` are checked for owner and file type before a courtesy or ident publish replaces them.
 - Courtesy and identification clip bodies reject `$`, backticks, and `[`. A selected stock or uploaded WAV is copied into the share tree the logic file names.
 - Zip upload, backup restore, and module install stay inside their parent directories and do not follow symlinks.
-- The installer removes old bench files when they are present: `/etc/openrepeater/bench-mode`, `/etc/openrepeater/operating-mode`, `/etc/openrepeater/tx-armed`, `/var/lib/openrepeater/bench-preview`, and `/etc/svxlink/functional-test.d`. It does not create them. It does not mask or unmask a unit.
+- The installer removes old bench files when they are present: `/etc/openrepeater/bench-mode`, `/etc/openrepeater/operating-mode`, `/etc/openrepeater/tx-armed`, `/var/lib/openrepeater/bench-preview`, and `/etc/svxlink/functional-test.d`. It does not create them. It does not mask or unmask a unit. An existing `/dev/null` mask is left in place, and the installer prints `kept existing mask`.
 - Test runs set `ORP_BENCH_TEST_HARNESS=1` and `ORP_ROOT` so a fixture is prefixed. That is process isolation for the suite. It is not an operating mode, and the installed UI does not set it.
 
 ## Installed build

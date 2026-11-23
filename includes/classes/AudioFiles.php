@@ -6,7 +6,6 @@
 class AudioFiles {
 
     private $path = "/var/lib/openrepeater/sounds/";
-    private $temp_dir = "/tmp/";
     private $sound_dir = '/sounds/';
 
 	public function __construct() {
@@ -356,6 +355,32 @@ class AudioFiles {
 	# Upload Audio Files by Type
 	###############################################
 
+	private function reserveAudioTemp() {
+		$parent = rtrim(sys_get_temp_dir(), '/');
+		$dir = $parent . '/orp-audio-' . bin2hex(random_bytes(8));
+		if (!@mkdir($dir, 0700)) {
+			return null;
+		}
+		$file = tempnam($dir, 'clip');
+		if ($file === false) {
+			@rmdir($dir);
+			return null;
+		}
+		return array($dir, $file);
+	}
+
+	private function releaseAudioTemp($held) {
+		if (!is_array($held)) {
+			return;
+		}
+		if (isset($held[1]) && is_string($held[1]) && $held[1] !== '') {
+			@unlink($held[1]);
+		}
+		if (isset($held[0]) && is_string($held[0]) && is_dir($held[0])) {
+			@rmdir($held[0]);
+		}
+	}
+
 	public function audio_upload_files($type, $fileNameArray) {
 
 		$library = $this->libraryDir($type);
@@ -374,11 +399,6 @@ class AudioFiles {
 			if ($plainName === null) {
 				return $this->refusal('The audio name is not a plain file name. Nothing was written.');
 			}
-			$tmpFile2 = tempnam($this->temp_dir, 'orp-audio-');
-			if ($tmpFile2 === false) {
-				return $this->refusal('The audio library is not available. Nothing was written.');
-			}
-			
 			$temp_ext = explode(".", $plainName);
 			$extension = strtolower((string) end($temp_ext));
 			$filename_no_ext = pathinfo($plainName, PATHINFO_FILENAME);
@@ -436,10 +456,14 @@ class AudioFiles {
 
 			# Process File
 			if ($tmpFile1 != ""){
-				move_uploaded_file($tmpFile1, $tmpFile2);
-
-				$conversion = $this->convert_audio($tmpFile2, $soxOutFile);
-				unlink($tmpFile2);
+				$held = $this->reserveAudioTemp();
+				if ($held === null) {
+					return $this->refusal('The audio library is not available. Nothing was written.');
+				}
+				$tmpFile2 = $held[1];
+				$moved = move_uploaded_file($tmpFile1, $tmpFile2);
+				$conversion = $moved ? $this->convert_audio($tmpFile2, $soxOutFile) : false;
+				$this->releaseAudioTemp($held);
 
 				if($conversion) {
 					// SUCCESSFUL

@@ -140,7 +140,7 @@ class RequestGuard {
 	public static function helperActionAllowed($service, $option) {
 		$allowed = array(
 			'svxlink' => array('start', 'stop', 'status', 'restart', 'enable', 'disable', 'gpio_up', 'gpio_down'),
-			'system' => array('uptime', 'user', 'restart', 'stop'),
+			'system' => array('uptime', 'user', 'reboot', 'shutdown', 'halt'),
 			'info' => array('timezone', 'cpu_type', 'cpu_speed', 'cpu_load', 'cpu_temp', 'uptime', 'memory_usage', 'disk_usage', 'os'),
 			'audio' => array('inputs', 'outputs', 'version'),
 			'remotetrx' => array('start', 'stop', 'restart', 'status', 'enable', 'disable'),

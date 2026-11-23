@@ -423,16 +423,16 @@ echo "ok: module upload stays inactive, does not execute PHP or Tcl, and cannot 
 : > "$helper_log"
 code=$(post_settings -o "$tmp/reboot.body" -w '%{http_code}' \
 	--data-urlencode 'post_service=system' \
-	--data-urlencode 'post_option=restart' \
+	--data-urlencode 'post_option=reboot' \
 	"$base/functions/ajax_system.php")
 [ "$code" = "200" ]
-grep -q 'system restart' "$helper_log"
+grep -q 'system reboot' "$helper_log"
 code=$(post_settings -o "$tmp/shutdown.body" -w '%{http_code}' \
 	--data-urlencode 'post_service=system' \
-	--data-urlencode 'post_option=stop' \
+	--data-urlencode 'post_option=shutdown' \
 	"$base/functions/ajax_system.php")
 [ "$code" = "200" ]
-grep -q 'system stop' "$helper_log"
+grep -q 'system shutdown' "$helper_log"
 dash=$(curl -s -b "$jar" "$base/dashboard.php")
 printf '%s' "$dash" | grep -q 'onclick="reboot_orp_system'
 printf '%s' "$dash" | grep -q 'onclick="shutdown_orp_system'

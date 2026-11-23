@@ -13,14 +13,9 @@ fi
 if ! orp_fixture_root >/dev/null; then
 	exit 1
 fi
-orp_tmpdir_canon=$(readlink -f "$(orp_fixture_root)") || exit 1
-case "$orp_tmpdir_canon" in
-	/|/tmp|/var/tmp)
-		echo "refused: ORP_TEST_TMPDIR must be a dedicated directory, not a shared temp root" >&2
-		exit 1
-		;;
-esac
-unset orp_tmpdir_canon
+if ! orp_fixture_not_shared_temp; then
+	exit 1
+fi
 if [ "${ORP_UMASK_MATRIX:-0}" != 1 ]; then
 	export ORP_UMASK_MATRIX=1
 	# shellcheck source=upgrade/tests/lib/fixture_tmpdir.sh
@@ -190,6 +185,7 @@ bash "$ROOT_DIR/upgrade/tests/fixture_tmpdir_test.sh"
 bash "$ROOT_DIR/upgrade/tests/host_tree_guard_test.sh"
 bash "$ROOT_DIR/upgrade/tests/harness_isolation_test.sh"
 bash "$ROOT_DIR/upgrade/tests/install_and_helper_test.sh"
+bash "$ROOT_DIR/upgrade/tests/host_power_verdict_test.sh"
 bash "$ROOT_DIR/upgrade/tests/anchor_chmod_race_test.sh"
 bash "$ROOT_DIR/upgrade/tests/login_session_test.sh"
 bash "$ROOT_DIR/upgrade/tests/auth_boundary_test.sh"

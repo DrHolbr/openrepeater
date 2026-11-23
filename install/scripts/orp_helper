@@ -1489,11 +1489,22 @@ try:
         sys.stderr.write("refused: no-follow courtesy write: %s\n" % exc.strerror)
         sys.exit(1)
     try:
+        opened = os.fstat(out)
+        if not stat.S_ISREG(opened.st_mode):
+            sys.stderr.write("refused: events.d/local/Logic.tcl is not a regular file\n")
+            sys.exit(1)
+        if opened.st_uid != os.geteuid():
+            sys.stderr.write("refused: events.d/local/Logic.tcl is not owned by the publisher\n")
+            sys.exit(1)
+        os.fchmod(out, 0o644)
+        opened = os.fstat(out)
+        if opened.st_mode & 0o022:
+            sys.stderr.write("refused: events.d/local/Logic.tcl is group or world writable\n")
+            sys.exit(1)
         written = os.write(out, data)
         if written != len(data):
             sys.stderr.write("refused: courtesy override was not fully written\n")
             sys.exit(1)
-        os.fchmod(out, 0o644)
     finally:
         os.close(out)
 except OSError as exc:
@@ -2400,8 +2411,11 @@ function config_publish {
 	echo "service was not started"
 }
 
+# Host power. ajax_system.php accepts these only after an authenticated POST
+# whose Origin and CSRF token match. The harness prints the verdict and does
+# not execute shutdown or halt.
 function system_reboot {
-	echo "host-action-accepted system restart"
+	echo "host-action-accepted system reboot"
 	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
 		return 0
 	fi
@@ -2409,11 +2423,19 @@ function system_reboot {
 }
 
 function system_shutdown {
-	echo "host-action-accepted system stop"
+	echo "host-action-accepted system shutdown"
 	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
 		return 0
 	fi
 	shutdown -h now
+}
+
+function system_halt {
+	echo "host-action-accepted system halt"
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+		return 0
+	fi
+	halt
 }
 
 function system_uptime {
@@ -2972,11 +2994,12 @@ while :; do
 			fi
 			exit;;
         system)
-			if [ "$2" == "stop" ]; then system_shutdown
-			elif [ "$2" == "restart" ]; then system_reboot
+			if [ "$2" == "reboot" ]; then system_reboot
+			elif [ "$2" == "shutdown" ]; then system_shutdown
+			elif [ "$2" == "halt" ]; then system_halt
 			elif [ "$2" == "uptime" ]; then system_uptime
 			elif [ "$2" == "user" ]; then system_user
-			else echo "INVALID OPTION"; echo "USAGE: orp_helper system (stop|restart|uptime|user)"
+			else echo "INVALID OPTION"; echo "USAGE: orp_helper system (reboot|shutdown|halt|uptime|user)"; exit 1
 			fi
 			exit;;
         info)

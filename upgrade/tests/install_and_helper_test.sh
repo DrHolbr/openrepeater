@@ -17,10 +17,37 @@ fail=0
 ok() { echo "ok: $1"; }
 bad() { echo "FAIL: $1" >&2; fail=1; }
 
-if grep -E -n 'dist-upgrade|full-upgrade|gpioset|orp_systemctl unmask|systemctl unmask' "$INSTALL"; then
-	bad "installer contains a forbidden command"
-else
-	ok "installer has no dist-upgrade, gpioset, or unmask command"
+mask_call='(^|[[:space:];|&])(orp_)?systemctl[[:space:]]+(mask|unmask)\b'
+scan_files=("$INSTALL")
+while IFS= read -r sourced; do
+	scan_files+=("$sourced")
+done < <(grep -E '^[[:space:]]*(\.|source)[[:space:]]' "$INSTALL" | sed -E 's/^[[:space:]]*(\.|source)[[:space:]]+//; s/^"//; s/"$//')
+mask_hit=0
+for scan in "${scan_files[@]}"; do
+	script_token='$SCRIPT_DIR'
+	repo_token='$REPO_ROOT'
+	expanded=${scan//"$script_token"/$(dirname "$INSTALL")}
+	expanded=${expanded//"$repo_token"/$ROOT_DIR}
+	case "$expanded" in
+		/*) ;;
+		*) expanded="$(dirname "$INSTALL")/$expanded" ;;
+	esac
+	if [ ! -f "$expanded" ]; then
+		bad "sourced installer library is missing: $scan"
+		mask_hit=1
+		continue
+	fi
+	if grep -E -n "$mask_call" "$expanded"; then
+		bad "mask or unmask call in $expanded"
+		mask_hit=1
+	fi
+	if grep -E -n 'dist-upgrade|full-upgrade|gpioset' "$expanded"; then
+		bad "forbidden command in $expanded"
+		mask_hit=1
+	fi
+done
+if [ "$mask_hit" -eq 0 ]; then
+	ok "installer and sourced libraries do not mask, unmask, dist-upgrade, or gpioset"
 fi
 
 bash -n "$INSTALL"
@@ -221,12 +248,17 @@ else
 	cat "$unit" >&2 || true
 fi
 for masked in svxlink.service remotetrx.service svxreflector.service; do
-	if [ -L "$good/etc/systemd/system/$masked" ] && [ "$(readlink "$good/etc/systemd/system/$masked")" = "/dev/null" ]; then
-		ok "mask preserved: $masked"
+	if [ -L "$good/etc/systemd/system/$masked" ] && [ "$(readlink "$good/etc/systemd/system/$masked")" = "/dev/null" ] \
+		&& grep -F -q "kept existing mask ${masked}" "$tmp/good.out"
+	then
+		ok "kept existing mask: $masked"
 	else
 		bad "mask changed: $masked"
 	fi
 done
+if grep -F -q 'masks were checked again' "$tmp/good.out" "$tmp/good.err"; then
+	bad "installer claimed masks were checked again"
+fi
 rtx_unit="$good/usr/local/lib/systemd/system/remotetrx.service"
 ref_unit="$good/usr/local/lib/systemd/system/svxreflector.service"
 if [ -f "$rtx_unit" ] && [ ! -L "$rtx_unit" ] \
@@ -333,8 +365,11 @@ if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoe
 	&& grep -q 'orp_helper svxlink gpio_up' "$sudoers" \
 	&& grep -q 'orp_helper svxlink gpio_down' "$sudoers" \
 	&& grep -q 'orp_helper svxlink enable' "$sudoers" \
-	&& grep -q 'orp_helper system restart' "$sudoers" \
-	&& grep -q 'orp_helper system stop' "$sudoers" \
+	&& grep -q 'orp_helper system reboot' "$sudoers" \
+	&& grep -q 'orp_helper system shutdown' "$sudoers" \
+	&& grep -q 'orp_helper system halt' "$sudoers" \
+	&& ! grep -q 'orp_helper system restart' "$sudoers" \
+	&& ! grep -q 'orp_helper system stop' "$sudoers" \
 	&& grep -q 'orp_helper alsa backup' "$sudoers" \
 	&& grep -q 'orp_helper svxlink status' "$sudoers" \
 	&& grep -q 'orp_helper svxlink start' "$sudoers" \
@@ -666,7 +701,7 @@ else
 	cat "$hlog" >&2 || true
 fi
 
-for spec in "svxlink restart" "svxlink enable" "system restart" "system stop"; do
+for spec in "svxlink restart" "svxlink enable" "system reboot" "system shutdown" "system halt"; do
 	: > "$hlog"
 	# shellcheck disable=SC2086
 	result=$(run_helper "$marker" $spec)
@@ -1236,8 +1271,9 @@ token_sudoers="$with_token/etc/sudoers.d/openrepeater"
 if [ -f "$token_sudoers" ] \
 	&& grep -q 'orp_helper svxlink gpio_up' "$token_sudoers" \
 	&& ! grep -q 'orp_helper svxlink unmask' "$token_sudoers" \
-	&& grep -q 'orp_helper system restart' "$token_sudoers" \
-	&& grep -q 'orp_helper system stop' "$token_sudoers" \
+	&& grep -q 'orp_helper system reboot' "$token_sudoers" \
+	&& grep -q 'orp_helper system shutdown' "$token_sudoers" \
+	&& grep -q 'orp_helper system halt' "$token_sudoers" \
 	&& grep -q 'orp_helper alsa backup /var/www/openrepeater/backup/build/alsamixer.state' "$token_sudoers" \
 	&& grep -q 'orp_helper svxlink enable' "$token_sudoers" \
 	&& grep -q 'orp_helper remotetrx enable' "$token_sudoers" \

@@ -204,7 +204,7 @@ function reboot_orp_system() {
 		type: 'POST',
 		dataType: 'text',
 		url: ajax_url,
-		data: { post_service: 'system', post_option: 'restart', csrf_token: orpCsrfToken() },
+		data: { post_service: 'system', post_option: 'reboot', csrf_token: orpCsrfToken() },
 		complete: function (xhr) {
 			var data = xhr ? xhr.responseText : '';
 			if (!hostActionAccepted(xhr, data)) {
@@ -247,7 +247,7 @@ function shutdown_orp_system() {
 		type: 'POST',
 		dataType: 'text',
 		url: ajax_url,
-		data: { post_service: 'system', post_option: 'stop', csrf_token: orpCsrfToken() },
+		data: { post_service: 'system', post_option: 'shutdown', csrf_token: orpCsrfToken() },
 		complete: function (xhr) {
 			var data = xhr ? xhr.responseText : '';
 			if (!hostActionAccepted(xhr, data)) {

@@ -59,6 +59,29 @@ orp_fixture_root() {
 	printf '%s' "$dir"
 }
 
+# Compare the resolved directory with /, /tmp, and /var/tmp by device and
+# inode. A different spelling of the same directory is the same root.
+orp_same_device_inode() {
+	local left right
+	left=$(stat -c '%d:%i' -- "$1") || return 1
+	right=$(stat -c '%d:%i' -- "$2") || return 1
+	[ "$left" = "$right" ]
+}
+
+orp_fixture_not_shared_temp() {
+	local dir
+	dir=$(orp_fixture_root) || return $?
+	dir=$(readlink -f -- "$dir") || return 1
+	if orp_same_device_inode "$dir" / \
+		|| { [ -d /tmp ] && orp_same_device_inode "$dir" /tmp; } \
+		|| { [ -d /var/tmp ] && orp_same_device_inode "$dir" /var/tmp; }
+	then
+		echo "refused: ORP_TEST_TMPDIR must be a dedicated directory, not a shared temp root" >&2
+		return 2
+	fi
+	return 0
+}
+
 orp_use_fixture_tmpdir() {
 	local root
 	root=$(orp_fixture_root) || return $?

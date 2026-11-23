@@ -45,22 +45,48 @@ $sample = isset($_POST['text']) && trim($_POST['text']) !== ''
 	? substr(trim($_POST['text']), 0, 300)
 	: 'This is a test of the OpenRepeater text to speech voice. The quick brown fox jumps over the lazy dog.';
 
-// Synthesize to a temp file.
-$tmp = tempnam(sys_get_temp_dir(), 'orp_tts_preview_');
-if ($tmp === false) tts_preview_fail('Could not create temp file.', 500);
-$wav = $tmp . '.wav';
+// Reserve the WAV inside a mode 0700 directory. The name is created with
+// tempnam and renamed in that directory, so it is not a predictable /tmp path.
+function tts_preview_reserve(): array {
+	$parent = rtrim(sys_get_temp_dir(), '/');
+	$dir = $parent . '/orp-tts-' . bin2hex(random_bytes(8));
+	if (!@mkdir($dir, 0700)) {
+		tts_preview_fail('Could not create temp file.', 500);
+	}
+	$reserved = tempnam($dir, 'wav');
+	if ($reserved === false) {
+		@rmdir($dir);
+		tts_preview_fail('Could not create temp file.', 500);
+	}
+	$wav = $dir . '/preview.wav';
+	if (!@rename($reserved, $wav)) {
+		@unlink($reserved);
+		@rmdir($dir);
+		tts_preview_fail('Could not create temp file.', 500);
+	}
+	return array($dir, $wav);
+}
 
+function tts_preview_cleanup(string $dir, string $wav): void {
+	foreach (glob($dir . '/*') ?: array() as $child) {
+		if (is_file($child) || is_link($child)) {
+			@unlink($child);
+		}
+	}
+	@unlink($wav);
+	@rmdir($dir);
+}
+
+list($ttsDir, $wav) = tts_preview_reserve();
 $ok = TTS::synth($sample, $wav, $overrides);
-@unlink($tmp);
 
 if (!$ok || !file_exists($wav) || filesize($wav) <= 0) {
-	@unlink($wav);
-	// Give a useful diagnostic.
+	tts_preview_cleanup($ttsDir, $wav);
 	tts_preview_fail('Synthesis failed. ' . TTS::status_summary(), 500);
 }
 $riff = file_get_contents($wav, false, null, 0, 12);
 if (!is_string($riff) || substr($riff, 0, 4) !== 'RIFF' || substr($riff, 8, 4) !== 'WAVE') {
-	@unlink($wav);
+	tts_preview_cleanup($ttsDir, $wav);
 	tts_preview_fail('Synthesis did not return a WAV file.', 500);
 }
 
@@ -75,7 +101,7 @@ header('Content-Length: ' . $size);
 header('Content-Encoding: identity');
 header('Cache-Control: no-store');
 $sent = readfile($wav);
-@unlink($wav);
+tts_preview_cleanup($ttsDir, $wav);
 if ($sent !== $size) {
 	exit(1);
 }

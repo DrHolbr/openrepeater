@@ -480,8 +480,9 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio outputs
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio version
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system uptime
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system user
-www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system restart
-www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system stop
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system reboot
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system shutdown
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system halt
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink enable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink disable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink gpio_up
@@ -599,6 +600,13 @@ write_disabled_unit() {
 }
 write_disabled_unit remotetrx.service remotetrx-unit
 write_disabled_unit svxreflector.service reflector-unit
+# An operator mask is a /dev/null symlink. Leave it in place.
+for unit in svxlink.service remotetrx.service svxreflector.service; do
+	link=$(p "/etc/systemd/system/${unit}")
+	if [ -L "$link" ] && [ "$(readlink -- "$link")" = "/dev/null" ]; then
+		echo "kept existing mask ${unit}"
+	fi
+done
 if ! env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native preflight; then
 	echo "refused: native preflight failed after the vendor unit was written" >&2
 	exit 7
@@ -642,7 +650,6 @@ bench_verify_protected
 
 echo "OpenRepeater UI files are staged for orp-test."
 echo "Old bench-mode, operating-mode, tx-armed, bench-preview, and functional-test.d paths were removed when present."
-echo "Unit masks were not changed."
 echo "The svxlink unit is /usr/local/lib/systemd/system/svxlink.service."
 echo "Bootstrap binary, share tree, and /etc/svxlink/svxlink.conf were not modified."
 if [ -d "$backup_root" ]; then

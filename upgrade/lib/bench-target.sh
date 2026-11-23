@@ -1100,41 +1100,6 @@ bench_ancestors_are_real() {
 	return 0
 }
 
-# When the trusted functional-test token is present, the svxlink /dev/null
-# mask is removed. remotetrx and svxreflector are not masked or unmasked.
-# svxlink is then disabled. The installer does not enable it and does not
-# start it.
-bench_unmask_radio_units() {
-	local unit link sys enabled
-	if ! bench_mode_is_functional_test; then
-		return 0
-	fi
-	sys=$(p /etc/systemd/system)
-	for unit in svxlink.service; do
-		link="${sys}/${unit}"
-		if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
-			rm -f -- "$link"
-			echo "unmasked ${unit} for functional-test"
-			orp_systemctl unmask "$unit" || true
-		fi
-		orp_systemctl disable "$unit" || true
-		if [ -d "$sys" ]; then
-			find -P "$sys" -xdev -type l -name "$unit" \
-				\( -path '*wants/*' -o -path '*requires/*' -o -path '*upholds/*' \) -delete
-		fi
-		enabled=$(orp_systemctl is-enabled "$unit" 2>/dev/null || true)
-		case "$enabled" in
-			disabled|not-found)
-				echo "is-enabled=disabled ${unit}"
-				;;
-			*)
-				echo "refused: ${unit} is-enabled=${enabled:-empty}, expected disabled" >&2
-				return 1
-				;;
-		esac
-	done
-}
-
 # Read-only. A refusal here must not remove links and must not be paired
 # with the installer's nginx fail-closed trap.
 bench_classify_legacy_module_symlinks() {
