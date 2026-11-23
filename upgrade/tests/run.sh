@@ -177,6 +177,7 @@ fi
 echo "ok: php -l"
 
 php "$ROOT_DIR/upgrade/tests/banner_layout_test.php"
+php "$ROOT_DIR/upgrade/tests/gpio_map_layout_test.php"
 bash "$ROOT_DIR/upgrade/tests/fixture_tmpdir_test.sh"
 bash "$ROOT_DIR/upgrade/tests/host_tree_guard_test.sh"
 php "$ROOT_DIR/upgrade/tests/php_safety_test.php"

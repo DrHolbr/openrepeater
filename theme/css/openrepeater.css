@@ -213,6 +213,27 @@ margin-left:-4.5px;
 padding:10px;
 }
 
+.gpio-map-scroll {
+	display: block;
+	width: 100%;
+	max-width: 100%;
+	overflow-x: auto;
+	box-sizing: border-box;
+}
+
+.gpio-map-scroll table {
+	width: max-content;
+	min-width: 100%;
+	max-width: none;
+	margin-bottom: 0;
+}
+
+.gpio-map-scroll th,
+.gpio-map-scroll td {
+	max-width: 14em;
+	overflow-wrap: break-word;
+}
+
 
 .btn-round{
 border-radius: 40px;
@@ -599,6 +620,9 @@ min-height:297px;
 		padding-bottom: 2px;
 		height: auto;
 		overflow: visible;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+		max-width: 100%;
 		white-space: normal;
 }
 

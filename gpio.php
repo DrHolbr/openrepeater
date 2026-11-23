@@ -45,6 +45,7 @@ $chipInfo = GpioMap::readOnlyChipInfo($gpioinfoBin);
 					</div>
 					<div class="box-content">
 						<p>This page does not export pins, drive outputs, or key a transmitter. A number from 0 to 27 is only a BCM header candidate on gpiochip0. A number from 496 to 511 is a conditional MCP23017 offset if the old kernel base was 496, and it is never a BCM number. orp-test has no MCP23017, so that line is absent and activation is not applied. A number with no source name stays an evidence gap, not a guessed output.</p>
+						<div class="gpio-map-scroll">
 						<table class="table table-striped table-bordered">
 							<thead>
 								<tr>
@@ -87,6 +88,7 @@ $chipInfo = GpioMap::readOnlyChipInfo($gpioinfoBin);
 							<?php } ?>
 							</tbody>
 						</table>
+						</div>
 						<h3>gpioinfo</h3>
 						<?php if ($chipInfo === null) { ?>
 						<p>gpioinfo is not installed or not executable. No pin was requested.</p>

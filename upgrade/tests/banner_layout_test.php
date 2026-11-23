@@ -46,6 +46,12 @@ foreach ($blocks as $block) {
 	if (preg_match('/\.server_bar\s+span\b/', $selector) && preg_match('/display\s*:\s*none\b/i', $body)) {
 		banner_fail('.server_bar span is hidden');
 	}
+	if (preg_match('/(^|,)\s*\.server_bar\s+span\s*(,|$)/', $selector)
+		&& !preg_match('/\.server_bar\s+span\s+\S/', $selector)
+		&& preg_match('/white-space\s*:\s*normal\b/i', $body)
+		&& !preg_match('/overflow-wrap\s*:\s*anywhere\b/i', $body)) {
+		banner_fail('.server_bar span does not wrap a long path');
+	}
 }
 if (!$sawStatic) {
 	banner_fail('.server_bar is not in normal flow');
