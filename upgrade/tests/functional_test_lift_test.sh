@@ -381,9 +381,10 @@ chmod 644 "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf" \
 	"$pubroot/var/lib/openrepeater/bench-preview/Logic.tcl" \
 	"$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port1.tcl" \
 	"$pubroot/var/lib/openrepeater/bench-preview/ORP_RepeaterLogic_Port2.tcl"
-printf 'STALE\n' > "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl"
+printf 'STALE\n' | sudo -n tee "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl" >/dev/null
 orp_fixture_traverse "$tmp"
 chmod -R a+rX "$pubroot/var/lib/openrepeater"
+sudo -n chown -R root:root "$pubroot/usr/local/share/svxlink" "$pubroot/usr/local/lib/svxlink"
 off_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
 	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
 	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
@@ -465,7 +466,7 @@ grep -q '^LOGICTCL$' "$pubroot/usr/local/share/svxlink/events.d/local/Logic.tcl"
 grep -q '^PORT1$' "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port1.tcl"
 [ ! -e "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port2.tcl" ]
 [ ! -e "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl" ]
-printf 'STALE\n' > "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl"
+printf 'STALE\n' | sudo -n tee "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl" >/dev/null
 purge_pub=$(sudo -n env ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$pubroot" ORP_DB_PATH="$db" \
 	ORP_OPERATING_MODE_FILE="$pubroot/etc/openrepeater/operating-mode" \
 	ORP_BENCH_HOSTNAME_FILE="$pubroot/etc/hostname" \
@@ -632,7 +633,7 @@ canary="$pubroot/gpio-canary"
 printf 'CANARY\n' > "$canary"
 sudo -n rm -f "$pubroot/etc/svxlink/gpio.conf"
 sudo -n ln -s "$canary" "$pubroot/etc/svxlink/gpio.conf"
-printf 'STALE\n' > "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl"
+printf 'STALE\n' | sudo -n tee "$pubroot/usr/local/share/svxlink/events.d/ORP_RepeaterLogic_Port9.tcl" >/dev/null
 printf '%s\n' '[Tx1]' 'PTT_TYPE=GPIO' 'PTT_PIN=gpio23' > "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
 chmod 644 "$pubroot/var/lib/openrepeater/bench-preview/svxlink.conf"
 snap_publish before-armed-symlink
