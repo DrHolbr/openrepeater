@@ -78,6 +78,11 @@ if [ "${ORP_UMASK_MATRIX:-0}" != 1 ]; then
 	}
 	trap finish_matrix EXIT
 	matrix_fail=0
+	# 0077 is not included. A root mkdir in the fixture inherits it, so those
+	# directories are mode 700 and the invoking user cannot remove them after
+	# sudo. 0002 is the group-write case the anchor checks have to survive.
+	# 0022 is the normal file mode. Directories the suite shares are created
+	# with install -d -m 0755, which does not follow the umask.
 	for mask in 0022 0002; do
 		echo "=== umask ${mask} read-only payload ==="
 		if ! (umask "$mask" && bash "$payload/upgrade/tests/run.sh"); then
