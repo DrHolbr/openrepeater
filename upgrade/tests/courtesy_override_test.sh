@@ -132,13 +132,14 @@ sqlite3 "$db" "UPDATE settings SET value='3_Up_(Chord).wav' WHERE keyID='courtes
 sqlite3 "$db" "UPDATE settings SET value='custom' WHERE keyID='courtesyMode';"
 pub=$(publish)
 printf '%s\n' "$pub" | grep -q '^courtesy_mode=custom$'
-grep -F -q 'playFile "/var/www/openrepeater/sounds/courtesy_tones/3_Up_(Chord).wav"' "$override"
+grep -F -q 'playFile "/usr/local/share/svxlink/sounds/courtesy_tones/3_Up_(Chord).wav"' "$override"
+[ "$(cat "$live/usr/local/share/svxlink/sounds/courtesy_tones/3_Up_(Chord).wav")" = "clip" ]
 if grep -q 'playTone' "$override"; then
 	echo "FAIL: custom override still plays a tone" >&2
 	exit 1
 fi
 overlay
-tclsh "$tcl" "$base" custom "/var/www/openrepeater/sounds/courtesy_tones/3_Up_(Chord).wav"
+tclsh "$tcl" "$base" custom "/usr/local/share/svxlink/sounds/courtesy_tones/3_Up_(Chord).wav"
 echo "ok: a selected courtesy file is written as playFile and repeater_down stays 400/360"
 
 custom_sum=$(sha256sum "$override" | awk '{print $1}')

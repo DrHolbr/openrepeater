@@ -1303,7 +1303,7 @@ EOF
 			cat <<EOF
 namespace eval Logic {
 proc send_rgr_sound {} {
-  playFile "/var/www/openrepeater/sounds/courtesy_tones/${courtesy_file}"
+  playFile "/usr/local/share/svxlink/sounds/courtesy_tones/${courtesy_file}"
   playSilence 200
 }
 }
@@ -1315,8 +1315,44 @@ EOF
 	esac
 }
 
+# The web library is not readable by svxlink: sounds is mode 1770. Copy the
+# selected clip into the share tree the 26.05 courtesy override plays.
+function config_install_courtesy_clip() {
+	local src dest sounds dir tmp
+	src=$(native_path "/var/www/openrepeater/sounds/courtesy_tones/${courtesy_file}")
+	dest=$(native_path "/usr/local/share/svxlink/sounds/courtesy_tones/${courtesy_file}")
+	sounds=$(native_path /usr/local/share/svxlink/sounds)
+	dir=$(dirname "$dest")
+	if [ -L "$src" ] || [ ! -f "$src" ]; then
+		echo "refused: custom courtesy file is not a regular file. The previous runtime was not changed." >&2
+		return 1
+	fi
+	if [ -L "$sounds" ] || [ ! -d "$sounds" ]; then
+		echo "refused: svxlink sounds directory is not a real directory. The previous runtime was not changed." >&2
+		return 1
+	fi
+	if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+		mkdir -m 755 "$dir"
+	fi
+	if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+		echo "refused: courtesy tone share directory is not a real directory. The previous runtime was not changed." >&2
+		return 1
+	fi
+	if [ -L "$dest" ]; then
+		echo "refused: courtesy tone destination is a symbolic link. The previous runtime was not changed." >&2
+		return 1
+	fi
+	tmp=$(mktemp "$dir/.orp-courtesy.XXXXXX")
+	cp -- "$src" "$tmp"
+	chmod 644 "$tmp"
+	mv -f -- "$tmp" "$dest"
+}
+
 function config_install_courtesy() {
 	local events body
+	if [ "$courtesy_mode" = custom ] && ! config_install_courtesy_clip; then
+		return 1
+	fi
 	events=$(native_path /usr/local/share/svxlink/events.d)
 	if [ -L "$events" ] || [ ! -d "$events" ]; then
 		echo "refused: events.d is not a real directory" >&2
@@ -1341,7 +1377,7 @@ function config_install_courtesy() {
 	fi
 	if [ "$courtesy_mode" = custom ]; then
 		if [ "$(grep -c playFile "$body")" -ne 1 ] \
-			|| ! grep -F -q "  playFile \"/var/www/openrepeater/sounds/courtesy_tones/${courtesy_file}\"" "$body"
+			|| ! grep -F -q "  playFile \"/usr/local/share/svxlink/sounds/courtesy_tones/${courtesy_file}\"" "$body"
 		then
 			rm -f "$body"
 			echo "refused: courtesy override contains a path or a command" >&2
