@@ -218,17 +218,33 @@ bench_assert_masks() {
 	if bench_mode_is_functional_test; then
 		return 0
 	fi
-	for unit in svxlink.service remotetrx.service svxreflector.service; do
+	enabled=$(unit_enabled_state svxlink.service)
+	active=$(unit_active_state svxlink.service)
+	if [ "$enabled" != "masked" ]; then
+		if ! { bench_mode_is_functional_test && [ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]; }; then
+			echo "refused: svxlink.service is enabled '${enabled}' active '${active}', expected masked, or inactive and disabled with a functional-test token" >&2
+			return 4
+		fi
+	fi
+	# remotetrx and svxreflector are not masked or unmasked here. An enabled
+	# or running unit is still refused.
+	for unit in remotetrx.service svxreflector.service; do
 		enabled=$(unit_enabled_state "$unit")
 		active=$(unit_active_state "$unit")
-		if [ "$enabled" = "masked" ]; then
-			continue
-		fi
-		if bench_mode_is_functional_test && [ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]; then
-			continue
-		fi
-		echo "refused: ${unit} is enabled '${enabled}' active '${active}', expected masked, or inactive and disabled with a functional-test token" >&2
-		return 4
+		case "$enabled" in
+			masked|disabled|not-found|"") ;;
+			*)
+				echo "refused: ${unit} is enabled '${enabled}', expected disabled" >&2
+				return 4
+				;;
+		esac
+		case "$active" in
+			inactive|unknown|failed|"") ;;
+			*)
+				echo "refused: ${unit} is active '${active}', expected inactive" >&2
+				return 4
+				;;
+		esac
 	done
 	return 0
 }
@@ -1085,18 +1101,17 @@ bench_ancestors_are_real() {
 	return 0
 }
 
-# When the trusted functional-test token is present, a /dev/null mask is
-# removed so svxlink, remotetrx, and svxreflector can be started later.
-# Every unit is then disabled, and wants, requires, and upholds links for
-# all three units are removed. is-enabled must be disabled. The installer
-# does not enable them and does not start them.
+# When the trusted functional-test token is present, the svxlink /dev/null
+# mask is removed. remotetrx and svxreflector are not masked or unmasked.
+# svxlink is then disabled. The installer does not enable it and does not
+# start it.
 bench_unmask_radio_units() {
 	local unit link sys enabled
 	if ! bench_mode_is_functional_test; then
 		return 0
 	fi
 	sys=$(p /etc/systemd/system)
-	for unit in svxlink.service remotetrx.service svxreflector.service; do
+	for unit in svxlink.service; do
 		link="${sys}/${unit}"
 		if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
 			rm -f -- "$link"

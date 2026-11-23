@@ -227,6 +227,18 @@ for masked in svxlink.service remotetrx.service svxreflector.service; do
 		bad "mask changed: $masked"
 	fi
 done
+rtx_unit="$good/usr/local/lib/systemd/system/remotetrx.service"
+ref_unit="$good/usr/local/lib/systemd/system/svxreflector.service"
+if [ -f "$rtx_unit" ] && [ ! -L "$rtx_unit" ] \
+	&& [ -f "$ref_unit" ] && [ ! -L "$ref_unit" ] \
+	&& cmp -s <("$HELPER" native remotetrx-unit) "$rtx_unit" \
+	&& cmp -s <("$HELPER" native reflector-unit) "$ref_unit" \
+	&& ! grep -E -q 'unmask remotetrx|unmask svxreflector|enable remotetrx|enable svxreflector' "$log"
+then
+	ok "remotetrx and svxreflector units are installed disabled and are not masked or unmasked"
+else
+	bad "remotetrx or svxreflector unit was not installed disabled"
+fi
 if grep -q '^daemon-reload$' "$log" && ! grep -E -q 'unmask|start svxlink|enable svxlink' "$log"; then
 	ok "installer reloaded systemd and did not unmask or start svxlink"
 else

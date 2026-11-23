@@ -789,6 +789,52 @@ WantedBy=multi-user.target
 EOF
 }
 
+function native_remotetrx_unit_text() {
+	cat <<'EOF'
+[Unit]
+Description=SvxLink remote transceiver
+Documentation=man:remotetrx(1) man:remotetrx.conf(5)
+After=network.target
+
+[Service]
+Type=simple
+User=svxlink
+Group=svxlink
+UMask=0022
+WorkingDirectory=/etc/svxlink
+ExecStart=/usr/local/bin/remotetrx --logfile=/var/log/svxlink --config=/etc/svxlink/remotetrx.conf
+Restart=no
+TimeoutStopSec=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+function native_reflector_unit_text() {
+	cat <<'EOF'
+[Unit]
+Description=SvxLink reflector server
+Documentation=man:svxreflector(1) man:svxreflector.conf(5)
+After=network.target
+
+[Service]
+Type=simple
+User=svxlink
+Group=svxlink
+UMask=0022
+WorkingDirectory=/etc/svxlink
+ExecStart=/usr/local/bin/svxreflector --logfile=/var/log/svxlink --config=/etc/svxlink/svxreflector.conf
+Restart=no
+TimeoutStopSec=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 function native_runtime() {
 	local rc=0 path expected
 	if native_account_ok; then
@@ -971,6 +1017,20 @@ function native_masks() {
 		if native_functional_token; then
 			echo "ok: ${unit} manageable in functional-test"
 			continue
+		fi
+		# remotetrx and svxreflector ship as disabled units. They are not
+		# masked and not unmasked by the installer.
+		if [ "$unit" != "svxlink.service" ]; then
+			case "$enabled" in
+				disabled|not-found|"")
+					case "$active" in
+						inactive|unknown|failed|"")
+							echo "ok: ${unit} disabled"
+							continue
+							;;
+					esac
+					;;
+			esac
 		fi
 		echo "missing: ${unit} is not a /dev/null mask"
 		rc=1
@@ -3021,7 +3081,9 @@ while :; do
 			if [ "$2" == "preflight" ]; then native_preflight
 			elif [ "$2" == "inputs" ]; then native_inputs
 			elif [ "$2" == "unit" ]; then native_unit_text
-			else echo "INVALID OPTION"; echo "USAGE: orp_helper native (preflight|inputs|unit)"
+			elif [ "$2" == "remotetrx-unit" ]; then native_remotetrx_unit_text
+			elif [ "$2" == "reflector-unit" ]; then native_reflector_unit_text
+			else echo "INVALID OPTION"; echo "USAGE: orp_helper native (preflight|inputs|unit|remotetrx-unit|reflector-unit)"
 			fi
 			exit;;
         svxlink)

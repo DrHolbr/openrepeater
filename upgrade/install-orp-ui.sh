@@ -638,7 +638,27 @@ if [ "$write_vendor_unit" -eq 1 ]; then
 	bench_chmod 644 "$(p /usr/local/lib/systemd/system/svxlink.service)"
 	bench_chown root:root "$(p /usr/local/lib/systemd/system/svxlink.service)"
 fi
-for unit in svxlink.service remotetrx.service svxreflector.service; do
+# remotetrx and svxreflector ship disabled. Do not mask them and do not unmask them.
+write_disabled_unit() {
+	local name=$1 generator dest body
+	name=$1
+	generator=$2
+	dest=$(p "/usr/local/lib/systemd/system/${name}")
+	bench_anchor_dir "$(dirname "$dest")"
+	if [ -L "$dest" ]; then
+		echo "refused: ${dest} is a symbolic link" >&2
+		exit 6
+	fi
+	body=$(mktemp)
+	env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native "$generator" > "$body"
+	bench_place_file "$body" "$dest"
+	rm -f "$body"
+	bench_chmod 644 "$dest"
+	bench_chown root:root "$dest"
+}
+write_disabled_unit remotetrx.service remotetrx-unit
+write_disabled_unit svxreflector.service reflector-unit
+for unit in svxlink.service; do
 	if bench_mode_is_functional_test; then
 		continue
 	fi

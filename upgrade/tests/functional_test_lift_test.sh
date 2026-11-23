@@ -313,14 +313,19 @@ unmask_out=$(
 	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
 	bench_unmask_radio_units
 )
-for unit in svxlink.service remotetrx.service svxreflector.service; do
-	[ ! -e "$unmask_root/etc/systemd/system/$unit" ]
-	[ ! -e "$unmask_root/etc/systemd/system/multi-user.target.wants/$unit" ]
-	[ ! -e "$unmask_root/etc/systemd/system/svxlink.service.requires/$unit" ]
-	[ ! -e "$unmask_root/etc/systemd/system/svxlink.service.upholds/$unit" ]
-	grep -q "unmask ${unit}" "$tmp/unmask.log"
-	grep -q "disable ${unit}" "$tmp/unmask.log"
-	printf '%s\n' "$unmask_out" | grep -q "is-enabled=disabled ${unit}"
+[ ! -e "$unmask_root/etc/systemd/system/svxlink.service" ]
+[ ! -e "$unmask_root/etc/systemd/system/multi-user.target.wants/svxlink.service" ]
+grep -q "unmask svxlink.service" "$tmp/unmask.log"
+grep -q "disable svxlink.service" "$tmp/unmask.log"
+printf '%s\n' "$unmask_out" | grep -q "is-enabled=disabled svxlink.service"
+for unit in remotetrx.service svxreflector.service; do
+	[ -L "$unmask_root/etc/systemd/system/$unit" ]
+	[ "$(readlink "$unmask_root/etc/systemd/system/$unit")" = "/dev/null" ]
+	[ -L "$unmask_root/etc/systemd/system/multi-user.target.wants/$unit" ]
+	if grep -q "unmask ${unit}" "$tmp/unmask.log"; then
+		echo "FAIL: ${unit} was unmasked" >&2
+		exit 1
+	fi
 done
 printf 'bench\n' | sudo tee "$unmask_root/etc/openrepeater/operating-mode" >/dev/null
 sudo chown 0:0 "$unmask_root/etc/openrepeater/operating-mode"
