@@ -1,6 +1,9 @@
 function setCourtesyTone (fileName, activeNum, totalFiles, fileLabel) {
 	$('#courtesy').val(fileName);
 	$('#current_tone').html(fileLabel);
+	$('#courtesyMode').val('custom');
+	$('#disabled, #beep').hide();
+	$('#custom').show();
 
 	for (i = 1; i <= totalFiles; i++) {
 		$('#courtesyToneRow'+i).removeClass('active');
@@ -72,10 +75,11 @@ function updateCourtesyTone () {
     var method = $form.attr("method") ? $form.attr("method").toUpperCase() : "GET";
     $.ajax({
         url: $form.attr("action"),
-        data: $form.serialize(),
+        data: $form.serialize() + '&courtesyMode=custom',
         type: method,
-        success: function() {
-			$('.server_bar_wrap').show(); 
+        success: function(data) {
+			$('.server_bar_wrap').show();
+			$('#courtesyStatus').text(data);
         }
     });
 }

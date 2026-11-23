@@ -48,10 +48,44 @@ class AudioFiles {
 		if (strpos($name, "\0") !== false || strpos($name, '/') !== false || strpos($name, '\\') !== false) {
 			return null;
 		}
-		if (!preg_match('/^[A-Za-z0-9._ -]+$/', $name)) {
+		if (!preg_match('/^[A-Za-z0-9._() -]+$/', $name)) {
 			return null;
 		}
 		return $name;
+	}
+
+	// Stock courtesy names are protected from delete and rename. A missing
+	// stock file is copied again by the installer and an existing file is not
+	// overwritten, so a name removed outside this page comes back.
+	private function stockCourtesyNames() {
+		static $names = null;
+		if ($names !== null) {
+			return $names;
+		}
+		$names = array();
+		$path = __DIR__ . '/../courtesy_stock.txt';
+		if (!is_file($path)) {
+			return $names;
+		}
+		$lines = file($path, FILE_IGNORE_NEW_LINES);
+		if (!is_array($lines)) {
+			return $names;
+		}
+		foreach ($lines as $line) {
+			$line = trim($line);
+			if ($line !== '') {
+				$names[$line] = true;
+			}
+		}
+		return $names;
+	}
+
+	private function isStockCourtesy($type, $name) {
+		if ($type !== 'courtesy_tones' || !is_string($name)) {
+			return false;
+		}
+		$names = $this->stockCourtesyNames();
+		return isset($names[$name]);
 	}
 
 	private function refusal($text) {
@@ -203,12 +237,17 @@ class AudioFiles {
 					$html_table .= '<tr id="'.$rowID_prefix.$file_counter.'" class="audio_row">';
 				}
 		
+				$mime = 'audio/wav';
+				if (preg_match('/\.mp3$/i', $fileArray['fileName'])) {
+					$mime = 'audio/mpeg';
+				}
+				$stock = ($settingName === 'courtesy' && $this->isStockCourtesy($type, $fileArray['fileName']));
 				$html_table .= '
 					<td><h2>' . $fileArray['fileLabel'] . '</h2></td>
 			
 					<td class="center">
 					<audio controls>
-						<source src="' . $fileArray['fileURL'] . '" type=audio/mpeg>
+						<source src="' . $fileArray['fileURL'] . '" type="' . $mime . '">
 						Your browser does not support the audio element.
 					</audio>
 					</td>
@@ -216,7 +255,11 @@ class AudioFiles {
 					<td class="button_grp">
 			
 						' . $select_btn_html . '
-			
+			';
+				if ($stock) {
+					$html_table .= '<span class="label">Stock</span>';
+				} else {
+					$html_table .= '
 						<!-- Button triggered modal -->
 						<button class="btn" data-toggle="modal" data-target="#renameFile'.$file_counter.'">
 							<i class="icon-pencil"></i> 
@@ -228,9 +271,15 @@ class AudioFiles {
 							<i class="icon-trash icon-white"></i> 
 							Delete
 						</button>
+					';
+				}
+				$html_table .= '
 					</td>
 				</tr>';
 
+				if ($stock) {
+					continue;
+				}
 			
 				$html_modal .= '
 			
@@ -463,6 +512,9 @@ class AudioFiles {
 		$renamePath = rtrim($library, '/') . '/';
 		
 		$oldfile = $renamePath . $oldFileName;
+		if ($this->isStockCourtesy($type, $oldFileName)) {
+			return $this->refusal('Stock courtesy tones stay in the library and cannot be renamed.');
+		}
 		if (is_link($oldfile) || !is_file($oldfile)) {
 			return $this->refusal('The audio file was not renamed.');
 		} 
@@ -523,16 +575,23 @@ class AudioFiles {
 		
 		if (!is_array($fileNameArray)) { $fileNameArray = array($fileNameArray); } // if string is passed, turn into array
 		$currentFile = '';
+		$targets = array();
 
 		foreach($fileNameArray as $requested) {
 			$currentFile = $this->plainFileName($requested);
 			if ($currentFile === null) {
 				return $this->refusal('The audio file was not deleted.');
 			}
+			if ($this->isStockCourtesy($type, $currentFile)) {
+				return $this->refusal('Stock courtesy tones stay in the library and cannot be deleted.');
+			}
 			$target = $deletePath . $currentFile;
 			if (is_link($target) || !is_file($target)) {
 				return $this->refusal('The audio file was not deleted.');
 			}
+			$targets[] = $target;
+		}
+		foreach ($targets as $target) {
 			unlink($target);
 		}
 		

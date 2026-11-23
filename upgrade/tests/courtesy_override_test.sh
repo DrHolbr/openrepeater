@@ -123,4 +123,94 @@ set -e
 [ "$(stat -c %a "$tmp/canary")" = "600" ]
 [ "$(sha256sum "$live/etc/svxlink/svxlink.conf" | awk '{print $1}')" = "$conf_sum" ]
 echo "ok: a symlinked courtesy override is not followed"
+
+rm -f "$override"
+clip_dir="$live/var/www/openrepeater/sounds/courtesy_tones"
+orp_mkdir "$clip_dir"
+printf 'clip\n' > "$clip_dir/3_Up_(Chord).wav"
+sqlite3 "$db" "UPDATE settings SET value='3_Up_(Chord).wav' WHERE keyID='courtesy';"
+sqlite3 "$db" "UPDATE settings SET value='custom' WHERE keyID='courtesyMode';"
+pub=$(publish)
+printf '%s\n' "$pub" | grep -q '^courtesy_mode=custom$'
+grep -F -q 'playFile "/var/www/openrepeater/sounds/courtesy_tones/3_Up_(Chord).wav"' "$override"
+if grep -q 'playTone' "$override"; then
+	echo "FAIL: custom override still plays a tone" >&2
+	exit 1
+fi
+overlay
+tclsh "$tcl" "$base" custom "/var/www/openrepeater/sounds/courtesy_tones/3_Up_(Chord).wav"
+echo "ok: a selected courtesy file is written as playFile and repeater_down stays 400/360"
+
+custom_sum=$(sha256sum "$override" | awk '{print $1}')
+local_dir=$(dirname "$override")
+chmod 0777 "$local_dir"
+set +e
+pub=$(publish 2>"$tmp/local-mode.err")
+rc=$?
+set -e
+[ "$rc" -ne 0 ]
+grep -q 'events.d/local is group or world writable' "$tmp/local-mode.err"
+[ "$(sha256sum "$override" | awk '{print $1}')" = "$custom_sum" ]
+chmod 755 "$local_dir"
+echo "ok: a group or world writable events.d/local is not written"
+
+rm -f "$override"
+mkfifo "$override"
+set +e
+pub=$(publish 2>"$tmp/fifo.err")
+rc=$?
+set -e
+[ "$rc" -ne 0 ]
+grep -q 'Logic.tcl is not a regular file' "$tmp/fifo.err"
+[ -p "$override" ]
+rm -f "$override"
+echo "ok: a fifo Logic.tcl is not replaced"
+
+mkdir "$override"
+set +e
+pub=$(publish 2>"$tmp/dir-leaf.err")
+rc=$?
+set -e
+[ "$rc" -ne 0 ]
+grep -q 'Logic.tcl is not a regular file' "$tmp/dir-leaf.err"
+[ -d "$override" ]
+rmdir "$override"
+echo "ok: a directory named Logic.tcl is not replaced"
+
+printf 'sentinel\n' > "$override"
+chmod 644 "$override"
+sentinel_sum=$(sha256sum "$override" | awk '{print $1}')
+sudo -n chown nobody:nogroup "$local_dir"
+set +e
+pub=$(publish 2>"$tmp/owner.err")
+rc=$?
+set -e
+owner_ok=0
+if [ "$rc" -ne 0 ] && grep -q 'events.d/local is not owned by the publisher' "$tmp/owner.err" \
+	&& [ "$(sha256sum "$override" | awk '{print $1}')" = "$sentinel_sum" ]
+then
+	owner_ok=1
+fi
+sudo -n chown "$(id -u):$(id -g)" "$local_dir"
+[ "$owner_ok" -eq 1 ]
+echo "ok: events.d/local owned by another user is not written"
+
+rm -f "$clip_dir/3_Up_(Chord).wav"
+ln -s /etc/passwd "$clip_dir/3_Up_(Chord).wav"
+set +e
+pub=$(publish 2>"$tmp/clip-link.err")
+rc=$?
+set -e
+[ "$rc" -ne 0 ]
+grep -q 'previous runtime was not changed' "$tmp/clip-link.err"
+[ "$(sha256sum "$override" | awk '{print $1}')" = "$sentinel_sum" ]
+[ -L "$clip_dir/3_Up_(Chord).wav" ]
+echo "ok: a symlinked courtesy clip is not published"
+
+ORP_AUDIO_PATH="$tmp/library" php "$ROOT_DIR/upgrade/tests/courtesy_library_check.php" \
+	"$ROOT_DIR/includes/classes/AudioFiles.php" \
+	"$ROOT_DIR/includes/courtesy_stock.txt" \
+	"$ROOT_DIR/install/sounds/courtesy_tones" \
+	"$tmp/library"
+echo "ok: the courtesy library lists stock and uploaded tones and protects stock names"
 echo "courtesy override checks passed"

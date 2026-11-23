@@ -3,6 +3,7 @@
 
 set basedir [lindex $argv 0]
 set mode [lindex $argv 1]
+set expected_file [lindex $argv 2]
 set ::basedir $basedir
 set ::logic_name RepeaterLogic
 set ::logic_type Repeater
@@ -123,10 +124,17 @@ if {$mode eq "default"} {
 	if {![saw playSilence 100]} {
 		fail "disabled send_rgr_sound did not play silence"
 	}
+} elseif {$mode eq "custom"} {
+	if {![saw playFile $expected_file] || ![saw playSilence 200]} {
+		fail "custom send_rgr_sound did not play the selected file"
+	}
+	if {[saw_kind playTone]} {
+		fail "custom send_rgr_sound played a tone"
+	}
 } else {
 	fail "unknown courtesy mode $mode"
 }
-if {[saw_kind playFile]} {
+if {$mode ne "custom" && [saw_kind playFile]} {
 	fail "send_rgr_sound played a file"
 }
 

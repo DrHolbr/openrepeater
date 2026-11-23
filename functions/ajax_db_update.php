@@ -76,11 +76,11 @@ if (isset($updates['orp_Mode'])) {
 }
 if (isset($updates['courtesyMode']) || isset($updates['courtesy'])) {
 	if (isset($updates['courtesyMode']) && $updates['courtesyMode'] === 'custom') {
-		echo "unsupported: a custom courtesy file is not published. The previous runtime was not changed.\n";
+		echo "stored-for-publish: courtesyMode=custom is in the database. The root publisher writes playFile for the selected WAV on the next publish when that file is in the courtesy library. It is not executed here.\n";
 	} elseif (isset($updates['courtesyMode']) && ($updates['courtesyMode'] === 'disabled' || $updates['courtesyMode'] === 'beep')) {
 		echo "stored-for-publish: courtesyMode=" . $updates['courtesyMode'] . " is in the database. The root publisher writes events.d/local/Logic.tcl on the next publish. It is not executed here.\n";
 	}
 	if (isset($updates['courtesy'])) {
-		echo "stored-not-applied: the courtesy filename is not published.\n";
+		echo "stored-for-publish: the courtesy filename is stored. The root publisher writes it when the mode is custom and the file is a regular WAV.\n";
 	}
 }

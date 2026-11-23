@@ -270,15 +270,15 @@ code=$(post_settings -o "$tmp/courtesy.body" -w '%{http_code}' \
 [ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='courtesyMode';")" = "beep" ]
 grep -q 'stored-for-publish: courtesyMode=beep' "$tmp/courtesy.body"
 page=$(curl -s -b "$jar" "$base/courtesy_tone.php")
-printf '%s' "$page" | grep -q 'Unsupported'
+printf '%s' "$page" | grep -q 'playFile'
 printf '%s' "$page" | grep -q 'Stored for publish'
-printf '%s' "$page" | grep -q 'left unchanged'
+printf '%s' "$page" | grep -q 'cannot be deleted'
 code=$(post_settings -o "$tmp/courtesy-custom.body" -w '%{http_code}' \
 	--data-urlencode 'courtesyMode=custom' \
 	"$base/functions/ajax_db_update.php")
 [ "$code" = "200" ]
-grep -q '^unsupported:' "$tmp/courtesy-custom.body"
-grep -q 'previous runtime was not changed' "$tmp/courtesy-custom.body"
+grep -q '^stored-for-publish: courtesyMode=custom' "$tmp/courtesy-custom.body"
+grep -q 'playFile' "$tmp/courtesy-custom.body"
 sqlite3 "$db" "UPDATE settings SET value='beep' WHERE keyID='courtesyMode';"
 printf 'not-audio' > "$tmp/note.php"
 code=$(curl -s -b "$jar" -H "X-CSRF-Token: ${token}" -o "$tmp/audio-bad.body" -w '%{http_code}' \
