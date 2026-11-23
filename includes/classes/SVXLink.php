@@ -767,8 +767,8 @@ class SVXLink {
 			if (!is_dir($stageDir) && !mkdir($stageDir, 0770, true) && !is_dir($stageDir)) {
 				return $this->publishFailure();
 			}
-			$staged = rtrim($stageDir, '/') . '/svxlink.conf';
-			if (BenchGuard::writeContained($staged, $file_output) !== true) {
+			// Each name keeps its own file. gpio.conf must not replace svxlink.conf.
+			if (BenchGuard::writeContained($full_file_path, $file_output) !== true) {
 				return $this->publishFailure();
 			}
 			// The live file is installed only by `orp_helper config publish`.
