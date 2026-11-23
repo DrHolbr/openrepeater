@@ -1989,6 +1989,86 @@ function abort_before_conf_rename() {
 	rm -f "$courtesy_backup"
 }
 
+# A card line looks like " 0 [Dummy ]: ...". An empty or missing file means
+# there is no ALSA device for the stored plughw path.
+function alsa_cards_present() {
+	local file=${ORP_ALSA_CARDS_FILE:-/proc/asound/cards}
+	[ -f "$file" ] && [ ! -L "$file" ] && grep -E -q '^[[:space:]]*[0-9]+[[:space:]]+\[' "$file"
+}
+
+function read_staged_for_publish() {
+	local src=$1 dest=$2 bytes
+	if [ "$(id -u)" -eq 0 ]; then
+		wwwdata_read_capped "$src" "$dest"
+		return
+	fi
+	if [ ! -f "$src" ] || [ -L "$src" ]; then
+		echo "refused: staged path is not a regular file" >&2
+		return 1
+	fi
+	head -c 1048577 -- "$src" > "$dest"
+	bytes=$(wc -c < "$dest" | tr -d ' ')
+	if [ "$bytes" -gt 1048576 ] || [ "$bytes" -eq 0 ]; then
+		echo "refused: staged file was not a readable config" >&2
+		return 1
+	fi
+}
+
+# Keep the UI document. Force only the radio side: no PTT pin, no GPIO
+# export, and UDP audio when this machine has no ALSA card.
+function config_sanitize_unarmed() {
+	local src=$1 dest=$2 cards=$3
+	python3 - "$src" "$dest" "$cards" <<'PY'
+import sys
+src, dest, cards = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(src, "r", encoding="utf-8", errors="replace").read()
+if "[GLOBAL]" not in text or "LOGICS=" not in text:
+    sys.stderr.write("refused: staged svxlink.conf has no [GLOBAL] LOGICS section\n")
+    sys.exit(1)
+section = ""
+out = []
+drop_keys = {
+    "PTT_PIN", "PTT_PORT", "GPIO_SQL_PIN", "GPIO_PATH",
+}
+for line in text.splitlines():
+    stripped = line.strip()
+    if stripped.startswith("[") and stripped.endswith("]") and "=" not in stripped:
+        section = stripped[1:-1]
+        out.append(line)
+        continue
+    if not stripped or stripped.startswith("#") or stripped.startswith(";") or "=" not in line:
+        out.append(line)
+        continue
+    key, value = line.split("=", 1)
+    name = key.strip()
+    raw = value.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+        raw = raw[1:-1]
+    if name in drop_keys or name.startswith("PTT_GPIOD") or name.startswith("SQL_GPIOD"):
+        continue
+    if name == "PTT_TYPE":
+        out.append("PTT_TYPE=NONE")
+        continue
+    if name == "SQL_DET" and raw.upper() in ("GPIO", "GPIOD"):
+        out.append("SQL_DET=SIGLEV")
+        continue
+    if name in ("GPIO_OUT_HIGH", "GPIO_OUT_LOW", "GPIO_IN_HIGH", "GPIO_IN_LOW"):
+        out.append('%s=""' % name)
+        continue
+    if name == "AUDIO_DEV" and cards != "1":
+        if not (raw.startswith("udp:") or raw == "null" or raw.startswith("null:")):
+            port = "17002" if section.lower().startswith("tx") else "17001"
+            out.append("AUDIO_DEV=udp:127.0.0.1:%s" % port)
+            continue
+    out.append(line)
+body = "\n".join(out) + "\n"
+if "PTT_PIN" in body or "gpio498" in body or "GPIO_SQL_PIN" in body:
+    sys.stderr.write("refused: radio pins remained in the sanitized config\n")
+    sys.exit(1)
+open(dest, "w", encoding="utf-8").write(body)
+PY
+}
+
 function config_publish {
 	local dest parent snapshot backup sum_before sum_after rb_failed backup_parent staged
 	if ! functional_test_on; then
@@ -2054,6 +2134,7 @@ function config_publish {
 	snapshot=$(mktemp "${parent}/.orp-svxlink.XXXXXX")
 	COMPANION_DIR=""
 	conf_existed=0
+	staged_ui=$(module_root_path /var/lib/openrepeater/bench-preview/svxlink.conf)
 	if native_functional_token && tx_armed; then
 		# Advanced mode is not rendered by config_logic_select. The staged
 		# set is the publish. Repeater and simplex still record a logic name
@@ -2076,6 +2157,22 @@ function config_publish {
 			echo "refused: staged companion was not read"
 			return 1
 		fi
+	elif [ -f "$staged_ui" ] && [ ! -L "$staged_ui" ]; then
+		config_logic_select || { logic_type=staged; logic_name=staged; }
+		raw=$(mktemp)
+		cards=0
+		alsa_cards_present && cards=1
+		if ! read_staged_for_publish "$staged_ui" "$raw"; then
+			rm -f "$snapshot" "$raw"
+			echo "refused: the UI svxlink.conf was not read. The runtime config was not replaced."
+			return 1
+		fi
+		if ! config_sanitize_unarmed "$raw" "$snapshot" "$cards"; then
+			rm -f "$snapshot" "$raw"
+			echo "refused: the UI svxlink.conf was not made radio-safe. The runtime config was not replaced."
+			return 1
+		fi
+		rm -f "$raw"
 	elif ! config_logic_select; then
 		rm -f "$snapshot"
 		return 1
