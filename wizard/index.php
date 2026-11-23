@@ -2,6 +2,10 @@
 // --------------------------------------------------------
 // SESSION CHECK TO SEE IF USER IS LOGGED IN.
 session_start();
+require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] !== 'GET' && $_SERVER['REQUEST_METHOD'] !== 'HEAD') {
+	RequestGuard::requireMutation();
+}
 if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
 	header('location: ../login.php');
 } else { // If they are, show the page.
@@ -12,7 +16,9 @@ if ((!isset($_SESSION['username'])) || (!isset($_SESSION['userID']))){
 require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/autoloadClasses.php');
 ################################################################################
 
-session_name("open_repeater_wizard");   // In case there are several session based applications
+// Keep the login session. session_name() after session_start() does not
+// switch cookies and warns on PHP 8: "Session name cannot be changed when
+// a session is active".
 
 if (!isset($_POST["page"])) {
 	// Default Settings are not visiable to the user. They will get written into database as defaults that they can change later on.
@@ -195,10 +201,14 @@ case "wizard_update":
 	}
 
 case "wizard_complete":
-	// Run SVXLink_Update to create new config files
-	header("Location: ../functions/svxlink_update.php");
-	// Note: svxlink_update will check for wizard sessions and destory/logout when done.
-	break;
+	// The browser posts the CSRF token. svxlink_update.php refuses a GET.
+	$finishToken = htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8');
+	echo '<!DOCTYPE html><html><body>';
+	echo '<form id="finish" method="post" action="../functions/svxlink_update.php">';
+	echo '<input type="hidden" name="csrf_token" value="' . $finishToken . '">';
+	echo '</form><script>document.getElementById("finish").submit();</script>';
+	echo '</body></html>';
+	exit;
 
 }
 
@@ -575,7 +585,8 @@ include('includes/header.php'); // Load custom wizard header
 
 			<?php if(isset($alert)) { echo $alert; } ?>
 
-			<form method=POST>
+			<form method="post">
+			<input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8'); ?>">
 
 			<div class="row-fluid sortable wizard">
 				<div class="box span12">

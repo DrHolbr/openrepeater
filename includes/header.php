@@ -6,7 +6,6 @@ require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/autoloadClasses.
 
 $Database = new Database();
 $settings = $Database->get_settings();
-$benchGuard = BenchGuard::detect();
 ?>
 
 
@@ -14,6 +13,12 @@ $benchGuard = BenchGuard::detect();
 <html lang="en">
 <head>
 	<meta charset="utf-8">
+	<?php
+	if (session_status() === PHP_SESSION_ACTIVE) {
+		require_once(__DIR__ . '/classes/RequestGuard.php');
+		echo '<meta name="csrf-token" content="' . htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8') . '">' . "\n";
+	}
+	?>
 	<title>OpenRepeater<?php if (isset($pageTitle)) { echo " | ".$pageTitle; } ?></title>
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
@@ -82,27 +87,29 @@ $benchGuard = BenchGuard::detect();
 	<!-- Server Notifications -->
 
 <?php
-	$scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-	$current_page_url = $scheme . '://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'];
+	$pageName = 'dashboard.php';
+	if (isset($_SERVER['SCRIPT_NAME']) && is_string($_SERVER['SCRIPT_NAME'])) {
+		$baseName = basename($_SERVER['SCRIPT_NAME']);
+		if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*\.php$/', $baseName)) {
+			$pageName = $baseName;
+		}
+	}
+	$current_page_url = '../' . $pageName;
 
 	/* CHECK FOR UPDATE FLAG AND NOTIFY USER IF SERVER NEEDS RESTARTED */
 	$updateFlage = $Database->get_update_flag();
 ?>
 
-<?php if (isset($_GET['bench_blocked'])) { ?>
-	<div class="alert alert-error">Bench mode did not rebuild or restart the repeater.</div>
+<?php if (isset($_GET['publish_failed'])) { ?>
+	<div class="alert alert-error">The repeater configuration was not written. svxlink was not restarted.</div>
+<?php } elseif (isset($_GET['gpio_setup_failed'])) { ?>
+	<div class="alert alert-error">GPIO setup was refused. svxlink was not restarted.</div>
 <?php } ?>
 
 	<div class="server_bar_wrap"<?php if ($updateFlage == false) { echo ' style="display: none;"'; } ?>>
 	<div class="server_bar">
-		<?php if ($benchGuard->isBench()) { ?>
-		<span>Bench mode: configuration rebuild will not publish files or restart the radio.</span>
-		<?php } else { ?>
 		<span>Repeater Configuration Files Rebuild & Restart Required: </span>
-
-		<!-- Button triggered modal -->
 		<button class="rebuild_button" data-toggle="modal" data-target="#restartServer"><i class="icon-refresh icon-white"></i> Rebuild & Restart Repeater</button>
-		<?php } ?>
 	</div>
 	<div class="server_bar_spacer"></div>
 	</div>
@@ -123,11 +130,7 @@ $benchGuard = BenchGuard::detect();
 			<form action="functions/svxlink_update.php" method="post" style="margin:0;">
 				<input type="hidden" name="return_url" value="<?php echo $current_page_url; ?>">
 				<button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
-				<?php if ($benchGuard->isBench()) { ?>
-				<button type="button" class="btn btn-success" disabled="disabled">Restart blocked on bench</button>
-				<?php } else { ?>
 				<button type="submit" class="btn btn-success"><i class="icon-refresh icon-white"></i> Restart</button>
-				<?php } ?>
 			</form>
 	      </div>
 	    </div><!-- /.modal-content -->

@@ -23,7 +23,6 @@
 class TTS {
 
 	private static $db_path    = '/var/lib/openrepeater/db/openrepeater.db';
-	private static $log_file   = '/tmp/orp_tts.log';
 
 	// ── Defaults (also used as the seed for missing settings rows) ──────────
 	public static function defaults() {
@@ -38,7 +37,7 @@ class TTS {
 	}
 
 	private static function logln($m) {
-		@file_put_contents(self::$log_file, '['.date('c').'] '.$m."\n", FILE_APPEND);
+		error_log('orp tts: '.$m);
 	}
 
 	// ── Settings: bootstrap defaults (INSERT OR IGNORE) and read ────────────
@@ -131,7 +130,7 @@ class TTS {
 		if ($sox) {
 			$gain = (float)$s['tts_gain_db'];
 			$gain_arg = ($gain != 0.0) ? ' gain '.escapeshellarg(sprintf('%.2f', $gain)) : '';
-			exec($sox.' '.escapeshellarg($raw).' -r '.$rate.' -c 1 -b 16 '.escapeshellarg($out_wav).$gain_arg.' 2>>'.escapeshellarg(self::$log_file), $o, $rc);
+			exec($sox.' '.escapeshellarg($raw).' -r '.$rate.' -c 1 -b 16 '.escapeshellarg($out_wav).$gain_arg.' 2>/dev/null', $o, $rc);
 			if ($rc === 0 && file_exists($out_wav) && filesize($out_wav) > 0) {
 				@unlink($raw);
 				return true;
@@ -151,7 +150,7 @@ class TTS {
 		$txt = $raw_wav.'.txt';
 		@file_put_contents($txt, $text);
 		
-		$cmd = $flite.' -voice '.escapeshellarg($voice).' -f '.escapeshellarg($txt).' -o '.escapeshellarg($raw_wav).' 2>>'.escapeshellarg(self::$log_file);
+		$cmd = $flite.' -voice '.escapeshellarg($voice).' -f '.escapeshellarg($txt).' -o '.escapeshellarg($raw_wav).' 2>/dev/null';
 		@exec($cmd, $o, $rc);
 		@unlink($txt);
 		
@@ -168,7 +167,7 @@ class TTS {
 		$txt = $raw_wav.'.txt';
 		@file_put_contents($txt, $text);
 		
-		$cmd = 'cat '.escapeshellarg($txt).' | '.$pic02wave.' > '.escapeshellarg($raw_wav).' 2>>'.escapeshellarg(self::$log_file);
+		$cmd = 'cat '.escapeshellarg($txt).' | '.$pic02wave.' > '.escapeshellarg($raw_wav).' 2>/dev/null';
 		@exec($cmd, $o, $rc);
 		@unlink($txt);
 		
@@ -181,7 +180,7 @@ class TTS {
 		$espeak = self::find_espeak();
 		if ($espeak === '') { self::logln('espeak not found'); return false; }
 		$voice = $s['tts_espeak_voice'] ?: 'en-us';
-		$cmd = $espeak.' -v '.escapeshellarg($voice).' -w '.escapeshellarg($raw_wav).' '.escapeshellarg($text).' 2>>'.escapeshellarg(self::$log_file);
+		$cmd = $espeak.' -v '.escapeshellarg($voice).' -w '.escapeshellarg($raw_wav).' '.escapeshellarg($text).' 2>/dev/null';
 		@exec($cmd, $o, $rc);
 		$ok = (file_exists($raw_wav) && filesize($raw_wav) > 0);
 		self::logln('espeak '.($ok ? 'OK' : 'FAIL rc='.$rc).' voice='.$voice.' -> '.basename($raw_wav));

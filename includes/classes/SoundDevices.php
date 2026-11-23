@@ -40,7 +40,8 @@ class SoundDevices {
 		$audio_details .= '<pre>'.$arecord_results.'</pre>';
 		$audio_details .= '<h4>Audio Output Devices</h4>';
 		$audio_details .= '<pre>'.$aplay_results.'</pre>';
-		$audio_details .= '<p>'.$version[0].'</p>';
+		$versionLine = (isset($version[0]) && is_string($version[0])) ? $version[0] : '';
+		$audio_details .= '<p>'.$versionLine.'</p>';
 		
 		
 		// Sanitize arecored & aplay results, make a single string with no line feeds

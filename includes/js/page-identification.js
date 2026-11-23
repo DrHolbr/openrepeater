@@ -167,6 +167,17 @@ $('#long_ID_settings').on('change', function() {
 
 // ----------------------------------------------------------
 
+// call, morseCallsign, and output stay named on the form so the local Morse
+// player can read document.morse_form.*. They are not settings rows.
+// ajax_db_update.php refuses the whole POST, and writes nothing, when any
+// key is not an existing setting. The save sends only the setting fields.
+function morseIdSettingsData($form) {
+	return $form.find(':input').filter(function() {
+		var name = this.name;
+		return name && name !== 'call' && name !== 'morseCallsign' && name !== 'output';
+	}).serialize();
+}
+
 function updateMorseIdSettings () {
 	//update hidden field for morse code preview
 	$('#morseCallsign').val($('#callsign').val() + $('input[name="ID_Morse_Suffix"]:checked', '#morse_ID_settings').val());
@@ -176,7 +187,7 @@ function updateMorseIdSettings () {
     var method = $form.attr("method") ? $form.attr("method").toUpperCase() : "GET";
     $.ajax({
         url: $form.attr("action"),
-        data: $form.serialize(),
+        data: morseIdSettingsData($form),
         type: method,
         success: function() {
 			$('.server_bar_wrap').show(); 

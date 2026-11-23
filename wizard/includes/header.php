@@ -2,6 +2,12 @@
 <html lang="en">
 <head>
 	<meta charset="utf-8">
+	<?php
+	if (session_status() === PHP_SESSION_ACTIVE) {
+		require_once(__DIR__ . '/../../includes/classes/RequestGuard.php');
+		echo '<meta name="csrf-token" content="' . htmlspecialchars(RequestGuard::ensureToken(), ENT_QUOTES, 'UTF-8') . '">' . "\n";
+	}
+	?>
 	<title>OpenRepeater<?php if ($pageTitle) { echo " | ".$pageTitle; } ?></title>
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 

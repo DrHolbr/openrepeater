@@ -14,7 +14,7 @@ NGINX_TEMPLATE=${NGINX_TEMPLATE:-$REPO_ROOT/upgrade/nginx/openrepeater.conf.temp
 # shellcheck source=lib/bench-target.sh
 . "$SCRIPT_DIR/lib/bench-target.sh"
 
-if [ -n "${ORP_ROOT:-}" ] || [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ]; then
+if [ -n "${ORP_ROOT:-}" ] || [ "${ORP_INSTALL_OFFLINE:-0}" = 1 ] || [ "${ORP_INSTALL_APPLY_OWNERSHIP:-0}" = 1 ]; then
 	if ! bench_test_harness_allowed; then
 		echo "refused: test overrides are ignored on the bench host" >&2
 		exit 1
@@ -31,9 +31,11 @@ if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] && [ "$(id -u)" -ne 0 ]; then
 	exit 1
 fi
 
+# Before any file is written. config publish and module activate use the same interpreter.
+command -v python3 >/dev/null && python3 -c 'import os,stat,pwd,grp' || { echo "refused: python3 is required (installer and orp_helper)"; exit 1; }
+
 bench_assert_identity
 bench_assert_bootstrap_idle
-bench_assert_masks
 
 free_kib=$(bench_free_kib)
 if [ -z "$free_kib" ] || [ "$free_kib" -lt 524288 ]; then
@@ -45,6 +47,8 @@ STAMP=$(date -u +%Y%m%dT%H%M%S%NZ)
 backup_root=$(p "/var/backups/orp-ui/${STAMP}")
 POLICY_BLOCK=0
 FAIL_CLOSED_RAN=0
+courtesy_live=
+courtesy_preseed=
 
 bench_trace() {
 	if [ -n "${ORP_INSTALL_TRACE:-}" ]; then
@@ -116,11 +120,43 @@ fail_closed() {
 	then
 		cp -a "${backup_root}/etc/nginx/sites-enabled/default" "$(p /etc/nginx/sites-enabled/default)"
 	fi
-	# The bench marker is a safety boundary. Leave it in place.
-	bench_assert_masks >/dev/null 2>&1
+	restore_courtesy_preseed
 	exit "$rc"
 }
+
+# Copy a directory's immediate children without following a symbolic link.
+copy_dir_children() {
+	local src=$1 dest=$2
+	find -P "$src" -mindepth 1 -maxdepth 1 -exec cp -aP {} "$dest/" \;
+}
+
+# A failed install restores the courtesy directory to the snapshot taken
+# after the preserved sounds tree was put back and before stock clips were
+# copied. A successful install leaves the seeded directory in place.
+restore_courtesy_preseed() {
+	local live snap
+	live=${courtesy_live:-}
+	snap=${courtesy_preseed:-}
+	if [ -z "$live" ] || [ -z "$snap" ]; then
+		return 0
+	fi
+	if [ ! -d "$snap" ] || [ -L "$snap" ] || [ ! -d "$live" ] || [ -L "$live" ]; then
+		echo "courtesy tone rollback skipped: the snapshot or live directory is not a real directory" >&2
+		return 0
+	fi
+	find -P "$live" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+	copy_dir_children "$snap" "$live"
+	echo "courtesy tone directory restored from the pre-seed backup"
+}
+# Classification is read-only. A refusal exits before the nginx trap is armed.
+if ! bench_classify_legacy_module_symlinks; then
+	exit 1
+fi
+
 trap fail_closed EXIT
+
+# Removal happens only after a clean scan.
+bench_apply_legacy_module_symlinks
 
 # Stop web writers before repairing paths. Stopping them is not the
 # boundary; a planted symlink is still refused below.
@@ -166,37 +202,49 @@ bench_trace marker
 bench_anchor_dir "$(p /etc/openrepeater)"
 bench_anchor_dir "$(p /etc/sudoers.d)"
 bench_anchor_dir "$(p /var/lib/openrepeater)"
-bench_anchor_dir "$(p /var/lib/openrepeater/bench-preview)"
 bench_anchor_dir "$(p /var/lib/openrepeater/db)"
 bench_anchor_dir "$(p /usr/sbin)"
-marker_body=$(mktemp)
-cat > "$marker_body" <<'EOF'
-host=orp-test
-radio=blocked
-reboot=blocked
-gpio=readonly
-publish=fixed
-preview=/var/lib/openrepeater/bench-preview
-EOF
-bench_place_file "$marker_body" "$(p /etc/openrepeater/bench-mode)"
-rm -f "$marker_body"
+# An upgrade removes the old bench files. A symlink is unlinked and not followed.
+remove_bench_artifact() {
+	local path
+	path=$(p "$1")
+	if [ -L "$path" ] || [ -f "$path" ]; then
+		rm -f -- "$path"
+	elif [ -d "$path" ]; then
+		rm -rf -- "$path"
+	fi
+}
+remove_bench_artifact /etc/openrepeater/bench-mode
+remove_bench_artifact /etc/openrepeater/operating-mode
+remove_bench_artifact /etc/openrepeater/tx-armed
+remove_bench_artifact /var/lib/openrepeater/bench-preview
+remove_bench_artifact /etc/svxlink/functional-test.d
 bench_chmod 755 "$(p /etc/openrepeater)"
 bench_chmod 755 "$(p /var/lib/openrepeater)"
-bench_chmod 755 "$(p /var/lib/openrepeater/bench-preview)"
 bench_chmod 755 "$(p /var/lib/openrepeater/db)"
-bench_chmod 644 "$(p /etc/openrepeater/bench-mode)"
 bench_chown root:root "$(p /etc/openrepeater)"
-bench_chown root:root "$(p /etc/openrepeater/bench-mode)"
 bench_chown root:root "$(p /var/lib/openrepeater)"
-bench_chown root:root "$(p /var/lib/openrepeater/bench-preview)"
-bench_chown root:root "$(p /var/lib/openrepeater/db)"
+if getent group www-data >/dev/null 2>&1 && { [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] || [ "${ORP_INSTALL_APPLY_OWNERSHIP:-0}" = 1 ]; }; then
+	web_group=www-data
+else
+	web_group=$(id -gn)
+fi
+bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/db)"
+if ! env ORP_ROOT="$ROOT" "$REPO_ROOT/install/scripts/orp_helper" native inputs; then
+	echo "refused: native SvxLink layout is incomplete. No unit was written and no service was unmasked." >&2
+	exit 7
+fi
 
 if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] && [ "${ORP_INSTALL_SKIP_APT:-0}" != 1 ]; then
 	install_service_block
 	export DEBIAN_FRONTEND=noninteractive
-	apt-get update
-	apt-get install -y --no-install-recommends --no-upgrade \
-		nginx php-fpm php-cli php-sqlite3 gpiod sudo sqlite3
+	if ! bench_install_php84; then
+		exit 5
+	fi
+	# PHP is handled above and may move to the security candidate.
+	# These packages stay at the version already installed.
+	bench_apt install -y --no-install-recommends --no-upgrade \
+		nginx gpiod sudo sqlite3
 	remove_service_block
 	orp_systemctl stop nginx || true
 	orp_systemctl disable nginx || true
@@ -209,19 +257,18 @@ else
 		echo "refused: /etc/nginx/snippets/fastcgi-php.conf is absent" >&2
 		exit 5
 	fi
-	php_unit=$(orp_systemctl list-unit-files --no-legend 'php*-fpm.service' | awk '{print $1}' | grep '^php8' | head -n 1 || true)
-	php_unit=${php_unit%.service}
-	if [ -z "$php_unit" ]; then
-		echo "refused: no PHP 8 FPM unit is installed" >&2
+	php_unit=php8.4-fpm
+	if ! orp_systemctl list-unit-files --no-legend 'php8.4-fpm.service' | awk '{print $1}' | grep -qx 'php8.4-fpm.service'; then
+		echo "refused: php8.4-fpm is not installed" >&2
 		exit 5
 	fi
 	orp_systemctl start "$php_unit"
-	if [ -S "/run/php/${php_unit}.sock" ]; then
-		PHP_SOCK="/run/php/${php_unit}.sock"
-	elif [ -S "/var/run/php/${php_unit}.sock" ]; then
-		PHP_SOCK="/var/run/php/${php_unit}.sock"
+	if [ -S "/run/php/php8.4-fpm.sock" ]; then
+		PHP_SOCK="/run/php/php8.4-fpm.sock"
+	elif [ -S "/var/run/php/php8.4-fpm.sock" ]; then
+		PHP_SOCK="/var/run/php/php8.4-fpm.sock"
 	else
-		echo "refused: PHP 8 FPM socket for ${php_unit} was not created" >&2
+		echo "refused: php8.4-fpm socket was not created" >&2
 		exit 5
 	fi
 fi
@@ -229,7 +276,28 @@ fi
 bench_trace stage-www
 stage=$(p /var/lib/openrepeater/stage)
 web=$(p /var/www/openrepeater)
+sounds=$(p /var/www/openrepeater/sounds)
+backup_anchor=$(p /var/www/openrepeater/backup)
+hold=$(p "/var/lib/openrepeater/ui-preserve.${STAMP}")
 bench_anchor_dir "$(p /var/www)"
+for anchor in "$sounds" "$backup_anchor"; do
+	case "$(bench_lstat_kind "$anchor")" in
+		symlink)
+			echo "refused: $anchor is a symbolic link" >&2
+			exit 6
+			;;
+	esac
+	bench_require_real_components "$anchor" || exit 6
+done
+if [ "$(bench_lstat_kind "$sounds")" = dir ] || [ "$(bench_lstat_kind "$backup_anchor")" = dir ]; then
+	bench_anchor_dir "$hold"
+fi
+if [ "$(bench_lstat_kind "$sounds")" = dir ]; then
+	mv "$sounds" "$hold/sounds"
+fi
+if [ "$(bench_lstat_kind "$backup_anchor")" = dir ]; then
+	mv "$backup_anchor" "$hold/backup"
+fi
 case "$(bench_lstat_kind "$web")" in
 	symlink)
 		echo "refused: web root is a symbolic link" >&2
@@ -252,12 +320,120 @@ if [ "$(bench_lstat_kind "$stage")" = dir ]; then
 fi
 mkdir "$stage"
 bench_chmod 755 "$stage"
-tar -C "$REPO_ROOT" --exclude=.git --exclude=dev -cf - . | tar -C "$stage" -xf -
-tar -C "$stage" -cf - . | tar -C "$web" -xf -
+# Do not copy the source mode or owner. A read-only payload would leave
+# the web root mode 0555, and the sounds directory could not be created.
+tar -C "$REPO_ROOT" --exclude=.git --exclude=dev -cf - . \
+	| tar -C "$stage" --no-same-permissions --no-same-owner -xf -
+bench_publish_tree_modes "$stage"
+# upgrade/ and install/ stay out of the docroot. The helper is installed
+# at /usr/sbin and must not source a file www-data can edit.
+tar -C "$stage" --exclude=.git --exclude=dev --exclude=upgrade --exclude=install -cf - . \
+	| tar -C "$web" --no-same-permissions --no-same-owner -xf -
+bench_publish_tree_modes "$web"
 if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
 	find -P "$web" -xdev ! -type l -exec chown -h www-data:www-data {} +
 fi
 bench_chown www-data:www-data "$web"
+install_web_anchor() {
+	local name=$1
+	local dest="$web/$name"
+	local held="$hold/$name"
+	case "$(bench_lstat_kind "$dest")" in
+		symlink)
+			echo "refused: $dest is a symbolic link" >&2
+			exit 6
+			;;
+	esac
+	if [ "$(bench_lstat_kind "$held")" = dir ]; then
+		if [ "$(bench_lstat_kind "$dest")" = dir ]; then
+			mv "$dest" "$hold/${name}.packaged"
+		elif [ "$(bench_lstat_kind "$dest")" != missing ]; then
+			echo "refused: $dest is occupied and the preserved $name tree was not restored" >&2
+			exit 6
+		fi
+		mv "$held" "$dest"
+	elif [ "$(bench_lstat_kind "$dest")" = missing ]; then
+		bench_mkdir_nofollow "$dest" || exit 6
+	fi
+	bench_chmod 1770 "$dest"
+	bench_chown "root:${web_group}" "$dest"
+}
+install_web_child() {
+	local dest=$1
+	case "$(bench_lstat_kind "$dest")" in
+		symlink)
+			echo "refused: $dest is a symbolic link" >&2
+			exit 6
+			;;
+		missing)
+			bench_mkdir_nofollow "$dest" || exit 6
+			;;
+		dir)
+			;;
+		*)
+			echo "refused: $dest is not a directory" >&2
+			exit 6
+			;;
+	esac
+	bench_chmod 0755 "$dest"
+	bench_chown "${web_group}:${web_group}" "$dest"
+}
+
+# Add each stock clip that is not already present. An existing name, including
+# one the operator replaced, is left untouched, and nothing already in the
+# directory is deleted. The variables used by restore_courtesy_preseed are set
+# only after the snapshot exists, so an earlier failure does not restore a
+# missing snapshot.
+seed_stock_courtesy_tones() {
+	local src dest snap srcfile name tmp
+	src="$REPO_ROOT/install/sounds/courtesy_tones"
+	dest="$web/sounds/courtesy_tones"
+	if [ ! -d "$src" ] || [ -L "$src" ]; then
+		echo "refused: stock courtesy tones are missing" >&2
+		exit 6
+	fi
+	if [ ! -d "$dest" ] || [ -L "$dest" ]; then
+		echo "refused: courtesy tone directory is not a real directory" >&2
+		exit 6
+	fi
+	bench_anchor_dir "$hold"
+	snap="$hold/courtesy_tones.preseed"
+	rm -rf "$snap"
+	mkdir "$snap"
+	copy_dir_children "$dest" "$snap"
+	bench_anchor_dir "${backup_root}/var/www/openrepeater/sounds"
+	rm -rf "${backup_root}/var/www/openrepeater/sounds/courtesy_tones.preseed"
+	cp -a "$snap" "${backup_root}/var/www/openrepeater/sounds/courtesy_tones.preseed"
+	courtesy_preseed=$snap
+	courtesy_live=$dest
+	while IFS= read -r srcfile; do
+		[ -n "$srcfile" ] || continue
+		name=$(basename -- "$srcfile")
+		if [[ ! "$name" =~ ^[A-Za-z0-9._()-]+\.wav$ ]]; then
+			echo "refused: stock courtesy name ${name}" >&2
+			exit 6
+		fi
+		if [ -e "$dest/$name" ] || [ -L "$dest/$name" ]; then
+			continue
+		fi
+		tmp=$(mktemp "$dest/.orp-seed.XXXXXX")
+		cp "$srcfile" "$tmp"
+		bench_chmod 644 "$tmp"
+		if [ -e "$dest/$name" ] || [ -L "$dest/$name" ]; then
+			rm -f "$tmp"
+			continue
+		fi
+		mv "$tmp" "$dest/$name"
+		bench_chmod 644 "$dest/$name"
+		bench_chown "${web_group}:${web_group}" "$dest/$name"
+	done < <(find -P "$src" -maxdepth 1 -type f -name '*.wav' | sort)
+}
+install_web_anchor sounds
+install_web_anchor backup
+install_web_child "$web/sounds/courtesy_tones"
+install_web_child "$web/sounds/identification"
+install_web_child "$web/backup/restore"
+seed_stock_courtesy_tones
 
 bench_anchor_dir "$(p /etc/nginx/sites-available)"
 bench_anchor_dir "$(p /etc/nginx/sites-enabled)"
@@ -295,12 +471,49 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper info memory_usage
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper info disk_usage
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper info os
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink status
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink start
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink stop
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink restart
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper config publish
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio inputs
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio outputs
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio version
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system uptime
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system user
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system reboot
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system shutdown
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system halt
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink enable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink disable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink gpio_up
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink gpio_down
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx start
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx stop
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx restart
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx status
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx enable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx disable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector start
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector stop
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector restart
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector status
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector enable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector disable
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa backup /var/www/openrepeater/backup/build/alsamixer.state
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa backup /var/www/openrepeater/backup/restore/alsamixer.state
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa restore /var/www/openrepeater/backup/build/alsamixer.state
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa restore /var/www/openrepeater/backup/restore/alsamixer.state
+# One module name, 1 to 32 characters. The first character is a letter.
+# The helper still rejects every other shape and does not treat it as a path.
 EOF
+module_pat='[A-Za-z]'
+module_i=1
+while [ "$module_i" -le 32 ]; do
+	printf 'www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper module activate %s\n' "$module_pat" >> "$sudoers_tmp"
+	printf 'www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper module deactivate %s\n' "$module_pat" >> "$sudoers_tmp"
+	module_pat="${module_pat}[A-Za-z0-9_]"
+	module_i=$((module_i + 1))
+done
 if [ "$(bench_lstat_kind "$(p /etc/sudoers.d/openrepeater)")" = symlink ]; then
 	rm -f "$sudoers_tmp"
 	echo "refused: sudoers fragment is a symbolic link" >&2
@@ -311,31 +524,119 @@ rm -f "$sudoers_tmp"
 bench_chmod 440 "$(p /etc/sudoers.d/openrepeater)"
 bench_chown root:root "$(p /etc/sudoers.d/openrepeater)"
 
+# Account, log, and state directories for the reviewed unit. The unit file
+# goes to the /usr/local vendor directory. The /etc mask is not replaced.
+if [ -n "$ROOT" ]; then
+	touch "$(p /etc/passwd)" "$(p /etc/group)"
+	if ! grep -q '^svxlink:' "$(p /etc/group)"; then
+		printf '%s\n' 'svxlink:x:200:' >> "$(p /etc/group)"
+	fi
+	if ! grep -q '^svxlink:' "$(p /etc/passwd)"; then
+		printf '%s\n' 'svxlink:x:200:200::/var/lib/svxlink:/usr/sbin/nologin' >> "$(p /etc/passwd)"
+	fi
+else
+	getent group svxlink >/dev/null || groupadd --system svxlink
+	getent passwd svxlink >/dev/null || useradd --system --gid svxlink --home-dir /var/lib/svxlink --shell /usr/sbin/nologin svxlink
+fi
+# These directories are owned by the svxlink user after the first install.
+# Repeat installs must not try to reclaim that ownership as the installer.
+ensure_service_dir() {
+	local path=$1
+	case "$(bench_lstat_kind "$path")" in
+		symlink|file|other)
+			echo "refused: $path is not a directory" >&2
+			exit 6
+			;;
+		missing)
+			bench_anchor_dir "$(dirname "$path")"
+			mkdir -m 755 "$path"
+			;;
+	esac
+	bench_chmod 755 "$path"
+	bench_chown svxlink:svxlink "$path"
+}
+ensure_service_dir "$(p /var/lib/svxlink)"
+ensure_service_dir "$(p /var/spool/svxlink)"
+bench_anchor_dir "$(p /var/log)"
+svx_log=$(p /var/log/svxlink)
+case "$(bench_lstat_kind "$svx_log")" in
+	symlink|dir|other)
+		echo "refused: /var/log/svxlink is not a regular file" >&2
+		exit 6
+		;;
+	missing)
+		: > "$svx_log"
+		;;
+esac
+bench_chmod 755 "$(p /var/lib/svxlink)"
+bench_chmod 755 "$(p /var/spool/svxlink)"
+bench_chmod 644 "$svx_log"
+bench_chown svxlink:svxlink "$(p /var/lib/svxlink)"
+bench_chown svxlink:svxlink "$(p /var/spool/svxlink)"
+bench_chown svxlink:svxlink "$svx_log"
+unit_body=$(mktemp)
+env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native unit > "$unit_body"
+bench_place_file "$unit_body" "$(p /usr/local/lib/systemd/system/svxlink.service)"
+rm -f "$unit_body"
+bench_chmod 644 "$(p /usr/local/lib/systemd/system/svxlink.service)"
+bench_chown root:root "$(p /usr/local/lib/systemd/system/svxlink.service)"
+# remotetrx and svxreflector ship disabled. Do not mask them and do not unmask them.
+write_disabled_unit() {
+	local name=$1 generator dest body
+	name=$1
+	generator=$2
+	dest=$(p "/usr/local/lib/systemd/system/${name}")
+	bench_anchor_dir "$(dirname "$dest")"
+	if [ -L "$dest" ]; then
+		echo "refused: ${dest} is a symbolic link" >&2
+		exit 6
+	fi
+	body=$(mktemp)
+	env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native "$generator" > "$body"
+	bench_place_file "$body" "$dest"
+	rm -f "$body"
+	bench_chmod 644 "$dest"
+	bench_chown root:root "$dest"
+}
+write_disabled_unit remotetrx.service remotetrx-unit
+write_disabled_unit svxreflector.service reflector-unit
+# An operator mask is a /dev/null symlink. Leave it in place.
+for unit in svxlink.service remotetrx.service svxreflector.service; do
+	link=$(p "/etc/systemd/system/${unit}")
+	if [ -L "$link" ] && [ "$(readlink -- "$link")" = "/dev/null" ]; then
+		echo "kept existing mask ${unit}"
+	fi
+done
+if ! env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native preflight; then
+	echo "refused: native preflight failed after the vendor unit was written" >&2
+	exit 7
+fi
+orp_systemctl daemon-reload
+
 db_file=$(p /var/lib/openrepeater/db/openrepeater.db)
 # Parent is anchored above, so a planted symlink cannot be swapped in now.
 if ! bench_ensure_regular "$db_file"; then
 	exit 6
 fi
+# An existing database is the station account and configuration. A reinstall
+# copies the stock file only when this path is missing. It does not seed
+# over users, settings, ports, or modules.
 if [ "$(bench_lstat_kind "$db_file")" = missing ]; then
 	bench_place_file "$REPO_ROOT/install/sql/openrepeater.db" "$db_file"
 fi
 bench_chmod 660 "$db_file"
-if getent group www-data >/dev/null 2>&1 && [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
-	bench_chown "root:www-data" "$db_file"
-	bench_chown "root:www-data" "$(p /var/lib/openrepeater/db)"
-else
-	bench_chown "root:$(id -gn)" "$db_file"
-	bench_chown "root:$(id -gn)" "$(p /var/lib/openrepeater/db)"
-fi
+bench_chown "root:${web_group}" "$db_file"
 # Sticky and group-writable only after the database inode is root-owned.
 # www-data can create SQLite journals and cannot replace that inode.
 bench_chmod 1770 "$(p /var/lib/openrepeater/db)"
 
-# Re-assert the marker after file publish. It stays root-owned and not web-writable.
 bench_chmod 755 "$(p /etc/openrepeater)"
-bench_chmod 644 "$(p /etc/openrepeater/bench-mode)"
 bench_chown root:root "$(p /etc/openrepeater)"
-bench_chown root:root "$(p /etc/openrepeater/bench-mode)"
+remove_bench_artifact /etc/openrepeater/bench-mode
+remove_bench_artifact /etc/openrepeater/operating-mode
+remove_bench_artifact /etc/openrepeater/tx-armed
+remove_bench_artifact /var/lib/openrepeater/bench-preview
+remove_bench_artifact /etc/svxlink/functional-test.d
 
 bench_trace nginx-enable
 php_unit=$(basename "$PHP_SOCK")
@@ -346,13 +647,11 @@ if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] || [ -n "${ORP_SYSTEMCTL:-}" ]; then
 fi
 
 bench_verify_protected
-bench_assert_masks
 
 echo "OpenRepeater UI files are staged for orp-test."
-echo "Radio units were not started and their masks were checked again."
-echo "The bench marker remains at /etc/openrepeater/bench-mode and is not web-writable."
-echo "Bootstrap files under /var/lib/orp-test, /usr/local, and /opt/orp-test were not modified."
-echo "No GPIO output, audio, or RF test was run."
+echo "Old bench-mode, operating-mode, tx-armed, bench-preview, and functional-test.d paths were removed when present."
+echo "The svxlink unit is /usr/local/lib/systemd/system/svxlink.service."
+echo "Bootstrap binary, share tree, and /etc/svxlink/svxlink.conf were not modified."
 if [ -d "$backup_root" ]; then
 	echo "Backup of previous mutable files: ${backup_root}"
 fi

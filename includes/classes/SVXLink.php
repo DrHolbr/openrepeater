@@ -12,6 +12,8 @@ class SVXLink {
 	private $logics = array();
 	private $links = array();
 	private $orpFileHeader;
+	private $publishFailed = false;
+	private $identificationGate = false;
     private $web_path = '/var/www/openrepeater/';	
 
 	public function __construct($settingsArray, $portsArray, $modulesArray) {
@@ -90,8 +92,7 @@ class SVXLink {
 
 	public function build_global() {
 		$logicsList = implode(",", $this->logics); // Convert array to CSV.
-		
-		$global_array['MODULE_PATH'] = '/usr/lib/arm-linux-gnueabihf/svxlink';
+		$global_array['MODULE_PATH'] = self::modulePath(self::svxlinkPrefix());
 		$global_array['LOGICS'] = $logicsList;
 		$global_array['CFG_DIR'] = 'svxlink.d';
 		$global_array['TIMESTAMP_FORMAT'] = '"%c"';
@@ -113,13 +114,52 @@ class SVXLink {
 	# Build RX Port
 	###############################################
 
+	private function audioDeviceParts($value) {
+		$parts = explode('|', (string)$value);
+		$channel = array_key_exists(1, $parts) ? $parts[1] : '0';
+		return array($parts[0], $channel);
+	}
+
+	public static function svxlinkPrefix() {
+		$override = getenv('ORP_SVXLINK_PREFIX');
+		if (PathGuard::testFixture() && is_string($override) && $override !== '') {
+			if ($override[0] === '/' && strpos($override, "\0") === false && strpos($override, '..') === false) {
+				return rtrim($override, '/');
+			}
+			return '/orp-no-such-svxlink-prefix';
+		}
+		if (is_file('/usr/local/share/svxlink/events.tcl')) {
+			return '/usr/local';
+		}
+		if (is_file('/usr/share/svxlink/events.tcl')) {
+			return '/usr';
+		}
+		return '/usr/local';
+	}
+
+	public static function modulePath($prefix) {
+		$candidates = array(
+			$prefix . '/lib/aarch64-linux-gnu/svxlink',
+			$prefix . '/lib/arm-linux-gnueabihf/svxlink',
+			$prefix . '/lib/x86_64-linux-gnu/svxlink',
+			$prefix . '/lib/svxlink/modules',
+			$prefix . '/lib/svxlink',
+		);
+		foreach ($candidates as $path) {
+			if (is_dir($path)) {
+				return $path;
+			}
+		}
+		return $prefix . '/lib/aarch64-linux-gnu/svxlink';
+	}
+
 	public function build_rx($curPort) {
-		$audio_dev = explode("|", $this->portsArray[$curPort]['rxAudioDev']);
+		list($audioDevice, $audioChannel) = $this->audioDeviceParts($this->portsArray[$curPort]['rxAudioDev']);
 		
 		$rx_array['RX_Port'.$curPort] = [
 			'TYPE' => 'Local',
-			'AUDIO_DEV' => $audio_dev[0],
-			'AUDIO_CHANNEL' => $audio_dev[1],
+			'AUDIO_DEV' => $audioDevice,
+			'AUDIO_CHANNEL' => $audioChannel,
 		];
 	
 		if (strtolower($this->portsArray[$curPort]['rxMode']) == 'vox') {
@@ -173,12 +213,12 @@ class SVXLink {
 	###############################################
 
 	public function build_tx($curPort) {
-		$audio_dev = explode("|", $this->portsArray[$curPort]['txAudioDev']);
+		list($audioDevice, $audioChannel) = $this->audioDeviceParts($this->portsArray[$curPort]['txAudioDev']);
 	
 		$tx_array['TX_Port'.$curPort] = [
 			'TYPE' => 'Local',
-			'AUDIO_DEV' => $audio_dev[0],
-			'AUDIO_CHANNEL' => $audio_dev[1],
+			'AUDIO_DEV' => $audioDevice,
+			'AUDIO_CHANNEL' => $audioChannel,
 			'PTT_TYPE' => 'GPIO',
 			'PTT_PORT' => 'GPIO',
 			'PTT_PIN' => 'gpio'.$this->portsArray[$curPort]['txGPIO'],
@@ -211,6 +251,7 @@ class SVXLink {
 	###############################################
 
 	public function build_logic_repeater($logicName,$curPort) {
+		$this->identificationGate = true;
 		$this->logics[] = $logicName; // Add this logic to list for Globals Section
 
 		$logic_array[$logicName] = [
@@ -221,46 +262,11 @@ class SVXLink {
 
 		$logic_array[$logicName] += $this->build_module_list();
 
+		$this->identificationGate = true;
 		$logic_array[$logicName] += [
-			'CALLSIGN' => $this->settingsArray['callSign']
+			'CALLSIGN' => trim((string)(isset($this->settingsArray['callSign']) ? $this->settingsArray['callSign'] : ''))
 		];
-
-		# Short ID
-		if ($this->settingsArray['ID_Short_Mode'] == 'disabled') {
-			$logic_array[$logicName] += [
-				'#SHORT_IDENT_INTERVAL' => '0'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'SHORT_IDENT_INTERVAL' => $this->settingsArray['ID_Short_IntervalMin']
-			];			
-		}
-
-		# Identify Only After TX
-		# When enabled (and short ID is active), the node only identifies if there has
-		# been a recent transmission, rather than every time SHORT_IDENT_INTERVAL
-		# expires. 0 = off, 1 = on. Does not affect LONG_IDENT_INTERVAL.
-		if (($this->settingsArray['ID_Short_IdentOnlyAfterTX'] ?? 'False') == 'True' && $this->settingsArray['ID_Short_Mode'] != 'disabled') {
-			$logic_array[$logicName] += [
-				'IDENT_ONLY_AFTER_TX' => '1'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'IDENT_ONLY_AFTER_TX' => '0'
-			];
-		}
-
-		#Long ID
-		if ($this->settingsArray['ID_Long_Mode'] == 'disabled') {
-			$logic_array[$logicName] += [
-				'#LONG_IDENT_INTERVAL' => '0'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'LONG_IDENT_INTERVAL' => $this->settingsArray['ID_Long_IntervalMin']
-			];			
-		}
-
+		$logic_array[$logicName] += $this->identificationIntervalKeys();
 
 		$logic_array[$logicName] += [
 			'EVENT_HANDLER' => '/usr/share/svxlink/events.tcl',
@@ -304,6 +310,7 @@ class SVXLink {
 	###############################################
 
 	public function build_logic_simplex($logicName,$curPort,$modules=false) {
+		$this->identificationGate = true;
 		$this->logics[] = $logicName; // Add this logic to list for Globals Section
 
 		$logic_array[$logicName] = [
@@ -316,45 +323,11 @@ class SVXLink {
 			$logic_array[$logicName] += $this->build_module_list();
 		}
 
+		$this->identificationGate = true;
 		$logic_array[$logicName] += [
-			'CALLSIGN' => $this->settingsArray['callSign']
+			'CALLSIGN' => trim((string)(isset($this->settingsArray['callSign']) ? $this->settingsArray['callSign'] : ''))
 		];
-
-		# Short ID
-		if ($this->settingsArray['ID_Short_Mode'] == 'disabled') {
-			$logic_array[$logicName] += [
-				'#SHORT_IDENT_INTERVAL' => '0'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'SHORT_IDENT_INTERVAL' => $this->settingsArray['ID_Short_IntervalMin']
-			];			
-		}
-
-		# Identify Only After TX
-		# When enabled (and short ID is active), the node only identifies if there has
-		# been a recent transmission, rather than every time SHORT_IDENT_INTERVAL
-		# expires. 0 = off, 1 = on. Does not affect LONG_IDENT_INTERVAL.
-		if (($this->settingsArray['ID_Short_IdentOnlyAfterTX'] ?? 'False') == 'True' && $this->settingsArray['ID_Short_Mode'] != 'disabled') {
-			$logic_array[$logicName] += [
-				'IDENT_ONLY_AFTER_TX' => '1'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'IDENT_ONLY_AFTER_TX' => '0'
-			];
-		}
-
-		#Long ID
-		if ($this->settingsArray['ID_Long_Mode'] == 'disabled') {
-			$logic_array[$logicName] += [
-				'#LONG_IDENT_INTERVAL' => '0'
-			];
-		} else {
-			$logic_array[$logicName] += [
-				'LONG_IDENT_INTERVAL' => $this->settingsArray['ID_Long_IntervalMin']
-			];			
-		}
+		$logic_array[$logicName] += $this->identificationIntervalKeys();
 
 		$logic_array[$logicName] += [
 			'EVENT_HANDLER' => '/usr/share/svxlink/events.tcl',
@@ -437,97 +410,244 @@ class SVXLink {
 	# Write Config File
 	###############################################
 
-	public function configDestination($filename) {
-		$guard = BenchGuard::detect();
-		if ($guard->isBench()) {
-			if (basename($filename) !== $filename) {
-				return null;
-			}
-			$dir = $guard->previewDir();
-			if (!BenchGuard::previewAllowed($dir) || is_link($dir)) {
-				return null;
-			}
-			return rtrim($dir, '/') . '/' . $filename;
+	private function fixturePath($path) {
+		if (!PathGuard::testFixture()) {
+			return $path;
 		}
+		$root = getenv('ORP_ROOT');
+		if (!is_string($root) || $root === '' || $root === '/' || $root[0] !== '/') {
+			return $path;
+		}
+		if (strpos($root, "\0") !== false || strpos($root, '..') !== false) {
+			return $path;
+		}
+		return rtrim($root, '/') . $path;
+	}
+
+	public function configDestination($filename) {
+		if (!is_string($filename) || $filename === '' || basename($filename) !== $filename) {
+			return null;
+		}
+		$prefix = self::svxlinkPrefix();
 		if ($filename === 'svxlink.conf' || $filename === 'gpio.conf') {
-			return '/etc/svxlink/' . $filename;
+			return $this->fixturePath('/etc/svxlink/' . $filename);
 		}
 		if ($filename === 'Logic.tcl') {
-			return '/usr/share/svxlink/events.d/local/' . $filename;
+			return $this->fixturePath($prefix . '/share/svxlink/events.d/local/' . $filename);
 		}
-		if (strpos($filename, 'Module') === 0) {
-			return '/etc/svxlink/svxlink.d/' . $filename;
+		if (strpos($filename, 'Module') === 0 && preg_match('/^Module[A-Za-z0-9_]+\.conf$/', $filename) === 1) {
+			return $this->fixturePath('/etc/svxlink/svxlink.d/' . $filename);
 		}
-		if (strpos($filename, 'ORP_') === 0) {
-			return '/usr/share/svxlink/events.d/' . $filename;
+		if (preg_match('/^ORP_(Repeater|Simplex)Logic_Port[0-9]+\.tcl$/', $filename) === 1) {
+			return $this->fixturePath($prefix . '/share/svxlink/events.d/' . $filename);
+		}
+		if (PathGuard::testFixture() && preg_match('/^[A-Za-z0-9_.-]+\.(conf|tcl)$/', $filename) === 1) {
+			return $this->fixturePath('/etc/svxlink/' . $filename);
 		}
 		return null;
 	}
 
-	public function disarmBenchPreview($filename, $data) {
-		$note = "# BENCH PREVIEW: not installed. Transmitter lines and sysfs GPIO are commented.\n"
-			. "# Do not copy this file to /etc/svxlink, /etc/openrepeater/svxlink, or /usr/local/share/svxlink.\n";
-		if ($filename !== 'svxlink.conf' && $filename !== 'gpio.conf') {
-			return "# BENCH PREVIEW: not published into the SvxLink tree.\n" . $data;
+	public function publishFailed() {
+		return $this->publishFailed;
+	}
+
+	// Multiply a configured minute count by 60. This is arithmetic on the
+	// integer written into SHORT_IDENT_INTERVAL. SvxLink 26.05 Logic.tcl
+	// decides when to call send_short_ident on a minute tick, with a 120
+	// second minimum between short identifications. This method does not
+	// run that event handler and is not timing evidence.
+	public static function activeCommunicationIdGaps($intervalMinutes, $communicationSeconds) {
+		$step = (int)$intervalMinutes * 60;
+		if ($step < 60 || $communicationSeconds < 1) {
+			return array();
 		}
-		$lines = preg_split("/\r\n|\n|\r/", $data);
-		$out = array();
-		foreach ($lines as $line) {
-			if (preg_match('/^\s*(PTT_|GPIO_SQL_PIN|GPIO_PATH|SQL_GPIOD_|PTT_GPIOD_)/', $line)) {
-				$out[] = '# BENCH DISARMED: ' . $line;
-				continue;
-			}
-			if (preg_match('/^\s*SQL_DET\s*=\s*GPIOD?\b/', $line)) {
-				$out[] = '# BENCH DISARMED: ' . $line;
-				continue;
-			}
-			if (preg_match('/^\s*(GPIO_(?:IN|OUT)_(?:HIGH|LOW))\s*=.*[0-9]/', $line, $match)) {
-				$out[] = '# BENCH DISARMED: ' . $line;
-				$out[] = $match[1] . '=""';
-				continue;
-			}
-			$out[] = $line;
+		$gaps = array();
+		$elapsed = 0;
+		while ($elapsed + $step <= $communicationSeconds) {
+			$gaps[] = $step;
+			$elapsed += $step;
 		}
-		return $note . implode("\n", $out) . "\n";
+		return $gaps;
+	}
+
+	public function identificationProblems() {
+		$settings = $this->settingsArray;
+		$problems = array();
+		$call = trim((string)(isset($settings['callSign']) ? $settings['callSign'] : ''));
+		if ($call === '') {
+			$problems[] = 'Station call sign is empty. 47 CFR 97.119(a) requires the assigned station call sign. No call sign was substituted.';
+		}
+		$shortMode = isset($settings['ID_Short_Mode']) ? (string)$settings['ID_Short_Mode'] : '';
+		$longMode = isset($settings['ID_Long_Mode']) ? (string)$settings['ID_Long_Mode'] : '';
+		$shortOn = $this->identModeEmits($shortMode);
+		$longOn = $this->identModeEmits($longMode);
+		if (!$shortOn && !$longOn) {
+			$problems[] = 'Short and long identification are both disabled, so no station identification procedure is configured.';
+		}
+		$shortCovers = $shortOn && $this->intervalWithinTenMinutes(isset($settings['ID_Short_IntervalMin']) ? $settings['ID_Short_IntervalMin'] : '');
+		$longCovers = $longOn && $this->intervalWithinTenMinutes(isset($settings['ID_Long_IntervalMin']) ? $settings['ID_Long_IntervalMin'] : '');
+		if ($shortOn && !$shortCovers) {
+			$problems[] = 'The short identification interval is not a whole number of minutes from 1 through 10. SvxLink 26.05 will load a longer SHORT_IDENT_INTERVAL. This publish rule refuses it because 47 CFR 97.119(a) requires identification at least every 10 minutes during a communication. The stored interval was not changed.';
+		}
+		if (!$shortCovers && $longOn && !$longCovers) {
+			$problems[] = 'The only enabled identification interval is longer than 10 minutes. SvxLink 26.05 will load that LONG_IDENT_INTERVAL. This publish rule refuses it because 47 CFR 97.119(a) requires identification at least every 10 minutes during a communication. The stored interval was not changed.';
+		}
+		if ($this->repeaterPathUsesMorse() && !$this->morseSpeedAllowed()) {
+			$problems[] = 'Automatic Morse identification is faster than 20 words per minute. 47 CFR 97.119(b)(1) limits an automatic CW identification device to 20 WPM. The stored speed was not changed.';
+		}
+		if ($this->customIdentNeedsCallsignProof()) {
+			$problems[] = 'A custom identification clip is selected and automatic Morse backup is faster than 20 WPM, so the assigned call sign is not known to be in the identification. 47 CFR 97.119(a) and (b)(1). The stored clip and speed were not changed.';
+		}
+		return $problems;
+	}
+
+	public function coveringIdentificationIntervalMinutes() {
+		$settings = $this->settingsArray;
+		$shortMode = isset($settings['ID_Short_Mode']) ? (string)$settings['ID_Short_Mode'] : '';
+		$longMode = isset($settings['ID_Long_Mode']) ? (string)$settings['ID_Long_Mode'] : '';
+		if ($this->identModeEmits($shortMode) && $this->intervalWithinTenMinutes(isset($settings['ID_Short_IntervalMin']) ? $settings['ID_Short_IntervalMin'] : '')) {
+			return (int)$settings['ID_Short_IntervalMin'];
+		}
+		if ($this->identModeEmits($longMode) && $this->intervalWithinTenMinutes(isset($settings['ID_Long_IntervalMin']) ? $settings['ID_Long_IntervalMin'] : '')) {
+			return (int)$settings['ID_Long_IntervalMin'];
+		}
+		return null;
+	}
+
+	private function identificationIntervalKeys() {
+		$settings = $this->settingsArray;
+		$shortMode = isset($settings['ID_Short_Mode']) ? (string)$settings['ID_Short_Mode'] : '';
+		$longMode = isset($settings['ID_Long_Mode']) ? (string)$settings['ID_Long_Mode'] : '';
+		$afterTx = (isset($settings['ID_Short_IdentOnlyAfterTX']) && $settings['ID_Short_IdentOnlyAfterTX'] === 'True') ? '1' : '0';
+		$keys = array(
+			'SHORT_IDENT_INTERVAL' => '0',
+			'LONG_IDENT_INTERVAL' => '0',
+			'IDENT_ONLY_AFTER_TX' => $afterTx
+		);
+		if ($this->identModeEmits($shortMode) && $this->intervalWithinTenMinutes(isset($settings['ID_Short_IntervalMin']) ? $settings['ID_Short_IntervalMin'] : '')) {
+			$keys['SHORT_IDENT_INTERVAL'] = (string)(int)$settings['ID_Short_IntervalMin'];
+		}
+		if ($this->identModeEmits($longMode) && preg_match('/^[1-9][0-9]*$/', (string)(isset($settings['ID_Long_IntervalMin']) ? $settings['ID_Long_IntervalMin'] : ''))) {
+			$keys['LONG_IDENT_INTERVAL'] = (string)(int)$settings['ID_Long_IntervalMin'];
+		}
+		return $keys;
+	}
+
+	private function identModeEmits($mode) {
+		return $mode === 'morse' || $mode === 'voice' || $mode === 'custom';
+	}
+
+	private function intervalWithinTenMinutes($value) {
+		$text = (string)$value;
+		if (!preg_match('/^[1-9][0-9]*$/', $text)) {
+			return false;
+		}
+		$minutes = (int)$text;
+		return $minutes >= 1 && $minutes <= 10;
+	}
+
+	private function morseSpeedAllowed() {
+		$wpm = (string)(isset($this->settingsArray['ID_Morse_WPM']) ? $this->settingsArray['ID_Morse_WPM'] : '');
+		if (!preg_match('/^[1-9][0-9]*$/', $wpm)) {
+			return false;
+		}
+		$speed = (int)$wpm;
+		return $speed >= 1 && $speed <= 20;
+	}
+
+	private function repeaterPathUsesMorse() {
+		$settings = $this->settingsArray;
+		foreach (array('ID_Short_Mode', 'ID_Long_Mode') as $key) {
+			$mode = isset($settings[$key]) ? (string)$settings[$key] : '';
+			if ($mode === 'morse') {
+				return true;
+			}
+			$appendKey = $key === 'ID_Short_Mode' ? 'ID_Short_AppendMorse' : 'ID_Long_AppendMorse';
+			if (($mode === 'voice' || $mode === 'custom') && (isset($settings[$appendKey]) ? $settings[$appendKey] : '') === 'True') {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private function customIdentNeedsCallsignProof() {
+		if ($this->morseSpeedAllowed()) {
+			return false;
+		}
+		$settings = $this->settingsArray;
+		foreach (array('ID_Short_Mode', 'ID_Long_Mode') as $key) {
+			if ((isset($settings[$key]) ? $settings[$key] : '') === 'custom') {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public function customIdentificationAvailable($settingKey) {
+		$name = isset($this->settingsArray[$settingKey]) ? (string)$this->settingsArray[$settingKey] : '';
+		if ($name === '') {
+			return false;
+		}
+		$audio = new AudioFiles();
+		foreach ($audio->get_audio_files('identification') as $file) {
+			if ($file['fileName'] === $name) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private function publishFailure() {
+		$this->publishFailed = true;
+		return false;
 	}
 
 	public function write_config($data, $filename, $format = 'text') {
-		
+		if ($this->identificationGate && count($this->identificationProblems()) > 0) {
+			return $this->publishFailure();
+		}
+		if ($data === false || $data === null) {
+			return $this->publishFailure();
+		}
 		if ($format == 'ini') {
 			$data = $this->build_ini($data); // Convert Array to INI format
 		}
-		$guard = BenchGuard::detect();
-		if ($guard->isBench()) {
-			$data = $this->disarmBenchPreview($filename, $data);
-		}
 		$file_output = $this->orpFileHeader . $data;
 		$full_file_path = $this->configDestination($filename);
-		if ($full_file_path === null) {
-			return;
+		if ($full_file_path === null || strpos($full_file_path, '..') !== false) {
+			return $this->publishFailure();
 		}
 		$filepath = dirname($full_file_path);
-		if ($guard->isBench()) {
-			if (!BenchGuard::previewAllowed($filepath) || is_link($filepath) || is_link($full_file_path)) {
-				return;
-			}
-			if (!is_dir($filepath)) {
-				$parent = dirname($filepath);
-				if (!is_dir($parent) || is_link($parent) || !BenchGuard::componentsAreReal($parent)) {
-					return;
-				}
-				mkdir($filepath, 0750);
-			}
-			BenchGuard::writeContained($full_file_path, $file_output);
-			return;
+		if (!$this->ensureRealDir($filepath) || is_link($full_file_path)) {
+			return $this->publishFailure();
 		}
-		if (is_link($filepath) || is_link($full_file_path)) {
-			return;
+		if (PathGuard::writeContained($full_file_path, $file_output) !== true) {
+			return $this->publishFailure();
 		}
-		if (!is_dir($filepath)) { mkdir($filepath, 0750, true); }
-		if (is_link($filepath) || is_link($full_file_path)) {
-			return;
+		return true;
+	}
+
+	private function ensureRealDir($dir) {
+		if (!is_string($dir) || $dir === '' || $dir[0] !== '/' || strpos($dir, '..') !== false) {
+			return false;
 		}
-		file_put_contents( $full_file_path, $file_output );
+		if (is_link($dir)) {
+			return false;
+		}
+		if (is_dir($dir)) {
+			return PathGuard::componentsAreReal($dir);
+		}
+		$parent = dirname($dir);
+		if ($parent === $dir || !$this->ensureRealDir($parent)) {
+			return false;
+		}
+		if (is_link($dir)) {
+			return false;
+		}
+		if (!is_dir($dir) && !mkdir($dir, 0750) && !is_dir($dir)) {
+			return false;
+		}
+		return is_dir($dir) && !is_link($dir);
 	}
 
 
@@ -542,7 +662,7 @@ class SVXLink {
 			return;
 		}
 		$dir = dirname($sample);
-		if (!is_dir($dir) || is_link($dir) || !BenchGuard::componentsAreReal($dir)) {
+		if (!is_dir($dir) || is_link($dir) || !PathGuard::componentsAreReal($dir)) {
 			return;
 		}
 		$files = glob($dir . '/ORP_*');
