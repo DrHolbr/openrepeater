@@ -127,5 +127,18 @@ if [ "$unset_rc" -eq 0 ] || [ "$shared_rc" -eq 0 ]; then
 fi
 printf '%s\n' "$unset_out" | grep -q 'dedicated directory'
 printf '%s\n' "$shared_out" | grep -q 'dedicated directory'
+set +e
+dotdot_out=$(ORP_TEST_TMPDIR=/tmp/../tmp bash "$ROOT_DIR/upgrade/tests/run.sh" 2>&1)
+dotdot_rc=$?
+dot_out=$(ORP_TEST_TMPDIR=/tmp/. bash "$ROOT_DIR/upgrade/tests/run.sh" 2>&1)
+dot_rc=$?
+set -e
+if [ "$dotdot_rc" -eq 0 ] || [ "$dot_rc" -eq 0 ]; then
+	echo "FAIL: run.sh accepted a path that resolves to the shared temp root" >&2
+	printf '%s\n' "$dotdot_out" "$dot_out" >&2
+	exit 1
+fi
+printf '%s\n' "$dotdot_out" | grep -q 'ORP_TEST_TMPDIR'
+printf '%s\n' "$dot_out" | grep -q 'dedicated directory'
 echo "ok: run.sh refuses an unset or shared ORP_TEST_TMPDIR"
 echo "fixture tmpdir checks passed"

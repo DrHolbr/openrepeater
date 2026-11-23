@@ -4,16 +4,23 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$ROOT_DIR"
-case "${ORP_TEST_TMPDIR:-}" in
-	"")
-		echo "refused: ORP_TEST_TMPDIR must be set to a dedicated directory" >&2
-		exit 1
-		;;
-	/tmp|/tmp/|/var/tmp|/var/tmp/)
+# shellcheck source=lib/fixture_tmpdir.sh
+. "$ROOT_DIR/upgrade/tests/lib/fixture_tmpdir.sh"
+if [ -z "${ORP_TEST_TMPDIR:-}" ]; then
+	echo "refused: ORP_TEST_TMPDIR must be set to a dedicated directory" >&2
+	exit 1
+fi
+if ! orp_fixture_root >/dev/null; then
+	exit 1
+fi
+orp_tmpdir_canon=$(readlink -f "$(orp_fixture_root)") || exit 1
+case "$orp_tmpdir_canon" in
+	/|/tmp|/var/tmp)
 		echo "refused: ORP_TEST_TMPDIR must be a dedicated directory, not a shared temp root" >&2
 		exit 1
 		;;
 esac
+unset orp_tmpdir_canon
 if [ "${ORP_UMASK_MATRIX:-0}" != 1 ]; then
 	export ORP_UMASK_MATRIX=1
 	# shellcheck source=upgrade/tests/lib/fixture_tmpdir.sh
@@ -182,6 +189,7 @@ bash "$ROOT_DIR/upgrade/tests/preview_split_test.sh"
 bash "$ROOT_DIR/upgrade/tests/functional_config_sanitize_test.sh"
 bash "$ROOT_DIR/upgrade/tests/custom_ident_publish_test.sh"
 bash "$ROOT_DIR/upgrade/tests/fixture_tmpdir_test.sh"
+bash "$ROOT_DIR/upgrade/tests/companion_cleanup_test.sh"
 bash "$ROOT_DIR/upgrade/tests/host_tree_guard_test.sh"
 php "$ROOT_DIR/upgrade/tests/php_safety_test.php"
 bash "$ROOT_DIR/upgrade/tests/harness_isolation_test.sh"

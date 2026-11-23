@@ -2222,6 +2222,19 @@ open(path, "w", encoding="utf-8").write("\n".join(out) + "\n")
 PY
 }
 
+# mktemp names these. A failed armed publish must not leave the directory behind.
+function drop_companion_dir() {
+	local dir
+	dir=${COMPANION_DIR:-}
+	COMPANION_DIR=""
+	[ -n "$dir" ] || return 0
+	case "$(basename "$dir")" in
+		orp-companions.*|orp-disarm.*)
+			rm -rf -- "$dir"
+			;;
+	esac
+}
+
 function config_publish {
 	local dest parent snapshot backup sum_before sum_after rb_failed backup_parent staged
 	if ! functional_test_on; then
@@ -2305,7 +2318,7 @@ function config_publish {
 		fi
 		snapshot_for_logics=$snapshot
 		if ! prepare_armed_companions; then
-			rm -rf "$COMPANION_DIR"
+			drop_companion_dir
 			rm -f "$snapshot"
 			echo "refused: staged companion was not read"
 			return 1
@@ -2343,6 +2356,7 @@ function config_publish {
 	fi
 	sum_before=$(sha256sum "$snapshot" | awk '{print $1}')
 	if ! config_courtesy_load; then
+		drop_companion_dir
 		rm -f "$snapshot"
 		echo "refused: courtesy mode was not loaded. The runtime config was not replaced."
 		return 1
@@ -2355,6 +2369,7 @@ function config_publish {
 		courtesy_had=1
 	fi
 	if ! config_install_courtesy; then
+		drop_companion_dir
 		rm -f "$snapshot" "$courtesy_backup"
 		echo "refused: courtesy override was not installed. The runtime config was not replaced."
 		return 1
