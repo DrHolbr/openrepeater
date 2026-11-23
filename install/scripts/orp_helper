@@ -2250,7 +2250,8 @@ function config_publish {
 			echo "refused: staged companion was not read"
 			return 1
 		fi
-	elif [ -f "$staged_ui" ] && [ ! -L "$staged_ui" ]; then
+	elif [ -f "$staged_ui" ] && [ ! -L "$staged_ui" ] \
+		&& grep -q '^\[GLOBAL\]$' "$staged_ui" && grep -q '^LOGICS=' "$staged_ui"; then
 		config_logic_select || { logic_type=staged; logic_name=staged; }
 		if ! config_ident_load; then
 			rm -f "$snapshot"
