@@ -373,6 +373,35 @@ do
 		bad "restore anchor missing or is a symlink: $dir"
 	fi
 done
+stock_src="$ROOT_DIR/install/sounds/courtesy_tones"
+courtesy_dir="$good/var/www/openrepeater/sounds/courtesy_tones"
+stock_count=$(find -P "$stock_src" -maxdepth 1 -type f -name '*.wav' | wc -l)
+live_count=$(find -P "$courtesy_dir" -maxdepth 1 -type f -name '*.wav' | wc -l)
+missing=0
+while IFS= read -r stock_name; do
+	if [ ! -f "$courtesy_dir/$stock_name" ] || [ -L "$courtesy_dir/$stock_name" ]; then
+		missing=1
+	fi
+done < <(find -P "$stock_src" -maxdepth 1 -type f -name '*.wav' -printf '%f\n')
+if [ "$stock_count" -eq 39 ] && [ "$live_count" -eq 39 ] && [ "$missing" -eq 0 ] \
+	&& [ "$(stat -c %a "$courtesy_dir")" = "755" ] \
+	&& [ "$(stat -c %a "$courtesy_dir/Beep.wav")" = "644" ] \
+	&& [ "$(stat -c %a "$courtesy_dir/3_Up_(Chord).wav")" = "644" ]
+then
+	ok "fresh install seeds 39 stock courtesy tones at mode 644"
+else
+	bad "stock courtesy seed count stock=$stock_count live=$live_count dir=$(stat -c %a "$courtesy_dir" 2>/dev/null || echo missing)"
+fi
+seed_group=$(id -gn)
+if getent group www-data >/dev/null 2>&1 && [ "${ORP_INSTALL_APPLY_OWNERSHIP:-0}" = 1 ]; then
+	seed_group=www-data
+fi
+if grep -F -q "${seed_group}:${seed_group} ${courtesy_dir}/Beep.wav" "$tmp/chown.log"; then
+	ok "stock courtesy tone ownership is recorded for the web group"
+else
+	bad "stock courtesy chown was not recorded"
+	grep -F 'Beep.wav' "$tmp/chown.log" >&2 || true
+fi
 if grep -q "/var/www/openrepeater/sounds/" "$ROOT_DIR/includes/classes/BackupRestore.php" \
 	&& grep -q "/var/www/openrepeater/backup/" "$ROOT_DIR/includes/classes/BackupRestore.php" \
 	&& grep -q "/var/www/openrepeater/sounds" "$INSTALL" \
@@ -383,6 +412,9 @@ else
 	bad "installer anchors do not match BackupRestore"
 fi
 printf 'user-clip\n' > "$good/var/www/openrepeater/sounds/courtesy_tones/keep.wav"
+printf 'replaced-beep\n' > "$good/var/www/openrepeater/sounds/courtesy_tones/Beep.wav"
+rm -f "$good/var/www/openrepeater/sounds/courtesy_tones/Apollo.wav"
+apollo_src=$(checksum "$ROOT_DIR/install/sounds/courtesy_tones/Apollo.wav")
 printf 'user-backup\n' > "$good/var/www/openrepeater/backup/user.orp"
 orp_mkdir "$good/usr/local/share/svxlink/sounds/en_US"
 printf 'heather-canary\n' > "$good/usr/local/share/svxlink/sounds/en_US/heather.wav"
@@ -412,15 +444,53 @@ if [ -f "$good/etc/openrepeater/bench-mode" ] && [ "$(stat -c %a "$good/etc/open
 else
 	bad "second install removed the bench marker"
 fi
+reseed_count=$(find -P "$good/var/www/openrepeater/sounds/courtesy_tones" -maxdepth 1 -type f -name '*.wav' | wc -l)
 if [ "$(cat "$good/var/www/openrepeater/sounds/courtesy_tones/keep.wav")" = "user-clip" ] \
+	&& [ "$(cat "$good/var/www/openrepeater/sounds/courtesy_tones/Beep.wav")" = "replaced-beep" ] \
+	&& [ "$(checksum "$good/var/www/openrepeater/sounds/courtesy_tones/Apollo.wav")" = "$apollo_src" ] \
+	&& [ "$reseed_count" -eq 40 ] \
 	&& [ "$(cat "$good/var/www/openrepeater/backup/user.orp")" = "user-backup" ] \
 	&& [ "$(checksum "$good/usr/local/share/svxlink/sounds/en_US/heather.wav")" = "$heather_before" ] \
 	&& [ ! -L "$good/var/www/openrepeater/sounds" ] \
 	&& [ ! -L "$good/var/www/openrepeater/backup" ]
 then
-	ok "second install preserves user audio and backup files and does not touch Heather"
+	ok "second install keeps an uploaded tone, does not overwrite a replaced stock tone, and reseeds a missing stock tone"
 else
 	bad "second install changed user audio, backups, or Heather"
+fi
+
+rollback="$tmp/courtesy-rollback"
+seed_identity "$rollback"
+orp_mkdir "$rollback/var/www/openrepeater/sounds/courtesy_tones"
+printf 'user-clip\n' > "$rollback/var/www/openrepeater/sounds/courtesy_tones/keep.wav"
+printf 'replaced-beep\n' > "$rollback/var/www/openrepeater/sounds/courtesy_tones/Beep.wav"
+cat > "$tmp/fail-nginx" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+chmod 755 "$tmp/fail-nginx"
+set +e
+ORP_INSTALL_OFFLINE=1 ORP_ROOT="$rollback" ORP_SYSTEMCTL="$bin/systemctl" \
+	ORP_SYSTEMCTL_LOG="$tmp/rollback.log" ORP_NGINX_TEST="$tmp/fail-nginx" \
+	ORP_BOOTSTRAP_ACTIVE=0 ORP_PHP_FPM_SOCK=/run/php/php8.4-fpm.sock \
+	"$INSTALL" >"$tmp/rollback.out" 2>"$tmp/rollback.err"
+rc=$?
+set -e
+rollback_live="$rollback/var/www/openrepeater/sounds/courtesy_tones"
+preseed=$(find "$rollback/var/backups/orp-ui" -type d -name courtesy_tones.preseed 2>/dev/null | head -n 1)
+if [ "$rc" -ne 0 ] \
+	&& [ "$(cat "$rollback_live/keep.wav")" = "user-clip" ] \
+	&& [ "$(cat "$rollback_live/Beep.wav")" = "replaced-beep" ] \
+	&& [ ! -e "$rollback_live/Apollo.wav" ] \
+	&& [ -n "$preseed" ] \
+	&& [ "$(cat "$preseed/keep.wav")" = "user-clip" ] \
+	&& [ "$(cat "$preseed/Beep.wav")" = "replaced-beep" ] \
+	&& [ ! -e "$preseed/Apollo.wav" ]
+then
+	ok "a failed install restores the courtesy directory and keeps the uploaded tone"
+else
+	bad "courtesy rollback rc=$rc"
+	cat "$tmp/rollback.err" >&2 || true
 fi
 
 linkroot="$tmp/sounds-link"

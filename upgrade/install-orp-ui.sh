@@ -48,6 +48,8 @@ STAMP=$(date -u +%Y%m%dT%H%M%S%NZ)
 backup_root=$(p "/var/backups/orp-ui/${STAMP}")
 POLICY_BLOCK=0
 FAIL_CLOSED_RAN=0
+courtesy_live=
+courtesy_preseed=
 
 bench_trace() {
 	if [ -n "${ORP_INSTALL_TRACE:-}" ]; then
@@ -121,7 +123,33 @@ fail_closed() {
 	fi
 	# The bench marker is a safety boundary. Leave it in place.
 	bench_assert_masks >/dev/null 2>&1
+	restore_courtesy_preseed
 	exit "$rc"
+}
+
+# Copy a directory's immediate children without following a symbolic link.
+copy_dir_children() {
+	local src=$1 dest=$2
+	find -P "$src" -mindepth 1 -maxdepth 1 -exec cp -aP {} "$dest/" \;
+}
+
+# A failed install restores the courtesy directory to the snapshot taken
+# after the preserved sounds tree was put back and before stock clips were
+# copied. A successful install leaves the seeded directory in place.
+restore_courtesy_preseed() {
+	local live snap
+	live=${courtesy_live:-}
+	snap=${courtesy_preseed:-}
+	if [ -z "$live" ] || [ -z "$snap" ]; then
+		return 0
+	fi
+	if [ ! -d "$snap" ] || [ -L "$snap" ] || [ ! -d "$live" ] || [ -L "$live" ]; then
+		echo "courtesy tone rollback skipped: the snapshot or live directory is not a real directory" >&2
+		return 0
+	fi
+	find -P "$live" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+	copy_dir_children "$snap" "$live"
+	echo "courtesy tone directory restored from the pre-seed backup"
 }
 # Classification is read-only. A refusal exits before the nginx trap is armed.
 if ! bench_classify_legacy_module_symlinks; then
@@ -388,11 +416,62 @@ install_web_child() {
 	bench_chmod 0755 "$dest"
 	bench_chown "${web_group}:${web_group}" "$dest"
 }
+
+# Add each stock clip that is not already present. An existing name, including
+# one the operator replaced, is left untouched, and nothing already in the
+# directory is deleted. The variables used by restore_courtesy_preseed are set
+# only after the snapshot exists, so an earlier failure does not restore a
+# missing snapshot.
+seed_stock_courtesy_tones() {
+	local src dest snap srcfile name tmp
+	src="$REPO_ROOT/install/sounds/courtesy_tones"
+	dest="$web/sounds/courtesy_tones"
+	if [ ! -d "$src" ] || [ -L "$src" ]; then
+		echo "refused: stock courtesy tones are missing" >&2
+		exit 6
+	fi
+	if [ ! -d "$dest" ] || [ -L "$dest" ]; then
+		echo "refused: courtesy tone directory is not a real directory" >&2
+		exit 6
+	fi
+	bench_anchor_dir "$hold"
+	snap="$hold/courtesy_tones.preseed"
+	rm -rf "$snap"
+	mkdir "$snap"
+	copy_dir_children "$dest" "$snap"
+	bench_anchor_dir "${backup_root}/var/www/openrepeater/sounds"
+	rm -rf "${backup_root}/var/www/openrepeater/sounds/courtesy_tones.preseed"
+	cp -a "$snap" "${backup_root}/var/www/openrepeater/sounds/courtesy_tones.preseed"
+	courtesy_preseed=$snap
+	courtesy_live=$dest
+	while IFS= read -r srcfile; do
+		[ -n "$srcfile" ] || continue
+		name=$(basename -- "$srcfile")
+		if [[ ! "$name" =~ ^[A-Za-z0-9._()-]+\.wav$ ]]; then
+			echo "refused: stock courtesy name ${name}" >&2
+			exit 6
+		fi
+		if [ -e "$dest/$name" ] || [ -L "$dest/$name" ]; then
+			continue
+		fi
+		tmp=$(mktemp "$dest/.orp-seed.XXXXXX")
+		cp "$srcfile" "$tmp"
+		bench_chmod 644 "$tmp"
+		if [ -e "$dest/$name" ] || [ -L "$dest/$name" ]; then
+			rm -f "$tmp"
+			continue
+		fi
+		mv "$tmp" "$dest/$name"
+		bench_chmod 644 "$dest/$name"
+		bench_chown "${web_group}:${web_group}" "$dest/$name"
+	done < <(find -P "$src" -maxdepth 1 -type f -name '*.wav' | sort)
+}
 install_web_anchor sounds
 install_web_anchor backup
 install_web_child "$web/sounds/courtesy_tones"
 install_web_child "$web/sounds/identification"
 install_web_child "$web/backup/restore"
+seed_stock_courtesy_tones
 
 bench_anchor_dir "$(p /etc/nginx/sites-available)"
 bench_anchor_dir "$(p /etc/nginx/sites-enabled)"
