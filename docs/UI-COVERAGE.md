@@ -10,7 +10,7 @@ Installed `599262001d38b97001bbc65ab1aef007d608f696`. The database snapshot stay
 
 Seventeen routes were exercised over HTTP, not a mocked helper: `ajax_system.php`, `ajax_db_update.php`, `port_db_update.php`, `svxlink_update.php`, `tts_preview.php`, and `advanced.php`, `backup.php`, `courtesy_tone.php`, `dashboard.php`, `dtmf.php`, `identification.php`, `log.php`, `modules.php`, `ports.php`, `settings.php`, `gpio.php`, and `wizard/index.php`. Each no-cookie POST and random-session POST was 401. Each valid session with a missing token, a wrong token, or a foreign Origin was 403. That is 85 checks. The live database hash, live config hash, and helper command count stayed unchanged. GET on the five function routes was 405. A different scheme or port was 403. A spoofed `X-Forwarded-Proto` did not make an https Origin match HTTP. `status;true` was 403. GPIO POST was 405.
 
-A tokenized `svxlink_update.php` publish returned the masked-service flag. The published file was `PTT_TYPE=NONE`, `SQL_SIGLEV_OPEN_THRESH=30`, `SQL_SIGLEV_CLOSE_THRESH=10`, loopback UDP, and an empty `functional-test.d`. After unmask of svxlink only, tokenized start, status, restart, and stop returned 200. The process log was `SvxLink v1.10.2@26.05.2`, the Tcl handler loaded, and both stops were clean. There were no warning lines. Final state: svxlink inactive, unmasked, and disabled; `remotetrx` and `svxreflector` stayed masked. Nine pages returned 200 with a CSRF meta tag. Seventy-two assets returned 200. Fifty-six PHP files linted clean. nginx and PHP 8.4.27 matched the Debian candidate. The wizard Finish fixture returned a POST form and was not allowed to publish the live config.
+That measurement used the old functional-test publisher. The current rebuild writes the stored ports, including GPIO squelch and `PTT_TYPE=GPIO`, to `/etc/svxlink` and restarts svxlink. A tokenized `svxlink_update.php` publish on that older tree returned the masked-service flag. The published file was `PTT_TYPE=NONE`, `SQL_SIGLEV_OPEN_THRESH=30`, `SQL_SIGLEV_CLOSE_THRESH=10`, loopback UDP, and an empty `functional-test.d`. After unmask of svxlink only, tokenized start, status, restart, and stop returned 200. The process log was `SvxLink v1.10.2@26.05.2`, the Tcl handler loaded, and both stops were clean. There were no warning lines. Final state: svxlink inactive, unmasked, and disabled; `remotetrx` and `svxreflector` stayed masked. Nine pages returned 200 with a CSRF meta tag. Seventy-two assets returned 200. Fifty-six PHP files linted clean. nginx and PHP 8.4.27 matched the Debian candidate. The wizard Finish fixture returned a POST form and was not allowed to publish the live config.
 
 `97077d5` was not part of that install.
 
@@ -56,7 +56,7 @@ The prepared settings and port writers in that install did not check SQLite exec
 
 | Endpoint | Verb | Anonymous | Missing or bad CSRF | Foreign Origin | Authenticated POST |
 | --- | --- | --- | --- | --- | --- |
-| `functions/ajax_system.php` lifecycle fields | POST | 401 before helper | 403 before helper | 403 before helper | allowlist, then BenchGuard, then helper |
+| `functions/ajax_system.php` lifecycle fields | POST | 401 before helper | 403 before helper | 403 before helper | CSRF and the closed helper allowlist, then the helper |
 | `functions/ajax_system.php?post_option=start` | GET | 405 | 405 | 405 | 405 |
 | `functions/ajax_system.php?update=` | GET | 401 | session required, no CSRF | read allowlist only | read allowlist |
 | `functions/svxlink_update.php` | GET | 405 | 405 | 405 | 405 |
@@ -88,7 +88,7 @@ A control listed above is not "working" until its handler has been executed and 
 
 ## Load Preset rows on a copied database
 
-Each row is the HTTP POST of that `board_id` with a session and CSRF token, bench mode, so the mixer is not called. The account password, `callSign=TEST`, and module option blobs stayed put. Every `moduleEnabled` stayed 0. The card's Remote Relay block stores GPIO rows only; there is no `modules.svxlinkName` of `Remote Relay`, so no module row is enabled. 498 and 499 stay conditional offsets with `bcm=null`. The published runtime after the last load is still `PTT_TYPE=NONE` and does not contain `gpio498`.
+Each row is the HTTP POST of that `board_id` with a session and CSRF token on a copied database. The account password, `callSign=TEST`, and module option blobs stayed put. Every `moduleEnabled` stayed 0. The card's Remote Relay block stores GPIO rows only; there is no `modules.svxlinkName` of `Remote Relay`, so no module row is enabled. 498 and 499 stay conditional offsets with `bcm=null`. A current rebuild writes those stored pins. The older run's published file was `PTT_TYPE=NONE` and did not contain `gpio498`.
 
 | Preset | Port | RX | TX | Audio RX / TX |
 | --- | --- | --- | --- | --- |
@@ -151,7 +151,7 @@ Command: `bash upgrade/tests/control_roundtrip_test.sh`. It is also in `bash upg
 | DTMF submit | The reference page has no inputs. The pin is a settings field and stays out of the no-PTT file. | `settings.php` to `ajax_db_update.php` | Pin `2468` stored. No `ONLINE_CMD` in the snapshot. | not deployed | Not a transmitter disable test. |
 | Module upload and delete | Pending for a reviewed module. A probe zip stays disabled, does not execute PHP or Tcl, and cannot remove Help. | `modules.php` | Cloud fixture only. `ProbeMod` enabled `0`. No `/usr/local` link. | not deployed | Pending: activation of a reviewed module. Not executed on the Pi. |
 | Backup create, restore, delete | Archive stays in the backup directory. Restore returns the copied settings and does not change the admin password. `../` is not deleted. | `backup.php` | Call sign returns to `TEST`. Admin hash unchanged. Outside canary remains. | not deployed | Not the station backup directory. |
-| Advanced textareas | Stored. Not applied. `orp_Mode=advanced` is refused by publish and the previous file stays. | `advanced.php` | The page says it is not applied. Cloud publish refusal leaves the repeater snapshot hash unchanged. | not deployed | Not executed on the Pi. |
+| Advanced textareas | Stored. A rebuild writes the textarea into the repeater configuration. | `advanced.php` | The page says a rebuild writes the text. | not deployed | Not executed on the Pi. |
 | Change Password | Only the logged-in throwaway account changes. | `login.php` `setPassword` | Throwaway can log in with the new password. Admin hash unchanged. | not deployed | Station password was not changed. |
 | Host restart and shutdown | Not implemented. The buttons stay disabled and `RequestGuard` does not allow `system restart` or `system stop`. | `ajax_system.php` | 403 `forbidden`. The helper log stays empty. A non-200, empty, or non-`host-action-accepted` reply does not start the countdown. | not deployed | Pending until a reviewed host action exists. Not enabled here. |
 | Active Repeater Log | Decimal range and length. Denial matrix. | `functions/log_stream.php` | Native 206, length 1225, range `12640-13864/13865`. 401, 403, 405, 416 measured. | `5bff6b4` | Browser was not driven. Reload `log.php`. |

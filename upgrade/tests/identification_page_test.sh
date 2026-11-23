@@ -64,7 +64,7 @@ $_SERVER["DOCUMENT_ROOT"] = $argv[1];
 require $argv[1] . "/includes/classes/AudioFiles.php";
 require $argv[1] . "/includes/classes/SVXLink.php";
 require $argv[1] . "/includes/classes/SVXLink_TCL.php";
-require $argv[1] . "/includes/classes/BenchGuard.php";
+require $argv[1] . "/includes/classes/PathGuard.php";
 function fail($msg) { fwrite(STDERR, "FAIL: {$msg}\n"); exit(1); }
 $missing = new AudioFiles();
 if ($missing->get_audio_files("identification") !== array()) {
@@ -109,6 +109,7 @@ if ($settings["callSign"] !== "FIXTURE" || $settings["ID_Morse_WPM"] !== "25" ||
 	fail("fixture settings were not intact before generation");
 }
 putenv("ORP_BENCH_TEST_HARNESS=1");
+putenv("ORP_ROOT=" . $argv[7]);
 putenv("ORP_BENCH_MARKER=" . $argv[5]);
 putenv("ORP_BENCH_HOSTNAME_FILE=" . $argv[6]);
 putenv("ORP_BENCH_PREVIEW=" . $argv[7]);
@@ -117,7 +118,7 @@ $blocked->build_logic_repeater("ORP_RepeaterLogic_Port1", 1);
 if ($blocked->write_config($blocked->build_logic_repeater("ORP_RepeaterLogic_Port1", 1), "svxlink.conf", "ini") !== false) {
 	fail("25 WPM Morse and the stock speed were published");
 }
-if (file_exists($argv[7] . "/svxlink.conf")) {
+if (file_exists($argv[7] . "/etc/svxlink/svxlink.conf")) {
 	fail("refused identification still wrote svxlink.conf");
 }
 $again = $db->querySingle("SELECT value FROM settings WHERE keyID=\"ID_Morse_WPM\"");
@@ -135,7 +136,7 @@ $logic = $good->build_logic_repeater("ORP_RepeaterLogic_Port1", 1);
 if ($good->write_config($logic, "svxlink.conf", "ini") !== true) {
 	fail("legal Morse schedule was not written: " . implode("; ", $good->identificationProblems()));
 }
-$ini = file_get_contents($argv[7] . "/svxlink.conf");
+$ini = file_get_contents($argv[7] . "/etc/svxlink/svxlink.conf");
 if (strpos($ini, "MODULES=ModuleHelp") === false || strpos($ini, "CALLSIGN=FIXTURE") === false || strpos($ini, "SHORT_IDENT_INTERVAL=5") === false) {
 	fail("published config lost the stored call sign or 5 minute interval");
 }
@@ -177,7 +178,7 @@ $late->build_logic_repeater("ORP_RepeaterLogic_Port1", 1);
 if ($late->write_config($late->build_logic_repeater("ORP_RepeaterLogic_Port1", 1), "late.conf", "ini") !== false) {
 	fail("an 11 minute interval was published");
 }
-if (file_exists($argv[7] . "/late.conf")) fail("late.conf was written");
+if (file_exists($argv[7] . "/etc/svxlink/late.conf")) fail("late.conf was written");
 $settings["callSign"] = "FIXTURE";
 $settings["ID_Short_IntervalMin"] = "5";
 $settings["ID_Short_Mode"] = "morse";
@@ -191,7 +192,7 @@ if ($defer->identificationProblems() !== array()) {
 if ($defer->write_config($defer->build_logic_repeater("ORP_RepeaterLogic_Port1", 1), "defer.conf", "ini") !== true) {
 	fail("SvxLink IDENT_ONLY_AFTER_TX=1 was refused");
 }
-$deferIni = file_get_contents($argv[7] . "/defer.conf");
+$deferIni = file_get_contents($argv[7] . "/etc/svxlink/defer.conf");
 if (strpos($deferIni, "IDENT_ONLY_AFTER_TX=1") === false || strpos($deferIni, "SHORT_IDENT_INTERVAL=5") === false || strpos($deferIni, "CALLSIGN=FIXTURE") === false) {
 	fail("published ident-only-after-tx config did not keep minutes and the stored call sign");
 }

@@ -53,10 +53,6 @@ class SVXLink_GPIO {
 
 
 	public function build_gpio_config() {
-		if (BenchGuard::detect()->isBench()) {
-			return $this->build_bench_gpio_config();
-		}
-		
 		$this->process_gpio_pins();
 		
 		// Reformat arrays into space delminated lists of gpio pin numbers prefixed with 'gpio'

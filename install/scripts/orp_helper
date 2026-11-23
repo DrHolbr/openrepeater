@@ -186,25 +186,6 @@ function radio_unit_ctl {
 			return 1
 			;;
 	esac
-	# enable stays blocked for svxlink, remotetrx, and svxreflector.
-	# start, stop, and restart stay available with the trusted token.
-	if [ "$action" = "enable" ]; then
-		echo "refused: ${unit} enable stays blocked. Start, stop, and restart stay available."
-		return 1
-	fi
-	if ! native_functional_token; then
-		echo "refused: ${unit} ${action} requires a trusted functional-test token"
-		return 1
-	fi
-	if [ "$action" = "start" ] || [ "$action" = "restart" ]; then
-		if ! tx_transmit_allowed "$unit"; then
-			return 1
-		fi
-	fi
-	if [ "$action" = "unmask" ]; then
-		radio_unit_unmask "$unit"
-		return $?
-	fi
 	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
 		if [ -n "${ORP_SYSTEMCTL:-}" ]; then
 			"${ORP_SYSTEMCTL}" "$action" "${unit}.service"
@@ -406,16 +387,12 @@ function svxlink_disable {
 }
 
 function svxlink_enable {
-	# Functional-test refuses enable for svxlink even when the trusted
-	# token lifts start, stop, and restart.
-	if functional_test_on || native_functional_token; then
-		echo "refused: svxlink enable stays blocked in functional-test. Start, stop, and restart stay available."
-		return 1
-	fi
-	if bench_refuses "svxlink enable"; then
-		return 1
-	fi
 	echo "SVXLink Enable"
+	if [ -n "${ORP_SYSTEMCTL:-}" ]; then
+		"${ORP_SYSTEMCTL}" enable svxlink.service
+		"${ORP_SYSTEMCTL}" start svxlink.service
+		return $?
+	fi
 	systemctl enable svxlink.service
 	service svxlink start
 }
@@ -455,55 +432,30 @@ function svxlink_service_ctl {
 }
 
 function svxlink_restart {
-	if native_functional_token; then
-		radio_unit_ctl svxlink restart
+	echo "SVXLink Restart"
+	if [ -n "${ORP_SYSTEMCTL:-}" ]; then
+		"${ORP_SYSTEMCTL}" restart svxlink.service
 		return $?
-	fi
-	if functional_test_on; then
-		svxlink_service_ctl restart
-		return $?
-	fi
-	if bench_refuses "svxlink restart"; then
-		return 1
 	fi
 	service svxlink restart
 	svxlink_status
 }
 
 function svxlink_stop {
-	if native_functional_token; then
-		radio_unit_ctl svxlink stop
+	echo "SVXLink Stop"
+	if [ -n "${ORP_SYSTEMCTL:-}" ]; then
+		"${ORP_SYSTEMCTL}" stop svxlink.service
 		return $?
-	fi
-	if functional_test_on; then
-		svxlink_service_ctl stop
-		return $?
-	fi
-	if bench_refuses "svxlink stop"; then
-		return 1
 	fi
 	service svxlink stop
 	svxlink_status
 }
 
 function svxlink_start {
-	# With the tx-armed flag, a trusted token starts the unit directly and
-	# skips config_matches_snapshot and native_start_blocked. Without the
-	# flag, radio_unit_ctl still refuses start unless the live file matches
-	# the disconnected snapshot and every PTT_TYPE is NONE. Those checks
-	# also run when the mode file is functional-test but the token is not
-	# trusted. svxlink_gpio_up executes /usr/sbin/svxlink_gpio_up; it does
-	# not source that file. This tree does not ship the binary.
-	if native_functional_token; then
-		radio_unit_ctl svxlink start
+	echo "SVXLink Start"
+	if [ -n "${ORP_SYSTEMCTL:-}" ]; then
+		"${ORP_SYSTEMCTL}" start svxlink.service
 		return $?
-	fi
-	if functional_test_on; then
-		svxlink_service_ctl start
-		return $?
-	fi
-	if bench_refuses "svxlink start"; then
-		return 1
 	fi
 	service svxlink start
 	svxlink_status
@@ -532,9 +484,6 @@ function gpio_bin_allowed() {
 
 function svxlink_gpio_up {
 	local bin rc
-	if drive_refuses "svxlink gpio_up"; then
-		return 1
-	fi
 	bin=${SVXLINK_GPIO_UP_BIN:-/usr/sbin/svxlink_gpio_up}
 	if ! gpio_bin_allowed "$bin"; then
 		return 1
@@ -550,9 +499,6 @@ function svxlink_gpio_up {
 
 function svxlink_gpio_down {
 	local bin rc
-	if drive_refuses "svxlink gpio_down"; then
-		return 1
-	fi
 	bin=${SVXLINK_GPIO_DOWN_BIN:-/usr/sbin/svxlink_gpio_down}
 	if ! gpio_bin_allowed "$bin"; then
 		return 1
@@ -1000,42 +946,15 @@ function native_unit_disabled() {
 }
 
 function native_masks() {
-	local rc=0 unit enabled active
+	local unit enabled active
 	for unit in svxlink.service remotetrx.service svxreflector.service; do
 		set +e
 		enabled=$(native_systemctl is-enabled "$unit" 2>/dev/null)
 		active=$(native_systemctl is-active "$unit" 2>/dev/null)
 		set -e
-		# Same predicate as bench_assert_masks. A symlink under /etc is
-		# not enough, and no file under /etc is required.
-		if [ "$enabled" = "masked" ]; then
-			echo "ok: ${unit} -> /dev/null"
-			continue
-		fi
-		# A trusted token leaves the unit manageable: enabled, active, or
-		# disabled are all accepted. Production without the token is not.
-		if native_functional_token; then
-			echo "ok: ${unit} manageable in functional-test"
-			continue
-		fi
-		# remotetrx and svxreflector ship as disabled units. They are not
-		# masked and not unmasked by the installer.
-		if [ "$unit" != "svxlink.service" ]; then
-			case "$enabled" in
-				disabled|not-found|"")
-					case "$active" in
-						inactive|unknown|failed|"")
-							echo "ok: ${unit} disabled"
-							continue
-							;;
-					esac
-					;;
-			esac
-		fi
-		echo "missing: ${unit} is not a /dev/null mask"
-		rc=1
+		echo "ok: ${unit} enabled=${enabled:-unknown} active=${active:-unknown}"
 	done
-	return "$rc"
+	return 0
 }
 
 function native_preflight() {
@@ -1047,17 +966,7 @@ function native_preflight() {
 }
 
 function native_start_blocked() {
-	local path
-	path=$(native_path /etc/systemd/system/svxlink.service)
-	if [ ! -e "$path" ] && [ ! -L "$path" ]; then
-		return 1
-	fi
-	if [ -L "$path" ] && [ "$(readlink "$path")" = "/dev/null" ]; then
-		echo "refused: svxlink.service is masked. Unmask was not performed. Start was not called."
-		return 0
-	fi
-	echo "refused: /etc/systemd/system/svxlink.service is not the administrative mask. Start was not called."
-	return 0
+	return 1
 }
 
 function config_event_handler() {
@@ -1616,7 +1525,7 @@ CW_PITCH=${ident_cw_pitch}"
 MODULE_PATH=${modules}
 LOGIC_CORE_PATH=${modules}
 LOGICS=${logic_name}
-CFG_DIR=/etc/svxlink/functional-test.d
+CFG_DIR=/etc/svxlink/svxlink.d
 TIMESTAMP_FORMAT="%c"
 CARD_SAMPLE_RATE=16000
 [${logic_name}]
@@ -2237,10 +2146,7 @@ function drop_companion_dir() {
 
 function config_publish {
 	local dest parent snapshot backup sum_before sum_after rb_failed backup_parent staged
-	if ! functional_test_on; then
-		echo "refused: config publish requires functional-test"
-		return 1
-	fi
+	# Publish installs the config the UI wrote. It does not require a mode file.
 	if ! require_python3; then
 		return 1
 	fi
@@ -2262,7 +2168,7 @@ function config_publish {
 	if ! config_parent_anchored "$parent"; then
 		return 1
 	fi
-	if [ -L "$dest" ] || [ -L "${parent}/svxlink.d" ] || [ -L "${parent}/functional-test.d" ]; then
+	if [ -L "$dest" ] || [ -L "${parent}/svxlink.d" ]; then
 		echo "refused: live svxlink path is a symbolic link"
 		return 1
 	fi
@@ -2281,21 +2187,6 @@ function config_publish {
 	fi
 	if native_functional_token && tx_armed; then
 		refuse_armed_dest_symlinks || return 1
-	fi
-	if [ -e "${parent}/functional-test.d" ] && [ ! -d "${parent}/functional-test.d" ]; then
-		echo "refused: functional-test.d is not a directory"
-		return 1
-	fi
-	if [ ! -d "${parent}/functional-test.d" ]; then
-		mkdir -m 755 "${parent}/functional-test.d"
-	fi
-	if native_open_mode "${parent}/functional-test.d"; then
-		echo "refused: functional-test.d is group or world writable"
-		return 1
-	fi
-	if find -P "${parent}/functional-test.d" -mindepth 1 -print | grep -q .; then
-		echo "refused: functional-test.d is not empty. Sample svxlink.d files were not copied."
-		return 1
 	fi
 	snapshot=$(mktemp "${parent}/.orp-svxlink.XXXXXX")
 	COMPANION_DIR=""
@@ -2339,9 +2230,9 @@ function config_publish {
 			echo "refused: the UI svxlink.conf was not read. The runtime config was not replaced."
 			return 1
 		fi
-		if ! config_sanitize_unarmed "$raw" "$snapshot" "$cards"; then
+		if ! cp -- "$raw" "$snapshot"; then
 			rm -f "$snapshot" "$raw"
-			echo "refused: the UI svxlink.conf was not made radio-safe. The runtime config was not replaced."
+			echo "refused: the UI svxlink.conf was not copied. The runtime config was not replaced."
 			return 1
 		fi
 		rm -f "$raw"
@@ -2351,7 +2242,7 @@ function config_publish {
 		return 1
 	elif ! config_render "$snapshot"; then
 		rm -f "$snapshot"
-		echo "refused: disconnected-test config was not rendered"
+		echo "refused: config was not rendered"
 		return 1
 	fi
 	sum_before=$(sha256sum "$snapshot" | awk '{print $1}')
@@ -2510,39 +2401,17 @@ function config_publish {
 }
 
 function system_reboot {
-	if native_functional_token; then
-		echo "host-action-accepted system restart"
-		if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
-			return 0
-		fi
-		shutdown -r now
-		return $?
-	fi
-	if functional_test_on; then
-		echo "refused: host reboot stays blocked in functional-test"
-		return 1
-	fi
-	if bench_refuses "system restart"; then
-		return 1
+	echo "host-action-accepted system restart"
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+		return 0
 	fi
 	shutdown -r now
 }
 
 function system_shutdown {
-	if native_functional_token; then
-		echo "host-action-accepted system stop"
-		if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
-			return 0
-		fi
-		shutdown -h now
-		return $?
-	fi
-	if functional_test_on; then
-		echo "refused: host shutdown stays blocked in functional-test"
-		return 1
-	fi
-	if bench_refuses "system stop"; then
-		return 1
+	echo "host-action-accepted system stop"
+	if [ "${ORP_BENCH_TEST_HARNESS:-}" = 1 ]; then
+		return 0
 	fi
 	shutdown -h now
 }
@@ -2572,13 +2441,6 @@ function audio_version {
 
 ### AUDIO FUNCTIONS ###
 function set_mixer {
-	if native_functional_token || functional_test_on; then
-		echo "refused: mixer control is not supported"
-		return 1
-	fi
-	if bench_refuses "set_mixer"; then
-		return 1
-	fi
 	if [ -n "$3" ]; then
 		amixer -c$3 set "$1" $2
 	else
@@ -2590,13 +2452,6 @@ function alsamixer_backup {
 	local tmp
 	# Untrusted functional-test stays refused. The trusted token keeps the
 	# backup, and root never opens the www-data path.
-	if functional_test_on && ! native_functional_token; then
-		echo "refused: alsa backup stays blocked without a trusted functional-test token"
-		return 1
-	fi
-	if bench_refuses "alsa backup"; then
-		return 1
-	fi
 	if ! alsa_state_allowed "$1"; then
 		return 1
 	fi
@@ -2620,13 +2475,6 @@ function alsamixer_backup {
 
 function alsamixer_restore {
 	local tmp
-	if functional_test_on && ! native_functional_token; then
-		echo "refused: alsa restore stays blocked without a trusted functional-test token"
-		return 1
-	fi
-	if bench_refuses "alsa restore"; then
-		return 1
-	fi
 	if ! alsa_state_allowed "$1"; then
 		return 1
 	fi

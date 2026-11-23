@@ -56,7 +56,7 @@ function partial_copy_fixture($layout) {
 	putenv('ORP_SOUNDS_PATH=' . $layout . '/sounds');
 	putenv('ORP_BACKUP_PATH=' . $layout . '/backup');
 	putenv('ORP_MODULES_PATH=' . $layout . '/modules');
-	require_once $root . '/includes/classes/BenchGuard.php';
+	require_once $root . '/includes/classes/PathGuard.php';
 	require_once $root . '/includes/classes/Modules.php';
 	require_once $root . '/includes/classes/BackupRestore.php';
 	$restore = new BackupRestore();
@@ -81,7 +81,7 @@ function marker_race_loser($layout) {
 	putenv('ORP_BACKUP_PATH=' . $layout . '/backup');
 	putenv('ORP_MODULES_PATH=' . $layout . '/modules');
 	putenv('ORP_MARKER_PAUSE_FILE=' . $layout . '/pause');
-	require_once $root . '/includes/classes/BenchGuard.php';
+	require_once $root . '/includes/classes/PathGuard.php';
 	require_once $root . '/includes/classes/Modules.php';
 	require_once $root . '/includes/classes/BackupRestore.php';
 	$restore = new BackupRestore();
@@ -356,7 +356,7 @@ putenv('ORP_BENCH_HOSTNAME_FILE=' . $work . '/hostname');
 putenv('ORP_SOUNDS_PATH=' . $sounds);
 putenv('ORP_BACKUP_PATH=' . $backup);
 putenv('ORP_MODULES_PATH=' . $modules);
-require_once $root . '/includes/classes/BenchGuard.php';
+require_once $root . '/includes/classes/PathGuard.php';
 require_once $root . '/includes/classes/Modules.php';
 require_once $root . '/includes/classes/BackupRestore.php';
 $before = snap($copy);

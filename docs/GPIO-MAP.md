@@ -92,11 +92,5 @@ The database also contains sample module option text. That text is not station c
 
 ## What the software does with this table
 
-With `/etc/openrepeater/bench-mode` present:
-
-- `SVXLink_GPIO` writes a preview with empty `GPIO_IN_*` and `GPIO_OUT_*` lists and no `GPIO_PATH=/sys/class/gpio`.
-- Preview `svxlink.conf` comments `PTT_*`, `GPIO_SQL_PIN`, and `SQL_DET=GPIO` / `GPIOD`.
-- Those files go to `/var/lib/openrepeater/bench-preview`, not `/etc/svxlink`, `/etc/openrepeater/svxlink`, `/usr/share/svxlink`, or `/usr/local/share/svxlink`.
+- A rebuild writes `svxlink.conf` and `gpio.conf` under `/etc/svxlink`. The GPIO lists and the PTT pin are the stored wiring.
 - The GPIO Map page is read-only. POST is refused. The only external command it may run is `gpioinfo` with no arguments.
-
-Without the marker, the old sysfs `gpio.conf` text is unchanged so this branch does not alter an unmarked host's writer. The installer creates the marker only after the bench checks pass.

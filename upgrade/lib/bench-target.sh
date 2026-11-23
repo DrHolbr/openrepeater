@@ -592,7 +592,6 @@ bench_publish_tree_modes() {
 		upgrade/install-orp-ui.sh \
 		upgrade/install-svxlink-sounds.sh \
 		upgrade/install_heather_sounds.py \
-		upgrade/set-operating-mode.sh \
 		upgrade/lib/bench-target.sh <<'PY'
 import os
 import stat

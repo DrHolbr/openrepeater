@@ -3,7 +3,7 @@
 // Session, origin, and CSRF are checked before the file is opened.
 
 require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
-require_once(__DIR__ . '/../includes/classes/BenchGuard.php');
+require_once(__DIR__ . '/../includes/classes/PathGuard.php');
 RequestGuard::requireRead();
 
 function log_stream_fail($code, $message) {
@@ -17,7 +17,7 @@ function log_stream_fail($code, $message) {
 
 function log_stream_path() {
 	$fixed = '/var/log/svxlink';
-	if (!BenchGuard::testHarnessActive()) {
+	if (!PathGuard::testFixture()) {
 		return $fixed;
 	}
 	$override = getenv('ORP_SVXLINK_LOG');

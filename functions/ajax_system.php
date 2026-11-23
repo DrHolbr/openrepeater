@@ -1,6 +1,6 @@
 <?php
 // Privileged helper dispatcher. Session, verb, origin, and CSRF are checked
-// before BenchGuard or orp_helper. A GET cannot carry post_service.
+// before orp_helper. A GET cannot carry post_service.
 
 require_once(__DIR__ . '/../includes/classes/RequestGuard.php');
 
@@ -15,13 +15,6 @@ if ($method === 'POST') {
 	$option = isset($_POST['post_option']) ? $_POST['post_option'] : '';
 	if (!RequestGuard::helperActionAllowed($service, $option)) {
 		RequestGuard::deny(403);
-	}
-	require_once(__DIR__ . '/../includes/classes/BenchGuard.php');
-	if (!BenchGuard::detect()->commandAllowed($service, $option)) {
-		http_response_code(403);
-		header('Content-Type: text/plain; charset=UTF-8');
-		echo 'refused: bench mode blocks ' . $service . ' ' . $option;
-		exit;
 	}
 	echo exec_orp_helper($service, $option);
 	exit;
@@ -67,7 +60,8 @@ if ($method === 'GET' && isset($_GET['update'])) {
 RequestGuard::deny(405);
 
 function exec_orp_helper($opt1, $opt2) {
-	if (getenv('ORP_HELPER_STUB') === '1' && BenchGuard::testHarnessActive()) {
+	require_once(__DIR__ . '/../includes/classes/PathGuard.php');
+	if (getenv('ORP_HELPER_STUB') === '1' && PathGuard::testFixture()) {
 		$log = getenv('ORP_HELPER_LOG');
 		if (is_string($log) && $log !== '') {
 			file_put_contents($log, $opt1 . ' ' . $opt2 . "\n", FILE_APPEND);

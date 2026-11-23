@@ -24,7 +24,7 @@ if (isset($_POST['action'])){
 	if ($_POST['action'] == "changMode") {
 		if ($_POST['orp_Mode'] == "advanced") {
 			if ($Database->ensure_advanced_table() === true && $Database->update_existing_setting('orp_Mode', 'advanced') === true) {
-				$msgText = "Advanced mode is stored and is not applied. The root publisher does not replace the runtime file while orp_Mode is advanced.";
+				$msgText = "Advanced mode is stored. A rebuild writes this text to the repeater configuration.";
 				$alert = '<div class="alert alert-success"><button type="button" class="close" data-dismiss="alert">×</button>'.$msgText.'</div>';
 			} else {
 				$msgText = "Advanced mode was not written. The previous rows were left unchanged.";

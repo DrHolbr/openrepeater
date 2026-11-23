@@ -6,7 +6,6 @@ require_once(rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/autoloadClasses.
 
 $Database = new Database();
 $settings = $Database->get_settings();
-$benchGuard = BenchGuard::detect();
 ?>
 
 
@@ -101,37 +100,16 @@ $benchGuard = BenchGuard::detect();
 	$updateFlage = $Database->get_update_flag();
 ?>
 
-<?php if (isset($_GET['preview_failed'])) { ?>
-	<div class="alert alert-error">Configuration preview was not written. The radio was not restarted.</div>
-<?php } elseif (isset($_GET['bench_preview_ok'])) { ?>
-	<div class="alert alert-info">Configuration preview was written. The radio was not restarted.</div>
-<?php } elseif (isset($_GET['bench_blocked'])) { ?>
-	<div class="alert alert-error">Bench mode did not rebuild or restart the repeater.</div>
-<?php } elseif (isset($_GET['functional_published']) && isset($_GET['service_masked'])) { ?>
-	<div class="alert alert-info">Disconnected test config was published. svxlink.service is masked, so it was not started. Unmask was not performed. Stored wiring was not changed.</div>
-<?php } elseif (isset($_GET['functional_published'])) { ?>
-	<div class="alert alert-info">Disconnected test config was published and svxlink was restarted. PTT_TYPE=NONE does not key a radio. Stored wiring was not changed.</div>
-<?php } elseif (isset($_GET['functional_publish_failed'])) { ?>
-	<div class="alert alert-error">Functional-test publish was refused. Stored account, settings, and port wiring were not changed.</div>
+<?php if (isset($_GET['publish_failed'])) { ?>
+	<div class="alert alert-error">The repeater configuration was not written. svxlink was not restarted.</div>
 <?php } elseif (isset($_GET['gpio_setup_failed'])) { ?>
 	<div class="alert alert-error">GPIO setup was refused. svxlink was not restarted.</div>
 <?php } ?>
 
 	<div class="server_bar_wrap"<?php if ($updateFlage == false) { echo ' style="display: none;"'; } ?>>
 	<div class="server_bar">
-		<?php if ($benchGuard->uiBlocksLifted()) { ?>
-		<span>Functional test: this mode assumes no radio is attached. Start, stop, and restart are available. Enable stays blocked. Stored PTT and GPIO run only after root creates /etc/openrepeater/tx-armed.</span>
-		<button class="rebuild_button" data-toggle="modal" data-target="#restartServer"><i class="icon-refresh icon-white"></i> Rebuild & Restart Repeater</button>
-		<?php } elseif ($benchGuard->operatingMode() === 'functional-test') { ?>
-		<span>Functional test publishes /etc/svxlink/svxlink.conf with UDP audio and PTT_TYPE=NONE. Stored GPIO numbers are not applied. Start and stop control svxlink only and do not unmask a unit. A masked unit is service-disabled. That is separate from an unresolved GPIO number, and neither means a transmitter has unkeyed.</span>
-		<?php } elseif ($benchGuard->isBench()) { ?>
-		<span>Bench mode: configuration rebuild will not publish files or restart the radio. A refused shutdown command is not evidence the transmitter is unkeyed.</span>
-		<?php } else { ?>
 		<span>Repeater Configuration Files Rebuild & Restart Required: </span>
-
-		<!-- Button triggered modal -->
 		<button class="rebuild_button" data-toggle="modal" data-target="#restartServer"><i class="icon-refresh icon-white"></i> Rebuild & Restart Repeater</button>
-		<?php } ?>
 	</div>
 	<div class="server_bar_spacer"></div>
 	</div>
@@ -152,11 +130,7 @@ $benchGuard = BenchGuard::detect();
 			<form action="functions/svxlink_update.php" method="post" style="margin:0;">
 				<input type="hidden" name="return_url" value="<?php echo $current_page_url; ?>">
 				<button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
-				<?php if ($benchGuard->isBench()) { ?>
-				<button type="button" class="btn btn-success" disabled="disabled">Restart blocked on bench</button>
-				<?php } else { ?>
 				<button type="submit" class="btn btn-success"><i class="icon-refresh icon-white"></i> Restart</button>
-				<?php } ?>
 			</form>
 	      </div>
 	    </div><!-- /.modal-content -->

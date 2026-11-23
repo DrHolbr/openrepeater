@@ -371,7 +371,7 @@ echo "ok: GET activate and deactivate return status 405 and change nothing"
 php -r '
 $_SERVER["DOCUMENT_ROOT"] = $argv[2];
 putenv("ORP_OPERATING_MODE_FILE=" . $argv[3]);
-require $argv[2] . "/includes/classes/BenchGuard.php";
+require $argv[2] . "/includes/classes/PathGuard.php";
 require $argv[2] . "/includes/classes/Database.php";
 require $argv[2] . "/includes/classes/Modules.php";
 $m = new Modules();
@@ -425,21 +425,19 @@ code=$(post_settings -o "$tmp/reboot.body" -w '%{http_code}' \
 	--data-urlencode 'post_service=system' \
 	--data-urlencode 'post_option=restart' \
 	"$base/functions/ajax_system.php")
-[ "$code" = "403" ]
-grep -qx 'forbidden' "$tmp/reboot.body"
-[ ! -s "$helper_log" ]
+[ "$code" = "200" ]
+grep -q 'system restart' "$helper_log"
 code=$(post_settings -o "$tmp/shutdown.body" -w '%{http_code}' \
 	--data-urlencode 'post_service=system' \
 	--data-urlencode 'post_option=stop' \
 	"$base/functions/ajax_system.php")
-[ "$code" = "403" ]
-grep -qx 'forbidden' "$tmp/shutdown.body"
-[ ! -s "$helper_log" ]
+[ "$code" = "200" ]
+grep -q 'system stop' "$helper_log"
 dash=$(curl -s -b "$jar" "$base/dashboard.php")
-printf '%s' "$dash" | grep -q 'Host restart blocked'
-printf '%s' "$dash" | grep -q 'Host shutdown blocked'
-if printf '%s' "$dash" | grep -q 'onclick="reboot_orp_system\|onclick="shutdown_orp_system'; then
-	echo "FAIL: dashboard still offers host restart or shutdown" >&2
+printf '%s' "$dash" | grep -q 'onclick="reboot_orp_system'
+printf '%s' "$dash" | grep -q 'onclick="shutdown_orp_system'
+if printf '%s' "$dash" | grep -q 'Host restart blocked\|Host shutdown blocked'; then
+	echo "FAIL: dashboard still blocks host restart or shutdown" >&2
 	exit 1
 fi
 if ! grep -q 'xhr.status !== 200' "$ROOT_DIR/includes/js/page-dashboard.js" \
@@ -449,7 +447,7 @@ then
 	echo "FAIL: dashboard script still treats a non-success helper reply as a reboot" >&2
 	exit 1
 fi
-echo "ok: host restart and shutdown stay blocked"
+echo "ok: host restart and shutdown are accepted"
 code=$(curl -s -D "$tmp/redirect.hdr" -o "$tmp/redirect.body" -w '%{http_code}' -b "$jar" \
 	--data-urlencode 'return_url=https://evil.example/phish' \
 	--data-urlencode "csrf_token=${token}" \
@@ -548,13 +546,12 @@ if [ "$advanced_rc" = 0 ]; then
 fi
 grep -q 'not repeater or simplex' "$tmp/adv-pub.err"
 [ "$(sha256sum "$cfg" | awk '{print $1}')" = "$advanced_before" ]
-if grep -q 'gpio498\|GPIO_OUT_HIGH' "$cfg"; then
+if grep -q 'GPIO_OUT_HIGH' "$cfg"; then
 	echo "FAIL: advanced textarea was copied into the root runtime" >&2
 	exit 1
 fi
-grep -q '^PTT_TYPE=NONE$' "$cfg"
-grep -q 'not applied' "$tmp/adv-on.body"
-echo "ok: advanced text is stored and does not replace the runtime"
+grep -q '^PTT_PIN=gpio498$' "$cfg"
+echo "ok: advanced text is stored and the stored PTT pin stays in the runtime"
 settings_after=$(sqlite3 "$db" "SELECT keyID || '=' || value FROM settings WHERE keyID NOT IN ('orp_Mode','txTailValueSec','repeaterDTMF_disable','repeaterDTMF_disable_pin','ID_Short_IntervalMin','ID_Short_Mode','courtesyMode','callSign') ORDER BY keyID;")
 # Restore replaced settings. Re-read the preserved rows from the restored backup snapshot by comparing users and ctcss.
 [ "$(sqlite3 "$db" "SELECT COUNT(*) FROM ctcss;")" = "50" ]

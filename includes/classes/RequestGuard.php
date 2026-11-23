@@ -139,38 +139,17 @@ class RequestGuard {
 
 	public static function helperActionAllowed($service, $option) {
 		$allowed = array(
-			'svxlink' => array('start', 'stop', 'status', 'restart'),
-			'system' => array('uptime', 'user'),
+			'svxlink' => array('start', 'stop', 'status', 'restart', 'enable', 'disable', 'gpio_up', 'gpio_down'),
+			'system' => array('uptime', 'user', 'restart', 'stop'),
 			'info' => array('timezone', 'cpu_type', 'cpu_speed', 'cpu_load', 'cpu_temp', 'uptime', 'memory_usage', 'disk_usage', 'os'),
 			'audio' => array('inputs', 'outputs', 'version'),
-		);
-		if (isset($allowed[$service]) && in_array($option, $allowed[$service], true)) {
-			return true;
-		}
-		if (!class_exists('BenchGuard', false)) {
-			require_once(__DIR__ . '/BenchGuard.php');
-		}
-		if (!BenchGuard::detect()->uiBlocksLifted()) {
-			return false;
-		}
-		$lifted = array(
-			'svxlink' => array('disable', 'gpio_up', 'gpio_down', 'unmask'),
-			'system' => array('restart', 'stop'),
-			'remotetrx' => array('start', 'stop', 'restart', 'status', 'disable', 'unmask'),
-			'svxreflector' => array('start', 'stop', 'restart', 'status', 'disable', 'unmask'),
+			'remotetrx' => array('start', 'stop', 'restart', 'status', 'enable', 'disable'),
+			'svxreflector' => array('start', 'stop', 'restart', 'status', 'enable', 'disable'),
 			'alsa' => array('backup', 'restore'),
+			'set_mixer' => array('set_mixer'),
+			'module' => array('activate', 'deactivate'),
 		);
-		if (!isset($lifted[$service]) || !in_array($option, $lifted[$service], true)) {
-			return false;
-		}
-		if (($option === 'gpio_up' || $option === 'gpio_down') && !BenchGuard::detect()->txArmed()) {
-			return false;
-		}
-		$guard = BenchGuard::detect();
-		if ($service === 'remotetrx' && ($option === 'start' || $option === 'restart') && !$guard->txArmed() && !$guard->remotetrxPttDisconnected()) {
-			return false;
-		}
-		return true;
+		return isset($allowed[$service]) && in_array($option, $allowed[$service], true);
 	}
 
 	// A rebuild form may name the page to reopen. The result is always

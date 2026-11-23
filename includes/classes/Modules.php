@@ -30,19 +30,6 @@ class Modules {
 		}
 		$this->includes_path = rtrim($_SERVER['DOCUMENT_ROOT'], '/') . '/includes/';
 		$this->modulesUploadTempDir = $this->modules_path . 'tempModuleDir/';
-		$guard = BenchGuard::detect();
-		if ($guard->isBench()) {
-			$preview = $guard->previewDir();
-			if (is_string($preview) && BenchGuard::previewAllowed($preview) && !is_link($preview)) {
-				$preview = rtrim($preview, '/');
-				$this->svxlink_events_d_path = $preview . '/events.d/';
-				$this->svxlink_modules_d_path = $preview . '/modules.d/';
-				$this->svxlink_sounds = $preview . '/sounds/en_US/';
-				foreach (array($this->svxlink_events_d_path, $this->svxlink_modules_d_path, $this->svxlink_sounds) as $dir) {
-					$this->mkdirReal($dir);
-				}
-			}
-		}
 	}
 
 	public function svxlinkEventsPath() {
@@ -57,7 +44,7 @@ class Modules {
 		if ($parent !== $dir && !is_dir($parent)) {
 			$this->mkdirReal($parent);
 		}
-		if (!is_dir($parent) || is_link($parent) || is_link($dir) || !BenchGuard::componentsAreReal($parent)) {
+		if (!is_dir($parent) || is_link($parent) || is_link($dir) || !PathGuard::componentsAreReal($parent)) {
 			return;
 		}
 		mkdir($dir, 0750);
@@ -524,7 +511,7 @@ class Modules {
 		}
 		$helper = '/usr/sbin/orp_helper';
 		$command = 'sudo -n ';
-		if (BenchGuard::testHarnessActive()) {
+		if (PathGuard::testFixture()) {
 			$bin = getenv('ORP_HELPER_BIN');
 			if (is_string($bin) && $bin !== '' && $bin[0] === '/' && strpos($bin, '..') === false
 				&& is_file($bin) && !is_link($bin)) {
@@ -551,7 +538,7 @@ class Modules {
 		if ($path === '' || $path === '.' || is_link(dirname($path))) {
 			return false;
 		}
-		return BenchGuard::removeTreeConfined($path, dirname($path));
+		return PathGuard::removeTreeConfined($path, dirname($path));
 	}
 
 	private function writeMemberCapped($zip, $index, $target, $root, $expected) {

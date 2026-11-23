@@ -7,7 +7,7 @@ if ($argc < 2) {
 }
 $mode = $argv[1];
 $root = dirname(__DIR__, 2);
-require $root . '/includes/classes/BenchGuard.php';
+require $root . '/includes/classes/PathGuard.php';
 require $root . '/includes/classes/Database.php';
 require $root . '/includes/classes/Modules.php';
 

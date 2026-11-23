@@ -56,21 +56,19 @@ if (isset($updates['orp_Mode'])) {
 	$type = $updates['orp_Mode'] === 'simplex' ? 'Simplex' : 'Repeater';
 	$ptt = 'NONE';
 	$detail = 'No GPIO line is configured.';
-	if (BenchGuard::detect()->uiBlocksLifted() && BenchGuard::detect()->txArmed()) {
-		$pin = '';
-		$ports = $Database->get_ports();
-		if (is_array($ports)) {
-			foreach ($ports as $port) {
-				if (is_array($port) && isset($port['txGPIO']) && preg_match('/^[0-9]{1,3}$/', (string) $port['txGPIO'])) {
-					$pin = (string) $port['txGPIO'];
-					break;
-				}
+	$pin = '';
+	$ports = $Database->get_ports();
+	if (is_array($ports)) {
+		foreach ($ports as $port) {
+			if (is_array($port) && isset($port['txGPIO']) && preg_match('/^[0-9]{1,3}$/', (string) $port['txGPIO'])) {
+				$pin = (string) $port['txGPIO'];
+				break;
 			}
 		}
-		if ($pin !== '') {
-			$ptt = 'GPIO';
-			$detail = 'PTT_PIN=gpio' . $pin . '.';
-		}
+	}
+	if ($pin !== '') {
+		$ptt = 'GPIO';
+		$detail = 'PTT_PIN=gpio' . $pin . '.';
 	}
 	echo "stored-for-publish: LOGICS=${logic} TYPE=${type} PTT_TYPE=${ptt}. ${detail}\n";
 }

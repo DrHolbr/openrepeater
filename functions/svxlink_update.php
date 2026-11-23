@@ -60,28 +60,6 @@ $classSVXLinkTCL = new SVXLink_TCL($settings);
 $classSVXLinkGPIO = new SVXLink_GPIO($gpio);
 
 /* ---------------------------------------------------------- */
-/* --- BENCH: do not publish configs or restart the radio --- */
-
-$benchGuard = BenchGuard::detect();
-
-if ($benchGuard->operatingMode() === 'functional-test' && !$benchGuard->uiBlocksLifted()) {
-	$runtime = $classSVXLink->disconnectedRuntimeConfig();
-	$wrote = $classSVXLink->write_config($runtime, 'svxlink.conf', 'ini');
-	$publish = shell_exec('sudo /usr/sbin/orp_helper config publish 2>&1');
-	$lifecycle = shell_exec('sudo /usr/sbin/orp_helper svxlink restart 2>&1');
-	$notice = 'functional_published=1';
-	if ($wrote !== true || (is_string($publish) && strpos($publish, 'refused:') !== false)) {
-		$notice = 'functional_publish_failed=1';
-	} elseif (is_string($lifecycle) && (strpos($lifecycle, 'masked') !== false || strpos($lifecycle, 'service-disabled') !== false)) {
-		$notice = 'functional_published=1&service_masked=1';
-	}
-	$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
-	$join = (strpos($url, '?') === false) ? '?' : '&';
-	header('Location: '.$url.$join.$notice);
-	exit;
-}
-
-/* ---------------------------------------------------------- */
 /* --- LOGIC SETTINGS --- */
 
 $classSVXLink->delete_custom_evnets(); // Purge Previous Custom Event Files
@@ -210,11 +188,9 @@ switch ($settings['orp_Mode']) {
 	
 		// WRITE CONFIGURATION & TCL FILES
 		$classSVXLink->write_config($advanced['svxlink_config'], 'svxlink.conf', 'text'); // Overridden svxlink.confg
-		if (!$benchGuard->isBench()) {
-			$customLogic = '/etc/openrepeater/svxlink/local-events.d/CustomLogic.tcl';
-			if (is_file($customLogic) && !is_link($customLogic)) {
-				unlink($customLogic);
-			}
+		$customLogic = '/etc/openrepeater/svxlink/local-events.d/CustomLogic.tcl';
+		if (is_file($customLogic) && !is_link($customLogic)) {
+			unlink($customLogic);
 		}
 		$classSVXLink->write_config($advanced['gpio_config'], 'gpio.conf', 'text'); // Overridden GPIO config
 		$classSVXLink->write_config($classSVXLinkTCL->logic_override(), 'Logic.tcl', 'text');
@@ -227,18 +203,13 @@ switch ($settings['orp_Mode']) {
 /* FINISH UP */
 
 $publishFailed = $classSVXLink->publishFailed();
-$onBench = $benchGuard->isBench();
 
 if (!$publishFailed) {
 	$classDB->set_update_flag(false);
 }
 
-if ($publishFailed || ($onBench && !$benchGuard->uiBlocksLifted()) || ($benchGuard->operatingMode() === 'functional-test' && !$benchGuard->uiBlocksLifted())) {
-	if ($publishFailed) {
-		$notice = 'preview_failed=1';
-	} else {
-		$notice = 'bench_preview_ok=1';
-	}
+if ($publishFailed) {
+	$notice = 'publish_failed=1';
 	if (isset($_SESSION["new_repeater_settings"])) {
 		session_destroy();
 		$url = '../login.php';
@@ -250,41 +221,22 @@ if ($publishFailed || ($onBench && !$benchGuard->uiBlocksLifted()) || ($benchGua
 	exit;
 }
 
-if ($benchGuard->uiBlocksLifted()) {
-	$publish = shell_exec('sudo /usr/sbin/orp_helper config publish 2>&1');
-	if (!is_string($publish) || strpos($publish, 'refused:') !== false) {
-		$notice = 'functional_publish_failed=1';
-		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
-		$join = (strpos($url, '?') === false) ? '?' : '&';
-		header('Location: '.$url.$join.$notice);
-		exit;
-	}
+$gpioDown = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_down 2>&1');
+if (!orp_gpio_output_ok($gpioDown)) {
+	$notice = 'gpio_setup_failed=1';
+	$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
+	$join = (strpos($url, '?') === false) ? '?' : '&';
+	header('Location: '.$url.$join.$notice);
+	exit;
 }
-
-########
-# GPIO setup runs only when root has created the tx-armed flag. Without
-# that flag the published runtime stays disconnected. An armed start skips
-# the snapshot and native-start checks. An unarmed start still refuses a
-# PTT_TYPE other than NONE and a config that does not match the snapshot.
-if ($benchGuard->txArmed()) {
-	$gpioDown = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_down 2>&1');
-	if (!orp_gpio_output_ok($gpioDown)) {
-		$notice = 'gpio_setup_failed=1';
-		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
-		$join = (strpos($url, '?') === false) ? '?' : '&';
-		header('Location: '.$url.$join.$notice);
-		exit;
-	}
-	$gpioUp = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up 2>&1');
-	if (!orp_gpio_output_ok($gpioUp)) {
-		$notice = 'gpio_setup_failed=1';
-		$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
-		$join = (strpos($url, '?') === false) ? '?' : '&';
-		header('Location: '.$url.$join.$notice);
-		exit;
-	}
+$gpioUp = shell_exec('sudo /usr/sbin/orp_helper svxlink gpio_up 2>&1');
+if (!orp_gpio_output_ok($gpioUp)) {
+	$notice = 'gpio_setup_failed=1';
+	$url = RequestGuard::safeReturnUrl(isset($_POST['return_url']) ? $_POST['return_url'] : '');
+	$join = (strpos($url, '?') === false) ? '?' : '&';
+	header('Location: '.$url.$join.$notice);
+	exit;
 }
-########
 
 $shellout = shell_exec('sudo /usr/sbin/orp_helper svxlink restart');
 

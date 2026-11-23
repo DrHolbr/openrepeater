@@ -92,11 +92,7 @@ class SVXLink {
 
 	public function build_global() {
 		$logicsList = implode(",", $this->logics); // Convert array to CSV.
-		if (BenchGuard::detect()->operatingMode() === 'functional-test') {
-			$global_array['MODULE_PATH'] = self::modulePath(self::svxlinkPrefix());
-		} else {
-			$global_array['MODULE_PATH'] = '/usr/lib/arm-linux-gnueabihf/svxlink';
-		}
+		$global_array['MODULE_PATH'] = self::modulePath(self::svxlinkPrefix());
 		$global_array['LOGICS'] = $logicsList;
 		$global_array['CFG_DIR'] = 'svxlink.d';
 		$global_array['TIMESTAMP_FORMAT'] = '"%c"';
@@ -126,7 +122,7 @@ class SVXLink {
 
 	public static function svxlinkPrefix() {
 		$override = getenv('ORP_SVXLINK_PREFIX');
-		if (BenchGuard::testHarnessActive() && is_string($override) && $override !== '') {
+		if (PathGuard::testFixture() && is_string($override) && $override !== '') {
 			if ($override[0] === '/' && strpos($override, "\0") === false && strpos($override, '..') === false) {
 				return rtrim($override, '/');
 			}
@@ -157,82 +153,7 @@ class SVXLink {
 		return $prefix . '/lib/aarch64-linux-gnu/svxlink';
 	}
 
-	private function firstPort() {
-		if (!is_array($this->portsArray) || count($this->portsArray) === 0) {
-			return null;
-		}
-		foreach ($this->portsArray as $port) {
-			if (is_array($port)) {
-				return $port;
-			}
-		}
-		return null;
-	}
-
-	// Disconnected test runtime. Stored ports stay in the database. The
-	// generated file uses SvxLink's UDP audio device and PTT_TYPE=NONE, which
-	// the 26.05 manual defines as no PTT hardware. SIGLEV squelch has no
-	// GPIO pin. This is a simulation path, not radio wiring, and it is not
-	// a libgpiod mapping. The installed binary was built with GPIOD disabled.
-	public function disconnectedRuntimeConfig() {
-		$prefix = self::svxlinkPrefix();
-		$port = $this->firstPort();
-		$storedRx = is_array($port) && isset($port['rxGPIO']) ? (string)$port['rxGPIO'] : '';
-		$storedTx = is_array($port) && isset($port['txGPIO']) ? (string)$port['txGPIO'] : '';
-		$call = trim((string)(isset($this->settingsArray['callSign']) ? $this->settingsArray['callSign'] : ''));
-		$cw = $this->morseSpeedAllowed() ? '1' : '0';
-		$logic = array(
-			'TYPE' => 'Repeater',
-			'RX' => 'Rx1',
-			'TX' => 'Tx1',
-			'CALLSIGN' => $call,
-			'EVENT_HANDLER' => $prefix . '/share/svxlink/events.tcl',
-			'SHORT_VOICE_ID_ENABLE' => '1',
-			'SHORT_CW_ID_ENABLE' => $cw,
-			'LONG_VOICE_ID_ENABLE' => '1',
-			'LONG_CW_ID_ENABLE' => $cw,
-		);
-		$logic += $this->identificationIntervalKeys();
-		if ($cw === '1') {
-			$logic['CW_WPM'] = (string)(int)$this->settingsArray['ID_Morse_WPM'];
-		}
-		return array(
-			'GLOBAL' => array(
-				'MODULE_PATH' => self::modulePath($prefix),
-				'LOGICS' => 'RepeaterLogic',
-				'CFG_DIR' => '/etc/svxlink/svxlink.d',
-				'TIMESTAMP_FORMAT' => '"%c"',
-				'CARD_SAMPLE_RATE' => '16000',
-			),
-			'RepeaterLogic' => $logic,
-			'Rx1' => array(
-				'TYPE' => 'Local',
-				'AUDIO_DEV' => 'udp:127.0.0.1:17001',
-				'AUDIO_CHANNEL' => '0',
-				'SQL_DET' => 'SIGLEV',
-				'SQL_START_DELAY' => '1',
-				'SQL_DELAY' => '40',
-				'SIGLEV_SLOPE' => '1',
-				'SIGLEV_OFFSET' => '0',
-				'SIGLEV_OPEN_THRESH' => '30',
-				'SIGLEV_CLOSE_THRESH' => '10',
-				'#STORED_RX_GPIO' => ($storedRx === '' ? 'none' : $storedRx) . ' not applied',
-			),
-			'Tx1' => array(
-				'TYPE' => 'Local',
-				'AUDIO_DEV' => 'udp:127.0.0.1:17002',
-				'AUDIO_CHANNEL' => '0',
-				'PTT_TYPE' => 'NONE',
-				'#STORED_TX_GPIO' => ($storedTx === '' ? 'none' : $storedTx) . ' not applied; simulation/dummy path',
-			),
-		);
-	}
-
 	public function build_rx($curPort) {
-		if (BenchGuard::detect()->operatingMode() === 'functional-test' && !BenchGuard::detect()->txArmed()) {
-			$cfg = $this->disconnectedRuntimeConfig();
-			return array('Rx1' => $cfg['Rx1']);
-		}
 		list($audioDevice, $audioChannel) = $this->audioDeviceParts($this->portsArray[$curPort]['rxAudioDev']);
 		
 		$rx_array['RX_Port'.$curPort] = [
@@ -292,10 +213,6 @@ class SVXLink {
 	###############################################
 
 	public function build_tx($curPort) {
-		if (BenchGuard::detect()->operatingMode() === 'functional-test' && !BenchGuard::detect()->txArmed()) {
-			$cfg = $this->disconnectedRuntimeConfig();
-			return array('Tx1' => $cfg['Tx1']);
-		}
 		list($audioDevice, $audioChannel) = $this->audioDeviceParts($this->portsArray[$curPort]['txAudioDev']);
 	
 		$tx_array['TX_Port'.$curPort] = [
@@ -493,77 +410,41 @@ class SVXLink {
 	# Write Config File
 	###############################################
 
-	public function configDestination($filename) {
-		$guard = BenchGuard::detect();
-		if ($guard->operatingMode() === 'functional-test') {
-			$stage = ($filename === 'svxlink.conf');
-			if ($guard->uiBlocksLifted()) {
-				if ($filename === 'gpio.conf' || $filename === 'Logic.tcl') {
-					$stage = true;
-				}
-				if (preg_match('/^ORP_(Repeater|Simplex)Logic_Port[0-9]+\.tcl$/', $filename) === 1) {
-					$stage = true;
-				}
-			}
-			if (!$stage) {
-				return null;
-			}
-			$dir = $guard->previewDir();
-			if (!is_string($dir) || !BenchGuard::previewAllowed($dir) || is_link($dir)) {
-				return null;
-			}
-			return rtrim($dir, '/') . '/' . $filename;
+	private function fixturePath($path) {
+		if (!PathGuard::testFixture()) {
+			return $path;
 		}
-		if ($guard->isBench()) {
-			if (basename($filename) !== $filename) {
-				return null;
-			}
-			$dir = $guard->previewDir();
-			if (!is_string($dir) || !BenchGuard::previewAllowed($dir) || is_link($dir)) {
-				return null;
-			}
-			return rtrim($dir, '/') . '/' . $filename;
+		$root = getenv('ORP_ROOT');
+		if (!is_string($root) || $root === '' || $root === '/' || $root[0] !== '/') {
+			return $path;
 		}
-		if ($filename === 'svxlink.conf' || $filename === 'gpio.conf') {
-			return '/etc/svxlink/' . $filename;
+		if (strpos($root, "\0") !== false || strpos($root, '..') !== false) {
+			return $path;
 		}
-		if ($filename === 'Logic.tcl') {
-			return '/usr/share/svxlink/events.d/local/' . $filename;
-		}
-		if (strpos($filename, 'Module') === 0) {
-			return '/etc/svxlink/svxlink.d/' . $filename;
-		}
-		if (strpos($filename, 'ORP_') === 0) {
-			return '/usr/share/svxlink/events.d/' . $filename;
-		}
-		return null;
+		return rtrim($root, '/') . $path;
 	}
 
-	public function disarmBenchPreview($filename, $data) {
-		$note = "# BENCH PREVIEW: not installed. Transmitter lines and sysfs GPIO are commented.\n"
-			. "# Do not copy this file to /etc/svxlink, /etc/openrepeater/svxlink, or /usr/local/share/svxlink.\n";
-		if ($filename !== 'svxlink.conf' && $filename !== 'gpio.conf') {
-			return "# BENCH PREVIEW: not published into the SvxLink tree.\n" . $data;
+	public function configDestination($filename) {
+		if (!is_string($filename) || $filename === '' || basename($filename) !== $filename) {
+			return null;
 		}
-		$lines = preg_split("/\r\n|\n|\r/", $data);
-		$out = array();
-		foreach ($lines as $line) {
-			if (preg_match('/^\s*(PTT_|GPIO_SQL_PIN|GPIO_PATH|SQL_GPIOD_|PTT_GPIOD_)/', $line)) {
-				$out[] = '# BENCH DISARMED: ' . $line;
-				continue;
-			}
-			if (preg_match('/^\s*SQL_DET\s*=\s*GPIOD?\b/', $line)) {
-				$out[] = '# BENCH DISARMED: ' . $line;
-				continue;
-			}
-			if (preg_match('/^\s*(GPIO_(?:IN|OUT)_(?:HIGH|LOW))\s*=.*[0-9]/', $line, $match)) {
-				$out[] = '# BENCH DISARMED: ' . $line;
-				$out[] = $match[1] . '=""';
-				continue;
-			}
-			$out[] = $line;
+		$prefix = self::svxlinkPrefix();
+		if ($filename === 'svxlink.conf' || $filename === 'gpio.conf') {
+			return $this->fixturePath('/etc/svxlink/' . $filename);
 		}
-		return $note . implode("\n", $out) . "\n";
+		if ($filename === 'Logic.tcl') {
+			return $this->fixturePath($prefix . '/share/svxlink/events.d/local/' . $filename);
+		}
+		if (strpos($filename, 'Module') === 0 && preg_match('/^Module[A-Za-z0-9_]+\.conf$/', $filename) === 1) {
+			return $this->fixturePath('/etc/svxlink/svxlink.d/' . $filename);
+		}
+		if (preg_match('/^ORP_(Repeater|Simplex)Logic_Port[0-9]+\.tcl$/', $filename) === 1) {
+			return $this->fixturePath($prefix . '/share/svxlink/events.d/' . $filename);
+		}
+		if (PathGuard::testFixture() && preg_match('/^[A-Za-z0-9_.-]+\.(conf|tcl)$/', $filename) === 1) {
+			return $this->fixturePath('/etc/svxlink/' . $filename);
+		}
+		return null;
 	}
 
 	public function publishFailed() {
@@ -731,61 +612,42 @@ class SVXLink {
 		if ($format == 'ini') {
 			$data = $this->build_ini($data); // Convert Array to INI format
 		}
-		$guard = BenchGuard::detect();
-		if ($guard->isBench()) {
-			$data = $this->disarmBenchPreview($filename, $data);
-		}
 		$file_output = $this->orpFileHeader . $data;
 		$full_file_path = $this->configDestination($filename);
-		if ($full_file_path === null) {
+		if ($full_file_path === null || strpos($full_file_path, '..') !== false) {
 			return $this->publishFailure();
 		}
 		$filepath = dirname($full_file_path);
-		if ($guard->isBench()) {
-			if (!BenchGuard::previewAllowed($filepath) || is_link($filepath) || is_link($full_file_path)) {
-				return $this->publishFailure();
-			}
-			if (!is_dir($filepath)) {
-				$parent = dirname($filepath);
-				if (!is_dir($parent) || is_link($parent) || !BenchGuard::componentsAreReal($parent)) {
-					return $this->publishFailure();
-				}
-				if (!mkdir($filepath, 0770) && !is_dir($filepath)) {
-					return $this->publishFailure();
-				}
-			}
-			if (BenchGuard::writeContained($full_file_path, $file_output) !== true) {
-				return $this->publishFailure();
-			}
-			return true;
+		if (!$this->ensureRealDir($filepath) || is_link($full_file_path)) {
+			return $this->publishFailure();
 		}
-		if ($guard->operatingMode() === 'functional-test') {
-			$stageDir = $guard->previewDir();
-			if (!is_string($stageDir) || !BenchGuard::previewAllowed($stageDir) || is_link($stageDir)) {
-				return $this->publishFailure();
-			}
-			if (!is_dir($stageDir) && !mkdir($stageDir, 0770, true) && !is_dir($stageDir)) {
-				return $this->publishFailure();
-			}
-			// Each name keeps its own file. gpio.conf must not replace svxlink.conf.
-			if (BenchGuard::writeContained($full_file_path, $file_output) !== true) {
-				return $this->publishFailure();
-			}
-			// The live file is installed only by `orp_helper config publish`.
-			// This process does not open that path.
-			return true;
-		}
-		if (is_link($filepath) || is_link($full_file_path)) {
-			return;
-		}
-		if (!is_dir($filepath)) { mkdir($filepath, 0750, true); }
-		if (is_link($filepath) || is_link($full_file_path)) {
-			return;
-		}
-		if (file_put_contents( $full_file_path, $file_output ) === false) {
+		if (PathGuard::writeContained($full_file_path, $file_output) !== true) {
 			return $this->publishFailure();
 		}
 		return true;
+	}
+
+	private function ensureRealDir($dir) {
+		if (!is_string($dir) || $dir === '' || $dir[0] !== '/' || strpos($dir, '..') !== false) {
+			return false;
+		}
+		if (is_link($dir)) {
+			return false;
+		}
+		if (is_dir($dir)) {
+			return PathGuard::componentsAreReal($dir);
+		}
+		$parent = dirname($dir);
+		if ($parent === $dir || !$this->ensureRealDir($parent)) {
+			return false;
+		}
+		if (is_link($dir)) {
+			return false;
+		}
+		if (!is_dir($dir) && !mkdir($dir, 0750) && !is_dir($dir)) {
+			return false;
+		}
+		return is_dir($dir) && !is_link($dir);
 	}
 
 
@@ -800,7 +662,7 @@ class SVXLink {
 			return;
 		}
 		$dir = dirname($sample);
-		if (!is_dir($dir) || is_link($dir) || !BenchGuard::componentsAreReal($dir)) {
+		if (!is_dir($dir) || is_link($dir) || !PathGuard::componentsAreReal($dir)) {
 			return;
 		}
 		$files = glob($dir . '/ORP_*');

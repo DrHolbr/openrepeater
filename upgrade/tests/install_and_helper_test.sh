@@ -296,21 +296,21 @@ else
 	bad "nginx enabled sites"
 fi
 
-if grep -q 'radio=blocked' "$good/etc/openrepeater/bench-mode" && grep -q 'gpio=readonly' "$good/etc/openrepeater/bench-mode"; then
-	ok "bench-mode marker was written"
+if [ ! -e "$good/etc/openrepeater/bench-mode" ] \
+	&& [ ! -e "$good/etc/openrepeater/operating-mode" ] \
+	&& [ ! -e "$good/etc/openrepeater/tx-armed" ] \
+	&& [ ! -e "$good/var/lib/openrepeater/bench-preview" ] \
+	&& [ ! -e "$good/etc/svxlink/functional-test.d" ] \
+	&& [ "$(stat -c %a "$good/etc/openrepeater")" = "755" ]
+then
+	ok "old bench files are absent and /etc/openrepeater is not group or world writable"
 else
-	bad "bench-mode marker"
+	bad "bench artifacts were left behind"
 fi
-if [ "$(stat -c %a "$good/etc/openrepeater/bench-mode")" = "644" ] && [ "$(stat -c %a "$good/etc/openrepeater")" = "755" ]; then
-	ok "bench marker and its directory are not group or world writable"
-else
-	bad "bench marker mode marker=$(stat -c %a "$good/etc/openrepeater/bench-mode") dir=$(stat -c %a "$good/etc/openrepeater")"
-fi
-if grep -E -q "root:root ${good}/etc/openrepeater/bench-mode$" "$tmp/chown.log" \
-	&& grep -E -q "root:root ${good}/etc/openrepeater$" "$tmp/chown.log" \
+if grep -E -q "root:root ${good}/etc/openrepeater$" "$tmp/chown.log" \
 	&& ! grep 'www-data' "$tmp/chown.log" | grep -F "$good/etc/openrepeater"
 then
-	ok "bench policy is recorded as root-owned, not www-data"
+	ok "/etc/openrepeater is recorded as root-owned, not www-data"
 else
 	bad "chown log"
 	cat "$tmp/chown.log" >&2 || true
@@ -329,14 +329,17 @@ else
 fi
 sudoers="$good/etc/sudoers.d/openrepeater"
 if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoers" \
-	&& ! grep -q 'orp_helper svxlink gpio_up' "$sudoers" \
 	&& ! grep -q 'orp_helper svxlink unmask' "$sudoers" \
-	&& ! grep -q 'orp_helper svxlink enable' "$sudoers" \
-	&& ! grep -q 'orp_helper system restart' "$sudoers" \
-	&& ! grep -q 'orp_helper alsa backup' "$sudoers" \
+	&& grep -q 'orp_helper svxlink gpio_up' "$sudoers" \
+	&& grep -q 'orp_helper svxlink gpio_down' "$sudoers" \
+	&& grep -q 'orp_helper svxlink enable' "$sudoers" \
+	&& grep -q 'orp_helper system restart' "$sudoers" \
+	&& grep -q 'orp_helper system stop' "$sudoers" \
+	&& grep -q 'orp_helper alsa backup' "$sudoers" \
 	&& grep -q 'orp_helper svxlink status' "$sudoers" \
 	&& grep -q 'orp_helper svxlink start' "$sudoers" \
 	&& grep -q 'orp_helper svxlink stop' "$sudoers" \
+	&& grep -q 'orp_helper svxlink restart' "$sudoers" \
 	&& grep -q 'orp_helper config publish' "$sudoers" \
 	&& grep -q 'orp_helper info os' "$sudoers" \
 	&& grep -F -q 'orp_helper module activate [A-Za-z]' "$sudoers" \
@@ -344,7 +347,7 @@ if ! grep -E -q '^www-data ALL=\(root\) NOPASSWD: /usr/sbin/orp_helper$' "$sudoe
 	&& ! grep -F -q 'orp_helper module activate *' "$sudoers" \
 	&& ! grep -F -q 'orp_helper module deactivate *' "$sudoers"
 then
-	ok "sudoers keeps the production command list and omits lifted functional-test lines"
+	ok "sudoers allowlist includes rebuild, gpio, enable, and host power commands and has no wildcard"
 else
 	bad "sudoers contract"
 	cat "$sudoers" >&2 || true
@@ -365,13 +368,16 @@ fi
 sqlite3 "$db" "UPDATE ports SET portLabel='USERPRESET' WHERE portNum=1;"
 printf 'preserve\n' >> "$db"
 mode="$good/etc/openrepeater/operating-mode"
-if [ "$(tr -d '[:space:]' < "$mode")" = "bench" ]; then
-	ok "first install writes bench operating mode"
+if [ ! -e "$mode" ]; then
+	ok "first install does not write an operating mode"
 else
-	bad "first install did not write bench operating mode"
+	bad "first install wrote an operating mode"
 fi
 printf 'functional-test\n' > "$mode"
 orp_private "$mode"
+printf 'old\n' > "$good/etc/openrepeater/bench-mode"
+mkdir -p "$good/var/lib/openrepeater/bench-preview" "$good/etc/svxlink/functional-test.d"
+printf 'armed\n' > "$good/etc/openrepeater/tx-armed"
 for dir in \
 	"$good/var/www/openrepeater/sounds" \
 	"$good/var/www/openrepeater/sounds/courtesy_tones" \
@@ -446,15 +452,15 @@ if [ "$(sqlite3 "$db" "SELECT portLabel FROM ports WHERE portNum=1;")" = "USERPR
 else
 	bad "second install replaced the stored port label"
 fi
-if [ "$(tr -d '[:space:]' < "$mode")" = "functional-test" ]; then
-	ok "second install does not replace functional-test mode"
+if [ ! -e "$mode" ] \
+	&& [ ! -e "$good/etc/openrepeater/bench-mode" ] \
+	&& [ ! -e "$good/etc/openrepeater/tx-armed" ] \
+	&& [ ! -e "$good/var/lib/openrepeater/bench-preview" ] \
+	&& [ ! -e "$good/etc/svxlink/functional-test.d" ]
+then
+	ok "second install removes old bench files"
 else
-	bad "second install replaced the operating mode"
-fi
-if [ -f "$good/etc/openrepeater/bench-mode" ] && [ "$(stat -c %a "$good/etc/openrepeater/bench-mode")" = "644" ]; then
-	ok "second install keeps the bench marker"
-else
-	bad "second install removed the bench marker"
+	bad "second install left a bench file"
 fi
 reseed_count=$(find -P "$good/var/www/openrepeater/sounds/courtesy_tones" -maxdepth 1 -type f -name '*.wav' | wc -l)
 if [ "$(cat "$good/var/www/openrepeater/sounds/courtesy_tones/keep.wav")" = "user-clip" ] \
@@ -560,13 +566,13 @@ ORP_INSTALL_OFFLINE=1 ORP_ROOT="$failroot" ORP_SYSTEMCTL="$bin/systemctl" \
 	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/nginx-fail.out" 2>"$tmp/nginx-fail.err"
 rc=$?
 set -e
-if [ "$rc" -eq 5 ] && [ -f "$failroot/etc/openrepeater/bench-mode" ] \
+if [ "$rc" -eq 5 ] \
 	&& [ ! -e "$failroot/etc/nginx/sites-enabled/openrepeater" ] \
 	&& grep -q '^marker$' "$tmp/nginx-fail.trace" \
 	&& ! grep -q '^nginx-enable$' "$tmp/nginx-fail.trace" \
 	&& ! grep -E -q 'enable --now nginx|unmask|svxlink start' "$tmp/nginx-fail.log"
 then
-	ok "nginx test failure leaves the marker, does not enable nginx, and does not unmask radio"
+	ok "nginx test failure does not enable nginx and does not unmask radio"
 else
 	bad "nginx failure path rc=$rc"
 	cat "$tmp/nginx-fail.err" >&2 || true
@@ -653,44 +659,44 @@ run_helper() {
 result=$(run_helper "$marker" svxlink start)
 rc=$(printf '%s\n' "$result" | head -n 1)
 out=$(printf '%s\n' "$result" | tail -n +2)
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && [ ! -s "$hlog" ]; then
-	ok "bench helper refuses svxlink start without calling systemctl"
+if [ "$rc" -eq 0 ] && grep -q 'service svxlink start' "$hlog"; then
+	ok "svxlink start calls service"
 else
-	bad "bench svxlink start rc=$rc out=$out"
+	bad "svxlink start rc=$rc out=$out"
 	cat "$hlog" >&2 || true
 fi
 
-for spec in "svxlink restart" "svxlink enable" "svxlink gpio_up" "system restart" "system stop" "set_mixer Master 80" "alsa restore"; do
+for spec in "svxlink restart" "svxlink enable" "system restart" "system stop"; do
 	: > "$hlog"
 	# shellcheck disable=SC2086
 	result=$(run_helper "$marker" $spec)
 	rc=$(printf '%s\n' "$result" | head -n 1)
 	out=$(printf '%s\n' "$result" | tail -n +2)
-	if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && [ ! -s "$hlog" ]; then
-		ok "bench helper refuses $spec"
+	if [ "$rc" -eq 0 ] && { [ -s "$hlog" ] || printf '%s' "$out" | grep -q 'host-action-accepted'; }; then
+		ok "$spec runs"
 	else
-		bad "bench helper $spec rc=$rc"
+		bad "$spec rc=$rc out=$out"
 	fi
 done
+
+: > "$hlog"
+result=$(run_helper "$marker" svxlink gpio_up)
+rc=$(printf '%s\n' "$result" | head -n 1)
+out=$(printf '%s\n' "$result" | tail -n +2)
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && ! grep -q 'gpio-up' "$hlog"; then
+	ok "gpio_up refuses a binary that is not root-owned before executing it"
+else
+	bad "gpio_up owner check rc=$rc"
+fi
 
 : > "$hlog"
 result=$(run_helper "$marker" svxlink unmask)
 rc=$(printf '%s\n' "$result" | head -n 1)
 out=$(printf '%s\n' "$result" | tail -n +2)
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && [ ! -s "$hlog" ]; then
-	ok "unmask is refused on the bench"
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'harness: svxlink unmask'; then
+	ok "svxlink unmask is a named action"
 else
-	bad "unmask on bench"
-fi
-
-: > "$hlog"
-result=$(run_helper /no/such/bench-mode svxlink unmask)
-rc=$(printf '%s\n' "$result" | head -n 1)
-out=$(printf '%s\n' "$result" | tail -n +2)
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && [ ! -s "$hlog" ]; then
-	ok "unmask is refused without the bench marker"
-else
-	bad "unmask without marker"
+	bad "unmask rc=$rc out=$out"
 fi
 
 : > "$hlog"
@@ -707,10 +713,10 @@ fi
 result=$(ORP_BENCH_HOSTNAME_FILE="$tmp/hostname-orp" run_helper /no/such/bench-mode svxlink start)
 rc=$(printf '%s\n' "$result" | head -n 1)
 out=$(printf '%s\n' "$result" | tail -n +2)
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && ! grep -q 'service svxlink start' "$hlog"; then
-	ok "hostname orp-test blocks svxlink start even when the marker is absent"
+if [ "$rc" -eq 0 ] && grep -q 'service svxlink start' "$hlog"; then
+	ok "hostname orp-test does not block svxlink start"
 else
-	bad "hostname bench gate rc=$rc"
+	bad "orp-test start rc=$rc"
 	cat "$hlog" >&2 || true
 fi
 
@@ -954,8 +960,8 @@ ORP_INSTALL_OFFLINE=1 ORP_ROOT="$re" ORP_SYSTEMCTL="$bin/systemctl" \
 	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/re2.out" 2>"$tmp/re2.err"
 rc=$?
 set -e
-if [ "$rc" -ne 0 ] && [ -f "$re/etc/openrepeater/bench-mode" ]; then
-	ok "reinstall refuses a replaced database symlink and keeps the marker"
+if [ "$rc" -ne 0 ]; then
+	ok "reinstall refuses a replaced database symlink"
 else
 	bad "reinstall symlink rc=$rc"
 	cat "$tmp/re2.err" >&2 || true
@@ -974,8 +980,8 @@ ORP_INSTALL_OFFLINE=1 ORP_ROOT="$preview" ORP_SYSTEMCTL="$bin/systemctl" \
 	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/preview.out" 2>"$tmp/preview.err"
 rc=$?
 set -e
-if [ "$rc" -ne 0 ]; then
-	ok "bench-preview symlink aborts the install"
+if [ "$rc" -eq 0 ] && [ ! -e "$preview/var/lib/openrepeater/bench-preview" ]; then
+	ok "a bench-preview symlink is removed and the install continues"
 else
 	bad "bench-preview symlink rc=$rc"
 	cat "$tmp/preview.err" >&2 || true
@@ -1180,10 +1186,12 @@ ORP_INSTALL_OFFLINE=1 ORP_ROOT="$no_token" ORP_SYSTEMCTL="$ft_ctl" ORP_SYSTEMCTL
 	ORP_BOOTSTRAP_ACTIVE=0 "$INSTALL" >"$tmp/ft-notoken.out" 2>"$tmp/ft-notoken.err"
 rc=$?
 set -e
-if [ "$rc" -eq 4 ] && grep -q 'refused:' "$tmp/ft-notoken.err" && [ ! -d "$no_token/var/www/openrepeater" ]; then
-	ok "an unmasked inactive bench without a functional-test token is refused"
+if [ "$rc" -eq 0 ] && [ -d "$no_token/var/www/openrepeater" ] \
+	&& [ ! -L "$no_token/etc/systemd/system/svxlink.service" ]
+then
+	ok "an unmasked install finishes and does not create a mask"
 else
-	bad "unmasked install without a token rc=$rc"
+	bad "unmasked install rc=$rc"
 	cat "$tmp/ft-notoken.err" >&2 || true
 fi
 with_token="$tmp/ft-token"
@@ -1214,261 +1222,34 @@ unit_after=$(sha256sum \
 if [ "$rc" -eq 0 ] \
 	&& [ "$unit_before" = "$unit_after" ] \
 	&& [ ! -L "$with_token/etc/systemd/system/svxlink.service" ] \
-	&& [ ! -e "$with_token/usr/local/lib/systemd/system/svxlink.service" ] \
+	&& [ -f "$with_token/usr/local/lib/systemd/system/svxlink.service" ] \
+	&& [ ! -e "$with_token/etc/openrepeater/operating-mode" ] \
 	&& ! grep -E '^(enable|unmask|start) ' "$tmp/ft-token.log" | grep -E -q 'svxlink|remotetrx|svxreflector'
 then
-	ok "a functional-test token install finishes without replacing or enabling units"
+	ok "an install with an old mode file removes it, writes the unit, and does not enable the radio"
 else
-	bad "functional-test unmasked install rc=$rc"
+	bad "old mode file install rc=$rc"
 	cat "$tmp/ft-token.err" >&2 || true
 fi
 sudo chown -R "$(id -u):$(id -g)" "$with_token" || true
 token_sudoers="$with_token/etc/sudoers.d/openrepeater"
 if [ -f "$token_sudoers" ] \
 	&& grep -q 'orp_helper svxlink gpio_up' "$token_sudoers" \
-	&& grep -q 'orp_helper svxlink unmask' "$token_sudoers" \
+	&& ! grep -q 'orp_helper svxlink unmask' "$token_sudoers" \
 	&& grep -q 'orp_helper system restart' "$token_sudoers" \
+	&& grep -q 'orp_helper system stop' "$token_sudoers" \
 	&& grep -q 'orp_helper alsa backup /var/www/openrepeater/backup/build/alsamixer.state' "$token_sudoers" \
-	&& ! grep -q 'orp_helper svxlink enable' "$token_sudoers" \
-	&& ! grep -q 'orp_helper remotetrx enable' "$token_sudoers" \
-	&& ! grep -q 'orp_helper svxreflector enable' "$token_sudoers" \
+	&& grep -q 'orp_helper svxlink enable' "$token_sudoers" \
+	&& grep -q 'orp_helper remotetrx enable' "$token_sudoers" \
+	&& grep -q 'orp_helper svxreflector enable' "$token_sudoers" \
 	&& ! grep -q 'set_mixer' "$token_sudoers"
 then
-	ok "a trusted token install emits lifted sudoers lines and not enable or mixer"
+	ok "sudoers lists enable, gpio, and host power, and does not list unmask or mixer"
 else
 	bad "lifted sudoers were not conditional"
 fi
 
-# Same fixtures, both copies. A mismatch is a drift even when both are wrong.
-token_verdict() {
-	local root=$1 which=$2
-	if [ "$which" = installer ]; then
-		if ROOT="$root" bash -c '. "$1"; bench_mode_is_functional_test' _ \
-			"$ROOT_DIR/upgrade/lib/bench-target.sh" >/dev/null 2>&1
-		then
-			printf accept
-		else
-			printf refuse
-		fi
-	else
-		if ORP_HELPER_SOURCE_ONLY=1 ORP_ROOT="$root" ORP_BENCH_TEST_HARNESS=1 \
-			bash -c '. "$1"; native_functional_token' _ "$HELPER" >/dev/null 2>&1
-		then
-			printf accept
-		else
-			printf refuse
-		fi
-	fi
-}
-expect_token() {
-	local label=$1 root=$2 want=$3 inst helper
-	inst=$(token_verdict "$root" installer)
-	helper=$(token_verdict "$root" helper)
-	phpv=$(php -r '
-		putenv("ORP_BENCH_TEST_HARNESS=1");
-		putenv("ORP_OPERATING_MODE_FILE=" . $argv[1] . "/etc/openrepeater/operating-mode");
-		putenv("ORP_BENCH_HOSTNAME_FILE=" . $argv[1] . "/etc/hostname");
-		putenv("ORP_BENCH_MARKER=" . $argv[1] . "/no-such-marker");
-		require $argv[2] . "/includes/classes/BenchGuard.php";
-		echo BenchGuard::detect()->trustedFunctionalTest() ? "accept" : "refuse";
-	' "$root" "$ROOT_DIR")
-	if [ "$inst" != "$helper" ] || [ "$inst" != "$phpv" ] || [ "$inst" != "$want" ]; then
-		bad "token drift ${label}: installer=${inst} helper=${helper} php=${phpv} expected=${want}"
-	fi
-}
-cat > "$tmp/drift-systemctl" <<'EOF'
-#!/bin/bash
-case "$1" in
-	is-enabled)
-		printf '%s\n' "${DRIFT_ENABLED:-disabled}"
-		exit 1
-		;;
-	is-active)
-		printf '%s\n' "${DRIFT_ACTIVE:-inactive}"
-		exit 3
-		;;
-	*)
-		exit 0
-		;;
-esac
-EOF
-chmod 755 "$tmp/drift-systemctl"
-mask_verdict() {
-	local root=$1 which=$2
-	if [ "$which" = installer ]; then
-		if ROOT="$root" ORP_SYSTEMCTL="$tmp/drift-systemctl" \
-			bash -c '. "$1"; bench_assert_masks' _ \
-			"$ROOT_DIR/upgrade/lib/bench-target.sh" >/dev/null 2>&1
-		then
-			printf accept
-		else
-			printf refuse
-		fi
-	else
-		if ORP_HELPER_SOURCE_ONLY=1 ORP_ROOT="$root" ORP_BENCH_TEST_HARNESS=1 \
-			ORP_SYSTEMCTL="$tmp/drift-systemctl" \
-			bash -c '. "$1"; native_masks' _ "$HELPER" >/dev/null 2>&1
-		then
-			printf accept
-		else
-			printf refuse
-		fi
-	fi
-}
-expect_masks() {
-	local label=$1 root=$2 enabled=$3 active=$4 want=$5 inst helper
-	inst=$(DRIFT_ENABLED="$enabled" DRIFT_ACTIVE="$active" mask_verdict "$root" installer)
-	helper=$(DRIFT_ENABLED="$enabled" DRIFT_ACTIVE="$active" mask_verdict "$root" helper)
-	if [ "$inst" != "$helper" ] || [ "$inst" != "$want" ]; then
-		bad "unit drift ${label}: installer=${inst} helper=${helper} expected=${want}"
-	fi
-}
-new_token_root() {
-	local root contents=$1 mode=$2 owner=$3
-	root=$(orp_mktemp_dir)
-	orp_mkdir "$root/etc/openrepeater"
-	printf 'orp-test\n' > "$root/etc/hostname"
-	if [ "$contents" != missing ]; then
-		printf '%s\n' "$contents" > "$root/etc/openrepeater/operating-mode"
-		chmod "$mode" "$root/etc/openrepeater/operating-mode"
-		if [ "$owner" = root ]; then
-			sudo chown 0:0 "$root/etc/openrepeater" "$root/etc/openrepeater/operating-mode"
-			sudo chmod 755 "$root/etc/openrepeater"
-		elif [ "$owner" = user ]; then
-			sudo chown 1000:1000 "$root/etc/openrepeater/operating-mode"
-		fi
-	fi
-	printf '%s' "$root"
-}
-good_token=$(new_token_root functional-test 644 root)
-user_owned=$(new_token_root functional-test 644 user)
-group_write=$(new_token_root functional-test 666 root)
-wrong_text=$(new_token_root bench 644 root)
-missing_token=$(new_token_root missing 644 root)
-wrong_host=$(orp_mktemp_dir)
-orp_mkdir "$wrong_host/etc/openrepeater"
-printf 'not-the-bench\n' > "$wrong_host/etc/hostname"
-printf 'functional-test\n' > "$wrong_host/etc/openrepeater/operating-mode"
-chmod 644 "$wrong_host/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$wrong_host/etc/openrepeater/operating-mode"
-link_token=$(orp_mktemp_dir)
-orp_mkdir "$link_token/etc/openrepeater"
-printf 'orp-test\n' > "$link_token/etc/hostname"
-printf 'functional-test\n' > "$link_token/etc/openrepeater/real-mode"
-chmod 644 "$link_token/etc/openrepeater/real-mode"
-sudo chown 0:0 "$link_token/etc/openrepeater/real-mode"
-ln -s real-mode "$link_token/etc/openrepeater/operating-mode"
-expect_token "root-owned functional-test" "$good_token" accept
-expect_token "uid 1000 mode 0644" "$user_owned" refuse
-expect_token "group-writable" "$group_write" refuse
-expect_token "contents bench" "$wrong_text" refuse
-expect_token "missing file" "$missing_token" refuse
-expect_token "wrong hostname" "$wrong_host" refuse
-expect_token "symlink token" "$link_token" refuse
-dir_root=$(new_token_root functional-test 644 root)
-sudo chown "$(id -u):$(id -g)" "$dir_root/etc/openrepeater"
-expect_token "openrepeater directory not root-owned" "$dir_root" refuse
-sudo chown 0:0 "$dir_root/etc/openrepeater"
-sudo chmod 775 "$dir_root/etc/openrepeater"
-expect_token "openrepeater directory group-writable" "$dir_root" refuse
-sudo chmod 755 "$dir_root/etc/openrepeater"
-expect_token "openrepeater directory root-owned" "$dir_root" accept
-link_dir=$(orp_mktemp_dir)
-mkdir -p "$link_dir/etc/mode-target"
-printf 'orp-test\n' > "$link_dir/etc/hostname"
-printf 'functional-test\n' > "$link_dir/etc/mode-target/operating-mode"
-chmod 644 "$link_dir/etc/mode-target/operating-mode"
-sudo chown 0:0 "$link_dir/etc/mode-target" "$link_dir/etc/mode-target/operating-mode"
-sudo chmod 755 "$link_dir/etc/mode-target"
-ln -s mode-target "$link_dir/etc/openrepeater"
-expect_token "symlinked openrepeater directory" "$link_dir" refuse
-ok "the openrepeater directory anchor agrees"
-tx_verdict() {
-	local root=$1 helper php
-	if ORP_HELPER_SOURCE_ONLY=1 ORP_ROOT="$root" ORP_BENCH_TEST_HARNESS=1 \
-		bash -c '. "$1"; tx_armed' _ "$HELPER" >/dev/null 2>&1
-	then
-		helper=accept
-	else
-		helper=refuse
-	fi
-	php=$(php -r '
-		putenv("ORP_BENCH_TEST_HARNESS=1");
-		putenv("ORP_ROOT=" . $argv[1]);
-		require $argv[2] . "/includes/classes/BenchGuard.php";
-		echo BenchGuard::detect()->txArmed() ? "accept" : "refuse";
-	' "$root" "$ROOT_DIR")
-	if [ "$helper" != "$php" ] || [ "$helper" != "$2" ]; then
-		bad "tx-armed drift ${3}: helper=${helper} php=${php} expected=$2"
-	else
-		ok "tx-armed ${3} agrees"
-	fi
-}
-tx_root=$(new_token_root functional-test 644 root)
-tx_verdict "$tx_root" refuse "missing flag"
-printf 'armed\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
-sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
-sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
-tx_verdict "$tx_root" accept "exact armed"
-tx_dir=$(new_token_root functional-test 644 root)
-printf 'armed\n' | sudo -n tee "$tx_dir/etc/openrepeater/tx-armed" >/dev/null
-sudo -n chmod 644 "$tx_dir/etc/openrepeater/tx-armed"
-sudo -n chown 0:0 "$tx_dir/etc/openrepeater/tx-armed"
-sudo chown "$(id -u):$(id -g)" "$tx_dir/etc/openrepeater"
-tx_verdict "$tx_dir" refuse "directory not root-owned"
-sudo chown 0:0 "$tx_dir/etc/openrepeater"
-sudo chmod 775 "$tx_dir/etc/openrepeater"
-tx_verdict "$tx_dir" refuse "directory group-writable"
-sudo chmod 755 "$tx_dir/etc/openrepeater"
-tx_verdict "$tx_dir" accept "directory root-owned"
-tx_link=$(orp_mktemp_dir)
-mkdir -p "$tx_link/etc/real-orp"
-printf 'orp-test\n' > "$tx_link/etc/hostname"
-printf 'functional-test\n' > "$tx_link/etc/real-orp/operating-mode"
-printf 'armed\n' > "$tx_link/etc/real-orp/tx-armed"
-chmod 644 "$tx_link/etc/real-orp/operating-mode" "$tx_link/etc/real-orp/tx-armed"
-sudo chown 0:0 "$tx_link/etc/real-orp" "$tx_link/etc/real-orp/operating-mode" "$tx_link/etc/real-orp/tx-armed"
-sudo chmod 755 "$tx_link/etc/real-orp"
-ln -s real-orp "$tx_link/etc/openrepeater"
-tx_verdict "$tx_link" refuse "symlinked openrepeater directory"
-printf 'armed \n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
-sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
-sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
-tx_verdict "$tx_root" refuse "padded armed"
-printf 'armed\r\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
-sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
-sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
-tx_verdict "$tx_root" refuse "armed with crlf"
-printf 'armed\n\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
-sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
-sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
-tx_verdict "$tx_root" refuse "armed with two newlines"
-: | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
-sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
-sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
-tx_verdict "$tx_root" refuse "empty flag"
-printf 'ARMED\n' | sudo -n tee "$tx_root/etc/openrepeater/tx-armed" >/dev/null
-sudo -n chown 0:0 "$tx_root/etc/openrepeater/tx-armed"
-sudo -n chmod 644 "$tx_root/etc/openrepeater/tx-armed"
-tx_verdict "$tx_root" refuse "uppercase ARMED"
-if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; then
-	acl_token=$(new_token_root functional-test 644 root)
-	sudo setfacl -m u:nobody:r "$acl_token/etc/openrepeater/operating-mode"
-	expect_token "read-only named ACL" "$acl_token" accept
-	sudo setfacl -m u:nobody:w "$acl_token/etc/openrepeater/operating-mode"
-	expect_token "write named ACL" "$acl_token" refuse
-	sudo setfacl -b "$acl_token/etc/openrepeater/operating-mode" || true
-fi
-expect_masks "disabled inactive with a token" "$good_token" disabled inactive accept
-expect_masks "systemd masked without a token" "$missing_token" masked inactive accept
-expect_masks "enabled with a token" "$good_token" enabled inactive accept
-expect_masks "active with a token" "$good_token" disabled active accept
-expect_masks "disabled without a token" "$missing_token" disabled inactive refuse
-devnull_unit=$(orp_mktemp_dir)
-orp_mkdir "$devnull_unit/etc/systemd/system"
-ln -sfn /dev/null "$devnull_unit/etc/systemd/system/svxlink.service"
-expect_masks "dev-null symlink without a token" "$devnull_unit" disabled inactive refuse
-ok "installer and helper token and unit verdicts match"
+ok "install does not trust an operating-mode token or a tx-armed flag"
 
 attack=$(orp_mktemp_dir)
 plant_native_layout "$attack"

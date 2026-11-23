@@ -4,7 +4,7 @@
  * Exit 0 only when the action's expected result happens.
  */
 $root = dirname(__DIR__, 2);
-require_once $root . '/includes/classes/BenchGuard.php';
+require_once $root . '/includes/classes/PathGuard.php';
 require_once $root . '/includes/classes/SVXLink.php';
 
 $action = isset($argv[1]) ? $argv[1] : '';
@@ -65,7 +65,7 @@ $svx = new SVXLink(array('txTailValueSec' => 1, 'txTone' => '', 'rxTone' => ''),
 if ($action === 'create' || $action === 'overwrite') {
 	$file = $path . '/svxlink.conf';
 	$body = $action === 'create' ? "created-by-www-data\n" : "overwritten-by-www-data\n";
-	if (BenchGuard::writeContained($file, $body) !== true || !is_file($file)) {
+	if (PathGuard::writeContained($file, $body) !== true || !is_file($file)) {
 		fail($action . ' did not create a preview file');
 	}
 	if (file_get_contents($file) !== $body) {

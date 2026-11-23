@@ -36,7 +36,6 @@ command -v python3 >/dev/null && python3 -c 'import os,stat,pwd,grp' || { echo "
 
 bench_assert_identity
 bench_assert_bootstrap_idle
-bench_assert_masks
 
 free_kib=$(bench_free_kib)
 if [ -z "$free_kib" ] || [ "$free_kib" -lt 524288 ]; then
@@ -121,8 +120,6 @@ fail_closed() {
 	then
 		cp -a "${backup_root}/etc/nginx/sites-enabled/default" "$(p /etc/nginx/sites-enabled/default)"
 	fi
-	# The bench marker is a safety boundary. Leave it in place.
-	bench_assert_masks >/dev/null 2>&1
 	restore_courtesy_preseed
 	exit "$rc"
 }
@@ -205,69 +202,34 @@ bench_trace marker
 bench_anchor_dir "$(p /etc/openrepeater)"
 bench_anchor_dir "$(p /etc/sudoers.d)"
 bench_anchor_dir "$(p /var/lib/openrepeater)"
-bench_anchor_dir "$(p /var/lib/openrepeater/bench-preview)"
 bench_anchor_dir "$(p /var/lib/openrepeater/db)"
 bench_anchor_dir "$(p /usr/sbin)"
-marker_body=$(mktemp)
-cat > "$marker_body" <<'EOF'
-host=orp-test
-radio=blocked
-reboot=blocked
-gpio=readonly
-publish=fixed
-preview=/var/lib/openrepeater/bench-preview
-EOF
-bench_place_file "$marker_body" "$(p /etc/openrepeater/bench-mode)"
-rm -f "$marker_body"
-mode_file=$(p /etc/openrepeater/operating-mode)
-if [ "$(bench_lstat_kind "$mode_file")" = missing ]; then
-	mode_body=$(mktemp)
-	printf '%s\n' 'bench' > "$mode_body"
-	bench_place_file "$mode_body" "$mode_file"
-	rm -f "$mode_body"
-fi
+# An upgrade removes the old bench files. A symlink is unlinked and not followed.
+remove_bench_artifact() {
+	local path
+	path=$(p "$1")
+	if [ -L "$path" ] || [ -f "$path" ]; then
+		rm -f -- "$path"
+	elif [ -d "$path" ]; then
+		rm -rf -- "$path"
+	fi
+}
+remove_bench_artifact /etc/openrepeater/bench-mode
+remove_bench_artifact /etc/openrepeater/operating-mode
+remove_bench_artifact /etc/openrepeater/tx-armed
+remove_bench_artifact /var/lib/openrepeater/bench-preview
+remove_bench_artifact /etc/svxlink/functional-test.d
 bench_chmod 755 "$(p /etc/openrepeater)"
 bench_chmod 755 "$(p /var/lib/openrepeater)"
-bench_chmod 755 "$(p /var/lib/openrepeater/bench-preview)"
 bench_chmod 755 "$(p /var/lib/openrepeater/db)"
-bench_chmod 644 "$(p /etc/openrepeater/bench-mode)"
-if [ -f "$(p /etc/openrepeater/operating-mode)" ] && [ ! -L "$(p /etc/openrepeater/operating-mode)" ]; then
-	bench_chmod 644 "$(p /etc/openrepeater/operating-mode)"
-	bench_chown root:root "$(p /etc/openrepeater/operating-mode)"
-fi
 bench_chown root:root "$(p /etc/openrepeater)"
-bench_chown root:root "$(p /etc/openrepeater/bench-mode)"
 bench_chown root:root "$(p /var/lib/openrepeater)"
-# Directory inodes only. www-data can create new files here and cannot
-# replace a root-owned inode. Root does not chown files inside these directories.
 if getent group www-data >/dev/null 2>&1 && { [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] || [ "${ORP_INSTALL_APPLY_OWNERSHIP:-0}" = 1 ]; }; then
 	web_group=www-data
 else
 	web_group=$(id -gn)
 fi
-bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/bench-preview)"
-bench_chmod 1770 "$(p /var/lib/openrepeater/bench-preview)"
 bench_chown "root:${web_group}" "$(p /var/lib/openrepeater/db)"
-
-# Same rule as bench_assert_masks. A /dev/null mask is accepted. A trusted
-# functional-test token may instead leave the unit inactive and disabled.
-# Do not create a mask and do not replace one.
-for unit in svxlink.service remotetrx.service svxreflector.service; do
-	if bench_mode_is_functional_test; then
-		continue
-	fi
-	link=$(p "/etc/systemd/system/${unit}")
-	if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
-		continue
-	fi
-	enabled=$(unit_enabled_state "$unit")
-	active=$(unit_active_state "$unit")
-	if bench_mode_is_functional_test && [ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]; then
-		continue
-	fi
-	echo "refused: ${unit} is not a /dev/null mask, and it is not inactive and disabled under a functional-test token. It was not replaced." >&2
-	exit 4
-done
 if ! env ORP_ROOT="$ROOT" "$REPO_ROOT/install/scripts/orp_helper" native inputs; then
 	echo "refused: native SvxLink layout is incomplete. No unit was written and no service was unmasked." >&2
 	exit 7
@@ -518,38 +480,31 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio outputs
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper audio version
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system uptime
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system user
-# One module name, 1 to 32 characters. The first character is a letter.
-# The helper still rejects every other shape and does not treat it as a path.
-EOF
-# Lifted lines exist only when this install already has a trusted
-# functional-test token. A production install does not gain them.
-# enable is not listed. Mixer control is not supported.
-if bench_mode_is_functional_test; then
-	cat >> "$sudoers_tmp" <<'EOF'
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system restart
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper system stop
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink enable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink disable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink gpio_up
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink gpio_down
-www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxlink unmask
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx start
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx stop
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx restart
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx status
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx enable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx disable
-www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper remotetrx unmask
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector start
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector stop
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector restart
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector status
+www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector enable
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector disable
-www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper svxreflector unmask
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa backup /var/www/openrepeater/backup/build/alsamixer.state
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa backup /var/www/openrepeater/backup/restore/alsamixer.state
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa restore /var/www/openrepeater/backup/build/alsamixer.state
 www-data ALL=(root) NOPASSWD: /usr/sbin/orp_helper alsa restore /var/www/openrepeater/backup/restore/alsamixer.state
+# One module name, 1 to 32 characters. The first character is a letter.
+# The helper still rejects every other shape and does not treat it as a path.
 EOF
-fi
 module_pat='[A-Za-z]'
 module_i=1
 while [ "$module_i" -le 32 ]; do
@@ -618,26 +573,12 @@ bench_chmod 644 "$svx_log"
 bench_chown svxlink:svxlink "$(p /var/lib/svxlink)"
 bench_chown svxlink:svxlink "$(p /var/spool/svxlink)"
 bench_chown svxlink:svxlink "$svx_log"
-# A masked bench receives the reviewed vendor unit and keeps its /dev/null
-# symlinks. A functional-test bench does not get that file installed over
-# anything, and its /etc unit files are not replaced or enabled.
-write_vendor_unit=1
-for unit in svxlink.service remotetrx.service svxreflector.service; do
-	link=$(p "/etc/systemd/system/${unit}")
-	if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
-		continue
-	fi
-	write_vendor_unit=0
-	break
-done
-if [ "$write_vendor_unit" -eq 1 ]; then
-	unit_body=$(mktemp)
-	env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native unit > "$unit_body"
-	bench_place_file "$unit_body" "$(p /usr/local/lib/systemd/system/svxlink.service)"
-	rm -f "$unit_body"
-	bench_chmod 644 "$(p /usr/local/lib/systemd/system/svxlink.service)"
-	bench_chown root:root "$(p /usr/local/lib/systemd/system/svxlink.service)"
-fi
+unit_body=$(mktemp)
+env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native unit > "$unit_body"
+bench_place_file "$unit_body" "$(p /usr/local/lib/systemd/system/svxlink.service)"
+rm -f "$unit_body"
+bench_chmod 644 "$(p /usr/local/lib/systemd/system/svxlink.service)"
+bench_chown root:root "$(p /usr/local/lib/systemd/system/svxlink.service)"
 # remotetrx and svxreflector ship disabled. Do not mask them and do not unmask them.
 write_disabled_unit() {
 	local name=$1 generator dest body
@@ -658,19 +599,6 @@ write_disabled_unit() {
 }
 write_disabled_unit remotetrx.service remotetrx-unit
 write_disabled_unit svxreflector.service reflector-unit
-for unit in svxlink.service; do
-	if bench_mode_is_functional_test; then
-		continue
-	fi
-	link=$(p "/etc/systemd/system/${unit}")
-	if [ -L "$link" ] && [ "$(readlink "$link")" = "/dev/null" ]; then
-		continue
-	fi
-	enabled=$(unit_enabled_state "$unit")
-	active=$(unit_active_state "$unit")
-	echo "refused: ${unit} is not a /dev/null mask, and it is not inactive and disabled under a functional-test token. It was not replaced." >&2
-	exit 4
-done
 if ! env ORP_ROOT="$ROOT" "$(p /usr/sbin/orp_helper)" native preflight; then
 	echo "refused: native preflight failed after the vendor unit was written" >&2
 	exit 7
@@ -694,15 +622,13 @@ bench_chown "root:${web_group}" "$db_file"
 # www-data can create SQLite journals and cannot replace that inode.
 bench_chmod 1770 "$(p /var/lib/openrepeater/db)"
 
-# Re-assert the marker after file publish. It stays root-owned and not web-writable.
 bench_chmod 755 "$(p /etc/openrepeater)"
-bench_chmod 644 "$(p /etc/openrepeater/bench-mode)"
-if [ -f "$(p /etc/openrepeater/operating-mode)" ] && [ ! -L "$(p /etc/openrepeater/operating-mode)" ]; then
-	bench_chmod 644 "$(p /etc/openrepeater/operating-mode)"
-	bench_chown root:root "$(p /etc/openrepeater/operating-mode)"
-fi
 bench_chown root:root "$(p /etc/openrepeater)"
-bench_chown root:root "$(p /etc/openrepeater/bench-mode)"
+remove_bench_artifact /etc/openrepeater/bench-mode
+remove_bench_artifact /etc/openrepeater/operating-mode
+remove_bench_artifact /etc/openrepeater/tx-armed
+remove_bench_artifact /var/lib/openrepeater/bench-preview
+remove_bench_artifact /etc/svxlink/functional-test.d
 
 bench_trace nginx-enable
 php_unit=$(basename "$PHP_SOCK")
@@ -713,19 +639,12 @@ if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ] || [ -n "${ORP_SYSTEMCTL:-}" ]; then
 fi
 
 bench_verify_protected
-bench_assert_masks
-bench_unmask_radio_units
 
 echo "OpenRepeater UI files are staged for orp-test."
-echo "Radio units were not started and their masks were checked again."
-echo "The bench marker remains at /etc/openrepeater/bench-mode and is not web-writable."
+echo "Old bench-mode, operating-mode, tx-armed, bench-preview, and functional-test.d paths were removed when present."
+echo "Unit masks were not changed."
+echo "The svxlink unit is /usr/local/lib/systemd/system/svxlink.service."
 echo "Bootstrap binary, share tree, and /etc/svxlink/svxlink.conf were not modified."
-if [ "$write_vendor_unit" -eq 1 ]; then
-	echo "The reviewed unit is /usr/local/lib/systemd/system/svxlink.service. The /dev/null masks were left in place."
-else
-	echo "Radio units stayed inactive and disabled. No vendor unit was installed and no unit was enabled."
-fi
-echo "No GPIO output, audio, or RF test was run."
 if [ -d "$backup_root" ]; then
 	echo "Backup of previous mutable files: ${backup_root}"
 fi
