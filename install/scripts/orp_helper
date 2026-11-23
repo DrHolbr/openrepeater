@@ -1123,16 +1123,59 @@ function config_db_value() {
 
 function config_ident_mode() {
 	case "$1" in
-		disabled|morse|voice) return 0 ;;
-		custom)
-			echo "refused: identification mode custom is not published. The stock 26.05 handler does not play an uploaded clip. The stored mode was not changed." >&2
-			return 1
-			;;
+		disabled|morse|voice|custom) return 0 ;;
 		*)
-			echo "refused: identification mode is not disabled, morse, or voice. The stored mode was not changed." >&2
+			echo "refused: identification mode is not disabled, morse, voice, or custom. The stored mode was not changed." >&2
 			return 1
 			;;
 	esac
+}
+
+# 26.05 plays SHORT_ANNOUNCE_FILE and LONG_ANNOUNCE_FILE from the logic
+# section. The web library is not on the svxlink user's path.
+function config_ident_clip_ready() {
+	local name=$1 src
+	if [[ ! "$name" =~ ^[A-Za-z0-9._()-]+\.wav$ ]]; then
+		echo "refused: identification mode custom is not published because the clip name is not a plain WAV. The stored mode was not changed." >&2
+		return 1
+	fi
+	src=$(native_path "/var/www/openrepeater/sounds/identification/${name}")
+	if [ -L "$src" ] || [ ! -f "$src" ]; then
+		echo "refused: identification mode custom is not published because the clip is not a regular file. The stored mode was not changed." >&2
+		return 1
+	fi
+}
+
+function config_install_ident_clip() {
+	local name=$1 src dest sounds dir tmp
+	config_ident_clip_ready "$name" || return 1
+	src=$(native_path "/var/www/openrepeater/sounds/identification/${name}")
+	dest=$(native_path "/usr/local/share/svxlink/sounds/identification/${name}")
+	sounds=$(native_path /usr/local/share/svxlink/sounds)
+	dir=$(dirname "$dest")
+	if [ -L "$src" ] || [ ! -f "$src" ]; then
+		echo "refused: identification mode custom is not published because the clip is not a regular file. The stored mode was not changed." >&2
+		return 1
+	fi
+	if [ -L "$sounds" ] || [ ! -d "$sounds" ]; then
+		echo "refused: svxlink sounds directory is not a real directory. The stored mode was not changed." >&2
+		return 1
+	fi
+	if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+		mkdir -m 755 "$dir"
+	fi
+	if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+		echo "refused: identification share directory is not a real directory. The stored mode was not changed." >&2
+		return 1
+	fi
+	if [ -L "$dest" ]; then
+		echo "refused: identification clip destination is a symbolic link. The stored mode was not changed." >&2
+		return 1
+	fi
+	tmp=$(mktemp "$dir/.orp-ident.XXXXXX")
+	cp -- "$src" "$tmp"
+	chmod 644 "$tmp"
+	mv -f -- "$tmp" "$dest"
 }
 
 function config_ident_bool() {
@@ -1148,6 +1191,10 @@ function config_ident_bool() {
 function config_ident_load() {
 	local short_mode long_mode short_raw long_raw after_raw append_s append_l
 	local wpm pitch short_voice short_cw long_voice long_cw short_covers
+	ident_short_announce=0
+	ident_long_announce=0
+	ident_short_file=""
+	ident_long_file=""
 	short_mode=$(config_db_value ID_Short_Mode) || return 1
 	long_mode=$(config_db_value ID_Long_Mode) || return 1
 	short_raw=$(config_db_value ID_Short_IntervalMin) || return 1
@@ -1159,6 +1206,12 @@ function config_ident_load() {
 	pitch=$(config_db_value ID_Morse_Pitch) || return 1
 	config_ident_mode "$short_mode" || return 1
 	config_ident_mode "$long_mode" || return 1
+	if [ "$short_mode" = custom ]; then
+		config_ident_clip_ready "$(config_db_value ID_Short_CustomFile)" || return 1
+	fi
+	if [ "$long_mode" = custom ]; then
+		config_ident_clip_ready "$(config_db_value ID_Long_CustomFile)" || return 1
+	fi
 	ident_after=$(config_ident_bool "$after_raw") || {
 		echo "refused: ID_Short_IdentOnlyAfterTX is not True or False. The stored value was not changed." >&2
 		return 1
@@ -1206,13 +1259,25 @@ function config_ident_load() {
 	if [ "$short_mode" = voice ]; then
 		short_voice=1
 	fi
-	if [ "$short_mode" = morse ] || { [ "$short_mode" = voice ] && [ "$append_s" = True ]; }; then
+	if [ "$short_mode" = custom ]; then
+		ident_short_file=$(config_db_value ID_Short_CustomFile) || return 1
+		config_install_ident_clip "$ident_short_file" || return 1
+		ident_short_announce=1
+		ident_short_file="/usr/local/share/svxlink/sounds/identification/${ident_short_file}"
+	fi
+	if [ "$long_mode" = custom ]; then
+		ident_long_file=$(config_db_value ID_Long_CustomFile) || return 1
+		config_install_ident_clip "$ident_long_file" || return 1
+		ident_long_announce=1
+		ident_long_file="/usr/local/share/svxlink/sounds/identification/${ident_long_file}"
+	fi
+	if [ "$short_mode" = morse ] || { [ "$append_s" = True ] && { [ "$short_mode" = voice ] || [ "$short_mode" = custom ]; }; }; then
 		short_cw=1
 	fi
 	if [ "$long_mode" = voice ]; then
 		long_voice=1
 	fi
-	if [ "$long_mode" = morse ] || { [ "$long_mode" = voice ] && [ "$append_l" = True ]; }; then
+	if [ "$long_mode" = morse ] || { [ "$append_l" = True ] && { [ "$long_mode" = voice ] || [ "$long_mode" = custom ]; }; }; then
 		long_cw=1
 	fi
 	ident_short_voice=$short_voice
@@ -1507,6 +1572,10 @@ SHORT_VOICE_ID_ENABLE=${ident_short_voice}
 SHORT_CW_ID_ENABLE=${ident_short_cw}
 LONG_VOICE_ID_ENABLE=${ident_long_voice}
 LONG_CW_ID_ENABLE=${ident_long_cw}
+SHORT_ANNOUNCE_ENABLE=${ident_short_announce}
+LONG_ANNOUNCE_ENABLE=${ident_long_announce}
+${ident_short_file:+SHORT_ANNOUNCE_FILE=${ident_short_file}}
+${ident_long_file:+LONG_ANNOUNCE_FILE=${ident_long_file}}
 RGR_SOUND_DELAY=0
 ${cw_block}
 [Rx1]
@@ -2069,6 +2138,30 @@ open(dest, "w", encoding="utf-8").write(body)
 PY
 }
 
+function config_stamp_ident_files() {
+	local file=$1
+	[ "${ident_short_announce:-0}" = 1 ] || [ "${ident_long_announce:-0}" = 1 ] || return 0
+	python3 - "$file" "${ident_short_announce:-0}" "${ident_short_file:-}" "${ident_long_announce:-0}" "${ident_long_file:-}" <<'PY'
+import sys
+path, short_on, short_file, long_on, long_file = sys.argv[1:]
+lines = open(path, encoding="utf-8").read().splitlines()
+out = []
+for line in lines:
+    name = line.split("=", 1)[0].strip() if "=" in line else ""
+    if name in ("SHORT_ANNOUNCE_ENABLE", "SHORT_ANNOUNCE_FILE", "LONG_ANNOUNCE_ENABLE", "LONG_ANNOUNCE_FILE"):
+        continue
+    out.append(line)
+    if name == "CALLSIGN":
+        out.append("SHORT_ANNOUNCE_ENABLE=%s" % short_on)
+        if short_on == "1" and short_file:
+            out.append("SHORT_ANNOUNCE_FILE=%s" % short_file)
+        out.append("LONG_ANNOUNCE_ENABLE=%s" % long_on)
+        if long_on == "1" and long_file:
+            out.append("LONG_ANNOUNCE_FILE=%s" % long_file)
+open(path, "w", encoding="utf-8").write("\n".join(out) + "\n")
+PY
+}
+
 function config_publish {
 	local dest parent snapshot backup sum_before sum_after rb_failed backup_parent staged
 	if ! functional_test_on; then
@@ -2159,6 +2252,11 @@ function config_publish {
 		fi
 	elif [ -f "$staged_ui" ] && [ ! -L "$staged_ui" ]; then
 		config_logic_select || { logic_type=staged; logic_name=staged; }
+		if ! config_ident_load; then
+			rm -f "$snapshot"
+			echo "refused: identification was not loaded. The runtime config was not replaced."
+			return 1
+		fi
 		raw=$(mktemp)
 		cards=0
 		alsa_cards_present && cards=1
@@ -2173,6 +2271,7 @@ function config_publish {
 			return 1
 		fi
 		rm -f "$raw"
+		config_stamp_ident_files "$snapshot"
 	elif ! config_logic_select; then
 		rm -f "$snapshot"
 		return 1
