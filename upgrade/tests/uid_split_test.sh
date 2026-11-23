@@ -76,17 +76,32 @@ run_install() {
 : > "$log"
 run_install
 
-preview="$root/var/lib/openrepeater/bench-preview"
 dbdir="$root/var/lib/openrepeater/db"
 db="$dbdir/openrepeater.db"
 canary="$root/etc/svxlink/svxlink.conf"
 stat_line() { sudo stat -c '%u %g %a' "$1"; sudo cat "$1"; }
 
-if [ "$(sudo stat -c '%u %g %a' "$preview")" != "0 33 1770" ]; then
-	echo "FAIL: bench-preview ownership $(sudo stat -c '%u %g %a' "$preview")" >&2
-	exit 1
-fi
-echo "ok: bench-preview is root:www-data 1770"
+assert_old_paths_gone() {
+	local rel
+	for rel in \
+		etc/openrepeater/bench-mode \
+		etc/openrepeater/operating-mode \
+		etc/openrepeater/tx-armed \
+		var/lib/openrepeater/bench-preview \
+		etc/svxlink/functional-test.d
+	do
+		if sudo test -e "$root/$rel" || sudo test -L "$root/$rel"; then
+			echo "FAIL: $rel is still present" >&2
+			exit 1
+		fi
+	done
+}
+assert_old_paths_gone
+echo "ok: install leaves the old bench paths absent"
+
+preview="$(orp_fixture_root)/orp-uid-stage-$$"
+sudo mkdir -m 1770 "$preview"
+sudo chown root:www-data "$preview"
 if [ "$(sudo stat -c '%u %g %a' "$dbdir")" != "0 33 1770" ]; then
 	echo "FAIL: db directory $(sudo stat -c '%u %g %a' "$dbdir")" >&2
 	exit 1
@@ -114,7 +129,7 @@ work="$(orp_fixture_root)/orp-preview-uidwork-$$"
 sudo mkdir -m 1770 "$work"
 sudo chown root:www-data "$work"
 sudo -n -u www-data env TMPDIR="$(orp_fixture_root)" ORP_TEST_TMPDIR="$(orp_fixture_root)" php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" publish "$work" "$hostfile"
-echo "ok: write_config reports success and disarms PTT"
+echo "ok: write_config reports success and keeps the stored PTT pin"
 
 locked="$(orp_fixture_root)/orp-preview-uidlocked-$$"
 sudo mkdir -m 755 "$locked"
@@ -142,27 +157,18 @@ echo "ok: failed symlink write did not change the root canary"
 sudo -n -u www-data env TMPDIR="$(orp_fixture_root)" ORP_TEST_TMPDIR="$(orp_fixture_root)" php "$ROOT_DIR/upgrade/tests/uid_split_writer.php" sqlite "$db"
 echo "ok: www-data SQLite CRUD kept the root-owned database inode"
 
-preview_file_before=$(sudo stat -c '%u %g %a' "$preview/svxlink.conf")
+printf 'old\n' | sudo tee "$root/etc/openrepeater/bench-mode" >/dev/null
+printf 'functional-test\n' | sudo tee "$root/etc/openrepeater/operating-mode" >/dev/null
+printf 'armed\n' | sudo tee "$root/etc/openrepeater/tx-armed" >/dev/null
+sudo mkdir -p "$root/var/lib/openrepeater/bench-preview" "$root/etc/svxlink/functional-test.d"
 : > "$log"
 run_install
-preview_file_after=$(sudo stat -c '%u %g %a' "$preview/svxlink.conf")
 after_canary=$(stat_line "$canary")
 if [ "$before_canary" != "$after_canary" ]; then
 	echo "FAIL: reinstall changed the canary" >&2
 	exit 1
 fi
-if [ "$preview_file_before" != "$preview_file_after" ]; then
-	echo "FAIL: reinstall chowned a www-data preview file ($preview_file_before -> $preview_file_after)" >&2
-	exit 1
-fi
-if [ "$(sudo stat -c '%u %g %a' "$preview")" != "0 33 1770" ]; then
-	echo "FAIL: reinstall dropped bench-preview permissions" >&2
-	exit 1
-fi
-if [ ! -f "$root/etc/openrepeater/bench-mode" ]; then
-	echo "FAIL: reinstall removed the bench marker" >&2
-	exit 1
-fi
-echo "ok: reinstall preserved the canary, preview ownership, and marker"
-sudo rm -rf "$locked" "$linkdir" "$work"
+assert_old_paths_gone
+echo "ok: reinstall removes the old bench paths and preserves the canary"
+sudo rm -rf "$locked" "$linkdir" "$work" "$preview"
 echo "uid split checks passed"

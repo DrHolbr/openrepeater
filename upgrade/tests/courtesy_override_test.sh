@@ -18,7 +18,6 @@ trap 'orp_cleanup_fixture "$tmp"' EXIT
 live="$tmp/live"
 db="$tmp/openrepeater.db"
 host="$tmp/hostname"
-mode="$tmp/operating-mode"
 base="$tmp/svx"
 orp_mkdir "$live" "$live/etc/svxlink" "$live/var/backups/orp-ui" "$base/events.d/local"
 plant_native_layout "$live"
@@ -27,16 +26,11 @@ for name in Logic.tcl LogicBase.tcl locale.tcl RepeaterLogicType.tcl CW.tcl sque
 	ln -s "$fixture/$name" "$base/events.d/$name"
 done
 printf 'orp-test\n' > "$host"
-printf 'functional-test\n' > "$mode"
-orp_private "$mode"
-chmod 644 "$mode"
 orp_copy_writable "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 sqlite3 "$db" "UPDATE settings SET value='FIXTURE' WHERE keyID='callSign';"
 apply_ident_profile "$db"
 export ORP_BENCH_TEST_HARNESS=1
 export ORP_BENCH_HOSTNAME_FILE="$host"
-export ORP_OPERATING_MODE_FILE="$mode"
-export ORP_BENCH_MARKER="$tmp/no-marker"
 export ORP_DB_PATH="$db"
 export ORP_ROOT="$live"
 

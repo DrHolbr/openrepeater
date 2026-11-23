@@ -156,76 +156,28 @@ bench_assert_bootstrap_idle() {
 	return 0
 }
 
-# Installer copy of the functional-test token check. orp_helper keeps an
-# inlined copy and does not source this file. A trusted functional-test token
-# is a regular file on hostname orp-test, owned by uid 0, not a symlink,
-# not group or world writable. The directory /etc/openrepeater is owned by
-# root and is not group or world writable. A named ACL entry that grants
-# write shows up as group-write in the mode. getfacl is not consulted.
-# The contents are exactly functional-test.
-bench_mode_is_functional_test() {
-	local file perm owner host token
-	file=$(p /etc/openrepeater/operating-mode)
-	if [ ! -f "$file" ] || [ -L "$file" ]; then
-		return 1
-	fi
-	host=$(p /etc/hostname)
-	if [ ! -f "$host" ] || [ -L "$host" ]; then
-		return 1
-	fi
-	if [ "$(tr -d '[:space:]' < "$host")" != "orp-test" ]; then
-		return 1
-	fi
-	perm=$(stat -c %a "$file")
-	case "$perm" in
-		''|*[!0-7]*) return 1 ;;
-	esac
-	if [ $((8#$perm & 022)) -ne 0 ]; then
-		return 1
-	fi
-	owner=$(stat -c %u "$file")
-	if [ "$owner" != "0" ]; then
-		return 1
-	fi
-	local dir perm_dir owner_dir
-	dir=$(dirname "$file")
-	# A loose harness file skips this anchor only while the harness is set.
-	# Production always checks the directory.
-	if [ "${ORP_BENCH_TEST_HARNESS:-}" != 1 ] || [ "$(basename "$dir")" = "openrepeater" ]; then
-		[ -d "$dir" ] && [ ! -L "$dir" ] || return 1
-		perm_dir=$(stat -c %a "$dir")
-		case "$perm_dir" in
-			''|*[!0-7]*) return 1 ;;
-		esac
-		[ $((8#$perm_dir & 022)) -eq 0 ] || return 1
-		owner_dir=$(stat -c %u "$dir")
-		[ "$owner_dir" = "0" ] || return 1
-	fi
-	token=$(tr -d '[:space:]' < "$file")
-	[ "$token" = "functional-test" ]
-}
-
-# Masked units are the install state. Functional-test may instead be
-# inactive and disabled, and only when the mode token is trusted. That
-# state is systemd's report (is-enabled=disabled, is-active=inactive).
-# The unit file may live only under /usr/lib/systemd/system. No file
-# under /etc/systemd/system is required. An enabled unit, a running unit,
-# or a disabled unit without that token is refused.
+# The installer does not read a mode token and does not require a mask.
+# An enabled or running radio unit is still refused here. Disabled and
+# inactive is the stock state. The unit file may live only under
+# /usr/lib/systemd/system.
 bench_assert_masks() {
 	local unit enabled active
-	# A trusted functional-test token means the radio units stay manageable.
-	# Masks are not required. Production without the token is unchanged.
-	if bench_mode_is_functional_test; then
-		return 0
-	fi
 	enabled=$(unit_enabled_state svxlink.service)
 	active=$(unit_active_state svxlink.service)
-	if [ "$enabled" != "masked" ]; then
-		if ! { bench_mode_is_functional_test && [ "$enabled" = "disabled" ] && [ "$active" = "inactive" ]; }; then
-			echo "refused: svxlink.service is enabled '${enabled}' active '${active}', expected masked, or inactive and disabled with a functional-test token" >&2
+	case "$enabled" in
+		masked|disabled|not-found|"") ;;
+		*)
+			echo "refused: svxlink.service is enabled '${enabled}', expected disabled" >&2
 			return 4
-		fi
-	fi
+			;;
+	esac
+	case "$active" in
+		inactive|unknown|failed|"") ;;
+		*)
+			echo "refused: svxlink.service is active '${active}', expected inactive" >&2
+			return 4
+			;;
+	esac
 	# remotetrx and svxreflector are not masked or unmasked here. An enabled
 	# or running unit is still refused.
 	for unit in remotetrx.service svxreflector.service; do
@@ -732,9 +684,7 @@ bench_anchor_dir() {
 			dir)
 				if ! bench_assert_anchor "$acc"; then
 					bench_fd_apply chmod 755 "$acc"
-					if [ "${ORP_INSTALL_OFFLINE:-0}" != 1 ]; then
-						bench_fd_apply chown "$(bench_installer_uid):$(id -g)" "$acc"
-					fi
+					bench_fd_apply chown "$(bench_installer_uid):$(id -g)" "$acc"
 					if ! bench_assert_anchor "$acc"; then
 						echo "refused: $acc is still writable by someone other than the installer" >&2
 						return 1

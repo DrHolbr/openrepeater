@@ -51,7 +51,6 @@ if ($action === 'sqlite') {
 
 putenv('ORP_BENCH_TEST_HARNESS=1');
 putenv('ORP_BENCH_HOSTNAME_FILE=' . $extra);
-putenv('ORP_BENCH_PREVIEW=' . $path);
 $svx = new SVXLink(array('txTailValueSec' => 1, 'txTone' => '', 'rxTone' => ''), array(
 	1 => array(
 		'rxAudioDev' => 'alsa:plughw:0|0',
@@ -76,14 +75,15 @@ if ($action === 'create' || $action === 'overwrite') {
 }
 
 if ($action === 'publish') {
+	putenv('ORP_ROOT=' . $path);
 	$ok = $svx->write_config(array('Rx1' => array('TYPE' => 'Local', 'PTT_PIN' => 'gpio498')), 'svxlink.conf', 'ini');
-	$file = $path . '/svxlink.conf';
+	$file = $path . '/etc/svxlink/svxlink.conf';
 	if ($ok !== true || !is_file($file) || $svx->publishFailed()) {
 		fail('publish did not report success');
 	}
 	$body = file_get_contents($file);
-	if (strpos($body, "\nPTT_PIN=") !== false || strpos($body, 'BENCH DISARMED') === false) {
-		fail('publish left an active PTT line');
+	if (strpos($body, 'PTT_PIN=gpio498') === false) {
+		fail('publish did not keep the stored PTT pin');
 	}
 	echo "ok publish\n";
 	exit(0);

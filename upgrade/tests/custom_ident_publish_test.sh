@@ -14,15 +14,11 @@ trap 'orp_cleanup_fixture "$tmp"' EXIT
 live="$tmp/live"
 db="$tmp/openrepeater.db"
 host="$tmp/hostname"
-mode="$tmp/operating-mode"
 orp_mkdir "$live" "$live/etc/svxlink" "$live/var/backups/orp-ui" \
 	"$live/var/www/openrepeater/sounds/identification"
 plant_native_layout "$live"
 chmod 755 "$live" "$live/etc" "$live/etc/svxlink" "$live/var" "$live/var/backups" "$live/var/backups/orp-ui"
 printf 'orp-test\n' > "$host"
-printf 'functional-test\n' > "$mode"
-orp_private "$mode"
-chmod 644 "$mode"
 orp_copy_writable "$ROOT_DIR/install/sql/openrepeater.db" "$db"
 sqlite3 "$db" "UPDATE settings SET value='FIXTURE' WHERE keyID='callSign';"
 apply_ident_profile "$db"
@@ -40,8 +36,6 @@ UPDATE settings SET value='False' WHERE keyID='ID_Long_AppendMorse';
 
 export ORP_BENCH_TEST_HARNESS=1
 export ORP_BENCH_HOSTNAME_FILE="$host"
-export ORP_OPERATING_MODE_FILE="$mode"
-export ORP_BENCH_MARKER="$tmp/no-marker"
 export ORP_DB_PATH="$db"
 export ORP_ROOT="$live"
 

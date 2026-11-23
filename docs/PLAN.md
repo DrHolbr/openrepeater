@@ -17,7 +17,7 @@ There is no bench mode and no functional-test mode. The UI rebuild reads the dat
 - `events.d`, `events.d/local`, and `Logic.tcl` are checked for owner and file type before a courtesy or ident publish replaces them.
 - Courtesy and identification clip bodies reject `$`, backticks, and `[`. A selected stock or uploaded WAV is copied into the share tree the logic file names.
 - Zip upload, backup restore, and module install stay inside their parent directories and do not follow symlinks.
-- The installer removes old bench files when they are present: `/etc/openrepeater/bench-mode`, `/etc/openrepeater/operating-mode`, `/etc/openrepeater/tx-armed`, `/var/lib/openrepeater/bench-preview`, and `/etc/svxlink/functional-test.d`. It does not create them. It does not mask or unmask a unit. An existing `/dev/null` mask is left in place, and the installer prints `kept existing mask`.
+- The installer removes old bench files when they are present: `/etc/openrepeater/bench-mode`, `/etc/openrepeater/operating-mode`, `/etc/openrepeater/tx-armed`, `/var/lib/openrepeater/bench-preview`, and `/etc/svxlink/functional-test.d`. It does not create them. It does not mask or unmask a unit. An existing `/dev/null` mask is left in place, and the installer prints `kept existing mask`. Staged companion files, when present, are read from `/var/lib/openrepeater/staged`. The helper does not recognize a bench-mode file or a functional-test token.
 - Test runs set `ORP_BENCH_TEST_HARNESS=1` and `ORP_ROOT` so a fixture is prefixed. That is process isolation for the suite. It is not an operating mode, and the installed UI does not set it.
 
 ## Installed build

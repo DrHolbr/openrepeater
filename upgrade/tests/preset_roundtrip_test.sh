@@ -35,17 +35,12 @@ $stmt->execute();
 ' "$db"
 apply_ident_profile "$db"
 printf 'orp-test\n' > "$host"
-printf 'bench\n' > "$marker"
-printf 'bench\n' > "$mode"
-orp_private "$marker" "$mode"
 plant_native_layout "$live"
 orp_mkdir "$live" "$live/var/backups/orp-ui"
 chmod 755 "$live" "$live/etc" "$live/etc/svxlink" "$live/var" "$live/var/backups" "$live/var/backups/orp-ui"
 export ORP_DB_PATH="$db"
 export ORP_BENCH_TEST_HARNESS=1
 export ORP_BENCH_HOSTNAME_FILE="$host"
-export ORP_BENCH_MARKER="$marker"
-export ORP_OPERATING_MODE_FILE="$mode"
 php -S 127.0.0.1:${port} -t "$ROOT_DIR" >"$tmp/server.log" 2>&1 &
 server=$!
 ready=0
@@ -92,9 +87,6 @@ if ($call !== "TEST" || $wpm !== "20" || $user !== "admin " . hash("sha256", "te
 ' "$db"
 echo "ok: all five presets round-trip from the form into the copied database and leave the account and call sign unchanged"
 
-printf 'functional-test\n' > "$mode"
-orp_private "$mode"
-export ORP_OPERATING_MODE_FILE="$mode"
 export ORP_ROOT="$live"
 export ORP_DB_PATH="$db"
 "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null

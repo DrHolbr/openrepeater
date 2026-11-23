@@ -54,10 +54,6 @@ $stmt->execute();
 apply_ident_profile "$db"
 admin_hash=$(sqlite3 "$db" "SELECT password FROM users WHERE username='admin';")
 printf 'orp-test\n' > "$host"
-printf 'bench\n' > "$marker"
-printf 'bench\n' > "$mode"
-printf 'functional-test\n' > "$funct"
-orp_private "$marker" "$mode" "$funct"
 plant_native_layout "$live"
 orp_mkdir "$preview" "$modules" "$audio/identification" "$audio/courtesy_tones" "$backup" "$sounds" "$live" "$live/var/backups/orp-ui"
 # The helper reads module files as www-data.
@@ -66,8 +62,6 @@ chmod 755 "$live" "$live/etc" "$live/etc/svxlink" "$live/var" "$live/var/backups
 export ORP_DB_PATH="$db"
 export ORP_BENCH_TEST_HARNESS=1
 export ORP_BENCH_HOSTNAME_FILE="$host"
-export ORP_BENCH_MARKER="$marker"
-export ORP_OPERATING_MODE_FILE="$mode"
 export ORP_BENCH_PREVIEW="$preview"
 export ORP_MODULES_PATH="$modules"
 export ORP_AUDIO_PATH="$audio"
@@ -185,8 +179,7 @@ code=$(post_settings -o "$tmp/id.body" -w '%{http_code}' \
 [ "$code" = "200" ]
 [ "$(sqlite3 "$db" "SELECT value FROM settings WHERE keyID='ID_Short_IntervalMin';")" = "7" ]
 export ORP_ROOT="$live"
-export ORP_OPERATING_MODE_FILE="$funct"
-pub=$(ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish)
+pub=$(ORP_ROOT="$live" "$ROOT_DIR/install/scripts/orp_helper" config publish)
 cfg="$live/etc/svxlink/svxlink.conf"
 printf '%s\n' "$pub" | grep -q '^logic=Simplex$'
 printf '%s\n' "$pub" | grep -q '^courtesy=applied$'
@@ -212,7 +205,7 @@ code=$(post_settings -o "$tmp/repeater.body" -w '%{http_code}' \
 	"$base/functions/ajax_db_update.php")
 [ "$code" = "200" ]
 grep -q 'RepeaterLogic' "$tmp/repeater.body"
-ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null
+ORP_ROOT="$live" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null
 grep -q '^LOGICS=RepeaterLogic$' "$cfg"
 grep -q '^TYPE=Repeater$' "$cfg"
 grep -q '^CALLSIGN=TEST$' "$cfg"
@@ -220,7 +213,7 @@ grep -q '^PTT_TYPE=NONE$' "$cfg"
 repeater_sum=$(sha256sum "$cfg" | awk '{print $1}')
 sqlite3 "$db" "UPDATE settings SET value='advanced' WHERE keyID='orp_Mode';"
 set +e
-ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null 2>"$tmp/badmode.err"
+ORP_ROOT="$live" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null 2>"$tmp/badmode.err"
 badmode_rc=$?
 set -e
 if [ "$badmode_rc" = 0 ]; then
@@ -241,7 +234,7 @@ if [ "$code" != "200" ]; then
 	exit 1
 fi
 set +e
-ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null 2>"$tmp/custom.err"
+ORP_ROOT="$live" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null 2>"$tmp/custom.err"
 custom_rc=$?
 set -e
 if [ "$custom_rc" = 0 ]; then
@@ -370,7 +363,6 @@ grep -q '^HTTP/.* 405' "$tmp/get-deactivate.hdr"
 echo "ok: GET activate and deactivate return status 405 and change nothing"
 php -r '
 $_SERVER["DOCUMENT_ROOT"] = $argv[2];
-putenv("ORP_OPERATING_MODE_FILE=" . $argv[3]);
 require $argv[2] . "/includes/classes/PathGuard.php";
 require $argv[2] . "/includes/classes/Database.php";
 require $argv[2] . "/includes/classes/Modules.php";
@@ -537,7 +529,7 @@ grep -q 'updated successfully' "$tmp/adv.body"
 [ "$(sqlite3 "$db" "SELECT value FROM advanced WHERE keyID='svxlink_config';")" = "PTT_PIN=gpio498" ]
 advanced_before=$(sha256sum "$cfg" | awk '{print $1}')
 set +e
-ORP_ROOT="$live" ORP_OPERATING_MODE_FILE="$funct" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null 2>"$tmp/adv-pub.err"
+ORP_ROOT="$live" "$ROOT_DIR/install/scripts/orp_helper" config publish >/dev/null 2>"$tmp/adv-pub.err"
 advanced_rc=$?
 set -e
 if [ "$advanced_rc" = 0 ]; then

@@ -388,10 +388,10 @@ else
 	cat "$sudoers" >&2 || true
 fi
 
-if grep -q 'bench_refuses' "$good/usr/sbin/orp_helper"; then
-	ok "installed helper contains the bench refusal"
+if grep -q 'bench_refuses\|functional-test\|/etc/openrepeater/bench-mode\|bench-preview' "$good/usr/sbin/orp_helper"; then
+	bad "installed helper still recognizes a bench or functional-test path"
 else
-	bad "helper was not installed"
+	ok "installed helper does not recognize bench or functional-test paths"
 fi
 
 db="$good/var/lib/openrepeater/db/openrepeater.db"
@@ -829,17 +829,8 @@ end = text.find("function alsamixer_restore {")
 if start < 0 or end < 0:
     raise SystemExit("alsamixer_backup was not found")
 body = """function alsamixer_backup {
-	if bench_refuses "alsa backup"; then
-		return 1
-	fi
-	if ! alsa_state_allowed "$1"; then
-		return 1
-	fi
 	if ! alsactl --file "$1" store; then
 		echo "refused: alsactl store failed"
-		return 1
-	fi
-	if ! alsa_state_allowed "$1"; then
 		return 1
 	fi
 	chown www-data:www-data "$1"
@@ -895,10 +886,10 @@ fi
 result=$(run_helper "$marker" alsa backup "$helper_root/var/www/openrepeater/backup/build/alsamixer.state")
 rc=$(printf '%s\n' "$result" | head -n 1)
 out=$(printf '%s\n' "$result" | tail -n +2)
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused:' && ! grep -E -q 'alsactl|chown' "$hlog"; then
-	ok "bench mode refuses alsa backup before alsactl or chown"
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'refused: alsa state path is a symlink' && ! grep -E -q 'alsactl|^chown ' "$hlog"; then
+	ok "a symlinked alsa state path is refused before alsactl or chown"
 else
-	bad "bench alsa backup"
+	bad "symlinked alsa backup"
 	printf '%s\n' "$out" >&2
 	cat "$hlog" >&2 || true
 fi
@@ -1083,81 +1074,25 @@ chmod 755 "$tmp/mask-systemctl"
 	export ROOT="$mask_root"
 	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
 	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
-	if MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks; then
-		exit 1
-	fi
-) || bad "disabled units were accepted without a functional-test token"
-printf 'orp-test\n' > "$mask_root/etc/hostname"
-printf 'functional-test\n' > "$mask_root/etc/openrepeater/operating-mode"
-chmod 644 "$mask_root/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$mask_root/etc/openrepeater" "$mask_root/etc/openrepeater/operating-mode"
-sudo chmod 755 "$mask_root/etc/openrepeater"
-(
-	export ROOT="$mask_root"
-	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
-	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
 	MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks
-) || bad "inactive disabled functional-test was refused"
+) || bad "inactive disabled units were refused"
 (
 	export ROOT="$mask_root"
 	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
 	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
-	MASK_ENABLED=enabled MASK_ACTIVE=inactive bench_assert_masks
-) || bad "an enabled unit was refused in functional-test"
+	if MASK_ENABLED=enabled MASK_ACTIVE=inactive bench_assert_masks; then
+		exit 1
+	fi
+) || bad "an enabled unit was accepted"
 (
 	export ROOT="$mask_root"
 	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
 	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
-	MASK_ENABLED=disabled MASK_ACTIVE=active bench_assert_masks
-) || bad "a running unit was refused in functional-test"
-sudo chmod 666 "$mask_root/etc/openrepeater/operating-mode"
-(
-	export ROOT="$mask_root"
-	export ORP_SYSTEMCTL="$tmp/mask-systemctl"
-	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
-	if MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks; then
+	if MASK_ENABLED=disabled MASK_ACTIVE=active bench_assert_masks; then
 		exit 1
 	fi
-) || bad "a group-writable functional-test token was accepted"
-ok "masks stay fail-closed and functional-test may be inactive and disabled"
-if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; then
-	printf 'functional-test\n' | sudo tee "$mask_root/etc/openrepeater/operating-mode" >/dev/null
-	sudo chown 0:0 "$mask_root/etc/openrepeater/operating-mode"
-	sudo chmod 644 "$mask_root/etc/openrepeater/operating-mode"
-	sudo setfacl -m u:nobody:r "$mask_root/etc/openrepeater/operating-mode"
-	(
-		export ROOT="$mask_root"
-		export ORP_SYSTEMCTL="$tmp/mask-systemctl"
-		. "$ROOT_DIR/upgrade/lib/bench-target.sh"
-		MASK_ENABLED=disabled MASK_ACTIVE=inactive bench_assert_masks
-	) || bad "a read-only named ACL was refused; group-write is the mode check"
-	sudo setfacl -b "$mask_root/etc/openrepeater/operating-mode" || true
-	sudo chmod 644 "$mask_root/etc/openrepeater/operating-mode"
-	ok "a read-only named ACL is not a separate refusal"
-fi
-user_token=$(orp_mktemp_dir)
-orp_mkdir "$user_token/etc/openrepeater"
-printf 'orp-test\n' > "$user_token/etc/hostname"
-printf 'functional-test\n' > "$user_token/etc/openrepeater/operating-mode"
-chmod 644 "$user_token/etc/openrepeater/operating-mode"
-sudo chown 1000:1000 "$user_token/etc/openrepeater/operating-mode"
-(
-	export ROOT="$user_token"
-	. "$ROOT_DIR/upgrade/lib/bench-target.sh"
-	if bench_mode_is_functional_test; then
-		exit 1
-	fi
-) || bad "the installer accepted a uid-1000 mode 0644 token"
-(
-	export ORP_HELPER_SOURCE_ONLY=1
-	export ORP_ROOT="$user_token"
-	# shellcheck source=../../install/scripts/orp_helper
-	. "$ROOT_DIR/install/scripts/orp_helper"
-	if native_functional_token; then
-		exit 1
-	fi
-) || bad "the helper accepted a uid-1000 mode 0644 token"
-ok "a uid-1000 mode 0644 token is refused by the installer and the helper"
+) || bad "a running unit was accepted"
+ok "disabled and inactive units are accepted and enabled or running units are refused"
 
 ft_ctl="$tmp/ft-systemctl"
 cat > "$ft_ctl" <<'EOF'
@@ -1181,10 +1116,6 @@ chmod 755 "$ft_ctl"
 lib_only=$(orp_mktemp_dir)
 orp_mkdir "$lib_only/etc/openrepeater" "$lib_only/usr/lib/systemd/system"
 printf 'orp-test\n' > "$lib_only/etc/hostname"
-printf 'functional-test\n' > "$lib_only/etc/openrepeater/operating-mode"
-chmod 644 "$lib_only/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$lib_only/etc/openrepeater" "$lib_only/etc/openrepeater/operating-mode"
-sudo chmod 755 "$lib_only/etc/openrepeater"
 for unit in svxlink.service remotetrx.service svxreflector.service; do
 	printf '%s\n' '[Unit]' 'Description=library' > "$lib_only/usr/lib/systemd/system/$unit"
 done
@@ -1295,10 +1226,6 @@ orp_mkdir "$attack/usr/sbin" "$attack/etc/openrepeater" \
 cp "$HELPER" "$attack/usr/sbin/orp_helper"
 chmod 755 "$attack/usr/sbin/orp_helper"
 printf 'orp-test\n' > "$attack/etc/hostname"
-printf 'functional-test\n' > "$attack/etc/openrepeater/operating-mode"
-chmod 644 "$attack/etc/openrepeater/operating-mode"
-sudo chown 0:0 "$attack/etc/openrepeater" "$attack/etc/openrepeater/operating-mode"
-sudo chmod 755 "$attack/etc/openrepeater"
 attack_db="$attack/var/lib/openrepeater/db/openrepeater.db"
 cp "$ROOT_DIR/install/sql/openrepeater.db" "$attack_db"
 chmod 600 "$attack_db"
@@ -1322,7 +1249,6 @@ fi
 : > "$attack/systemctl.log"
 run_attack() {
 	ORP_BENCH_TEST_HARNESS=1 ORP_ROOT="$attack" ORP_DB_PATH="$attack_db" \
-		ORP_OPERATING_MODE_FILE="$attack/etc/openrepeater/operating-mode" \
 		ORP_SYSTEMCTL="$ft_ctl" ORP_SYSTEMCTL_LOG="$attack/systemctl.log" \
 		"$attack/usr/sbin/orp_helper" "$@" >/dev/null 2>&1 || true
 }

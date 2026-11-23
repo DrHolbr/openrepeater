@@ -342,8 +342,8 @@ curl -s -D "$rebuild_headers" -o "$rebuild_body" -b "$jar" -c "$jar" \
 assert_no_memcached_error "$rebuild_body"
 grep -q 'HTTP/1.1 302' "$rebuild_headers"
 grep -q 'login.php' "$rebuild_headers"
-if ! grep -Eq 'bench_preview_ok=1|preview_failed=1' "$rebuild_headers"; then
-	echo "FAIL: finish response was not a bench redirect" >&2
+if ! grep -Eq 'publish_failed=1|gpio_setup_failed=1' "$rebuild_headers"; then
+	echo "FAIL: finish response was not a publish redirect" >&2
 	cat "$rebuild_headers" >&2
 	exit 1
 fi
